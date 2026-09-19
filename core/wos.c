@@ -397,11 +397,13 @@ void wos_pointer(int x, int y, int down)
         }
         case PH_OV:
             if (s_ovdecide <= 0) {
-                if (dt <= TAP_MAX_MS && adx <= SLOP && ady <= SLOP) {
+                /* Once movement claimed the gesture, returning to its start
+                 * (e.g. one dial revolution) is still a drag, never a tap. */
+                if (s_ovdecide == 0) {
+                    ov_dispatch(WOS_EV_TOUCH_UP, x, y);
+                } else if (dt <= TAP_MAX_MS && adx <= SLOP && ady <= SLOP) {
                     if (!ov_dispatch(WOS_EV_TAP, x, y))
                         wos_close_overlay();
-                } else if (s_ovdecide == 0) {
-                    ov_dispatch(WOS_EV_TOUCH_UP, x, y);
                 }
             }
             break;

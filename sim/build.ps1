@@ -1,4 +1,5 @@
 # Build the watch simulator. Usage: .\sim\build.ps1  (from repo root or sim/)
+param([string]$OutputName = 'sim.exe')
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 
@@ -19,6 +20,6 @@ $srcs = @(
 # (anim.c, notif.c, the overlay apps) are picked up with no edits here.
 
 & $gcc -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter `
-    @srcs -o "$root\build\sim.exe" -lgdi32 -luser32 -lwinmm -lm
+    @srcs -o "$root\build\$OutputName" -lgdi32 -luser32 -lwinmm -lm
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
-Write-Host "built $root\build\sim.exe"
+Write-Host "built $root\build\$OutputName"

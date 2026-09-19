@@ -1,5 +1,10 @@
 # Display optimization results — 2026-09-19
 
+**Latest menu optimization:** [cached-menu results](menu_cache_results.md)
+record a controlled dial improvement from 18.40 to 40.22 presentations/s and
+list improvement from 49.94 to 53.82 at 40 MHz. Final firmware also replaces
+horizontal-only dial input with angular dragging. Physical acceptance is pending.
+
 **Latest clock trial rejected:** 80 MHz improved synthetic throughput but not
 menu FPS; the owner reported noticeably worse left-dial behavior. The saved
 40 MHz CO-profile application and matching source were restored. See

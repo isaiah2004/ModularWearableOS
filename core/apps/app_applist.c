@@ -74,6 +74,7 @@
 #define ENTER_DUR     330.0f
 #define ENTER_FADE    210.0f
 #define ENTER_SLIDE   GFX_S(112)
+#define LIST_WIN      9
 
 static float scroll;           /* px; input target (logical scroll) */
 static float rscroll;          /* px; rendered scroll, tracks scroll 1:1 (smooth) */
@@ -88,6 +89,25 @@ static int last_y, dragging;
 static uint32_t last_t;
 static uint32_t open_ms;
 
+/* on_draw records once, then may raster repeatedly into clipped framebuffer
+ * stripes for the same frame. Keep the exact floating-point results from the
+ * first call so later calls neither repeat layout nor risk tiny drift. */
+typedef struct {
+    int valid, icon;
+    float cy, r, icx, dim;
+    const char *name;
+    uint16_t accent, fg;
+} list_row_geom;
+
+typedef struct {
+    uint32_t frame;
+    int base;
+    float bodyr;
+    list_row_geom row[LIST_WIN];
+} list_frame_geom;
+
+static list_frame_geom frame_geom = { .frame = 0xFFFFFFFFu };
+
 static float max_scroll(void) { return (wos_app_count() - 1) * ROW_H; }
 static int focused_row(void);   /* defined below; used by on_draw for the ring */
 
@@ -95,6 +115,7 @@ static void on_start(void)
 {
     scroll = 0; rscroll = 0; prev_rscroll = 0; prev_frow = -1; icon_flush = 0; vel = 0; dragging = 0;
     open_ms = hal_millis();
+    frame_geom.frame = 0xFFFFFFFFu;
 }
 
 /* Focal emphasis: a smooth bell centered on the focused row. 1.0 at the vertical
@@ -228,67 +249,81 @@ static void on_draw(gfx_fb *fb)
      * (clipped at the band) nor covered by the pill -> stale icon slivers freeze there
      * (that was the margin artifact). Band == pill => no uncovered strip. */
     float halfband = pill_r;
-    #define WIN 9        /* rows considered around focus; off-screen ones are culled */
-    int base = frow - WIN / 2;
+    int base = frow - LIST_WIN / 2;
+
+    /* Build once per presented frame, then reuse verbatim in recorder and raster
+     * passes. This is intentionally a tiny geometry cache, not a pixel cache. */
+    if (frame_geom.frame != wos_frame_id) {
+        frame_geom.frame = wos_frame_id;
+        frame_geom.base = base;
+        for (int s = 0; s < LIST_WIN; s++) {
+            list_row_geom *g = &frame_geom.row[s];
+            int i = base + s;
+            g->valid = 0;
+            if (i < 0 || i >= n) continue;
+            float cy = warp_cy(GFX_CY + i * ROW_H - rscroll);
+            if (cy + ICON_R < 0 || cy - ICON_R > GFX_H) continue;
+            float dy = cy - GFX_CY;
+            float cy0 = GFX_CY + i * ROW_H;
+            int initial = (cy0 - ICON_R < GFX_H);
+            float alpha, slide;
+            if (!initial) {
+                alpha = 1.0f;
+                slide = 0.0f;
+            } else {
+                float u = s_elapsed - ENTER_BASE - i * ENTER_STAGGER;
+                if (u <= 0.0f) {
+                    alpha = 0.0f;
+                    slide = ENTER_SLIDE;
+                } else {
+                    float t = u / ENTER_DUR;
+                    if (t > 1.0f) t = 1.0f;
+                    slide = ENTER_SLIDE * (1.0f - ease_out_back(t));
+                    alpha = u / ENTER_FADE;
+                    if (alpha > 1.0f) alpha = 1.0f;
+                }
+            }
+            float sc = row_scale(dy);
+            float r = ICON_R * (0.72f + 0.42f * sc);
+            float inside = R * R - dy * dy;
+            float bez = inside > 0 ? GFX_CX - gfx_fast_sqrt(inside) : GFX_CX;
+            float indent = bez * 0.9f;
+            if (indent > GFX_S(24)) indent = GFX_S(24);
+            g->valid = 1;
+            g->cy = cy;
+            g->r = r;
+            g->icx = GFX_S(17) + indent + r + slide;
+            g->dim = row_dim(sc) * alpha;
+            g->name = wos_app_name(i);
+            g->accent = wos_app_accent(i);
+            g->icon = wos_app_icon(i);
+            g->fg = dim565(GFX_WHITE, g->dim);
+        }
+        const char *focus_name = wos_app_name(frow);
+        float focus_icx0 = GFX_S(17) + pill_r;
+        frame_geom.bodyr = focus_icx0 + pill_r + GFX_S(7)
+                         + (float)font_text_width(&font_medium, focus_name) + GFX_S(9);
+    }
 
     /* ---- ICONS: every visible row EXCEPT the focused one, sliding smoothly along the
      * arc. They pass BEHIND the centre pill (drawn on top, below): each slides up to the
      * band edge and tucks UNDER the pill, completing its travel instead of stopping short.
      * Narrow per-icon dirty boxes (see the dirty pass) -> tear-free. ---- */
-    for (int s = 0; s < WIN; s++) {
-        int i = base + s;
-        if (i < 0 || i >= n) continue;                           /* draw ALL rows incl. frow, so
-                                                                  * an icon keeps cropping through
-                                                                  * the crossing (no termination) */
-        float cy = warp_cy(GFX_CY + i * ROW_H - rscroll);        /* warped: neighbours pulled in */
-        if (cy + ICON_R < 0 || cy - ICON_R > GFX_H) continue;    /* off-screen: cull */
-        float dy = cy - GFX_CY;
-
-        /* Entrance cascade: fade + fly-in, once, only for rows on screen at open. */
-        float cy0 = GFX_CY + i * ROW_H;
-        int initial = (cy0 - ICON_R < GFX_H);
-        float alpha, slide;
-        if (!initial) {
-            alpha = 1.0f;
-            slide = 0.0f;
-        } else {
-            float u = s_elapsed - ENTER_BASE - i * ENTER_STAGGER;
-            if (u <= 0.0f) {
-                alpha = 0.0f;
-                slide = ENTER_SLIDE;
-            } else {
-                float t = u / ENTER_DUR;
-                if (t > 1.0f) t = 1.0f;
-                slide = ENTER_SLIDE * (1.0f - ease_out_back(t));
-                alpha = u / ENTER_FADE;
-                if (alpha > 1.0f) alpha = 1.0f;
-            }
-        }
-
-        float sc  = row_scale(dy);
-        float r   = ICON_R * (0.72f + 0.42f * sc);   /* fisheye; drawn full, the box CROPS it */
-        float dim = row_dim(sc) * alpha;
-
-        /* Icon column traces the round bezel, kept in a tight left column. */
-        float inside = R * R - dy * dy;
-        float bez = inside > 0 ? GFX_CX - gfx_fast_sqrt(inside) : GFX_CX;
-        float indent = bez * 0.9f;
-        if (indent > GFX_S(24)) indent = GFX_S(24);
-        float icx = GFX_S(17) + indent + r + slide;
-
-        const char *nm = wos_app_name(i);
-        uint16_t fg = dim565(GFX_WHITE, dim);
-        gfx_fill_circle(fb, icx, cy, r, dim565(wos_app_accent(i), dim));
-        int icon = wos_app_icon(i);
+    for (int s = 0; s < LIST_WIN; s++) {
+        const list_row_geom *g = &frame_geom.row[s];
+        if (!g->valid) continue;
+        const char *nm = g->name;
+        gfx_fill_circle(fb, g->icx, g->cy, g->r, dim565(g->accent, g->dim));
+        int icon = g->icon;
         if (icon != ICON_NONE) {
-            icon_glyph(fb, icon, icx, cy, r * 0.62f, fg);
+            icon_glyph(fb, icon, g->icx, g->cy, g->r * 0.62f, g->fg);
         } else {
             char init[2];
             init[0] = nm && nm[0] ? nm[0] : '?';
             init[1] = 0;
             if (init[0] >= 'a' && init[0] <= 'z') init[0] -= 32;
-            font_draw_centered(fb, &font_small, (int)icx,
-                               (int)(cy + font_small.ascent * 0.34f), init, fg);
+            font_draw_centered(fb, &font_small, (int)g->icx,
+                               (int)(g->cy + font_small.ascent * 0.34f), init, g->fg);
         }
     }
 
@@ -302,8 +337,7 @@ static void on_draw(gfx_fb *fb)
     {
         const char *nm = wos_app_name(frow);
         uint16_t body = wos_app_accent(frow);
-        float bodyr = icx0 + pill_r + GFX_S(7)
-                    + (float)font_text_width(&font_medium, nm) + GFX_S(9);   /* right-cap centre */
+        float bodyr = frame_geom.bodyr;   /* right-cap centre */
         gfx_fill_rect(fb, 0, (int)(GFX_CY - pill_r), (int)bodyr, (int)(2.0f * pill_r), body);
         gfx_fill_circle(fb, bodyr, GFX_CY, pill_r, body);
         int icon = wos_app_icon(frow);
@@ -335,7 +369,7 @@ static void on_draw(gfx_fb *fb)
      *     so they never freeze outright. */
     if (fb->rec) {
         int focus_changed = (frow != prev_frow);
-        int entering = (s_elapsed < ENTER_BASE + WIN * ENTER_STAGGER + ENTER_DUR + 80.0f);
+        int entering = (s_elapsed < ENTER_BASE + LIST_WIN * ENTER_STAGGER + ENTER_DUR + 80.0f);
         int moved = (rscroll != prev_rscroll);
         int bandtop = (int)(GFX_CY - halfband);
         int bandbot = (int)(GFX_CY + halfband);
@@ -352,23 +386,32 @@ static void on_draw(gfx_fb *fb)
             }
             if (do_icons) {
                 float m = GFX_S(5);      /* margin: catch edges, keep box < 125px wide */
-                for (int i = frow - WIN / 2; i <= frow + WIN / 2; i++) {
+                for (int i = frow - LIST_WIN / 2; i <= frow + LIST_WIN / 2; i++) {
                     if (i < 0 || i >= n) continue;
                     float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
                     int on = 0;
-                    for (int p = 0; p < 2; p++) {   /* flushed(old) + new positions */
-                        float sv = p ? icon_flush : rscroll;
-                        float cy = warp_cy(GFX_CY + i * ROW_H - sv);   /* MATCH the draw's warp */
-                        if (cy + ICON_R < 0 || cy - ICON_R > GFX_H) continue;
+                    for (int p = 0; p < 2; p++) {   /* new + flushed(old) positions */
+                        float cy, r, icx;
+                        if (p == 0) {
+                            const list_row_geom *g = &frame_geom.row[i - frame_geom.base];
+                            if (!g->valid) continue;
+                            cy = g->cy;
+                            r = g->r;
+                            icx = g->icx; /* entrance is over whenever this path runs */
+                        } else {
+                            float cy_old = warp_cy(GFX_CY + i * ROW_H - icon_flush);
+                            if (cy_old + ICON_R < 0 || cy_old - ICON_R > GFX_H) continue;
+                            float dy = cy_old - GFX_CY;
+                            float sc = row_scale(dy);
+                            r = ICON_R * (0.72f + 0.42f * sc);
+                            float inside = R * R - dy * dy;
+                            float bez = inside > 0 ? GFX_CX - gfx_fast_sqrt(inside) : GFX_CX;
+                            float indent = bez * 0.9f;
+                            if (indent > GFX_S(24)) indent = GFX_S(24);
+                            cy = cy_old;
+                            icx = GFX_S(17) + indent + r;
+                        }
                         on = 1;
-                        float dy = cy - GFX_CY;
-                        float sc = row_scale(dy);
-                        float r = ICON_R * (0.72f + 0.42f * sc);   /* MATCH the draw exactly */
-                        float inside = R * R - dy * dy;
-                        float bez = inside > 0 ? GFX_CX - gfx_fast_sqrt(inside) : GFX_CX;
-                        float indent = bez * 0.9f;
-                        if (indent > GFX_S(24)) indent = GFX_S(24);
-                        float icx = GFX_S(17) + indent + r;
                         if (icx - r - m < minx) minx = icx - r - m;
                         if (icx + r + m > maxx) maxx = icx + r + m;
                         if (cy  - r - m < miny) miny = cy  - r - m;

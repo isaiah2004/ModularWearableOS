@@ -676,6 +676,21 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProc(h, msg, wp, lp);
 }
 
+/* Exercise the OS gesture router, separately from the dial's angle math. */
+static int s_route_down, s_route_move, s_route_up, s_route_tap;
+static int route_test_event(const wos_event *ev)
+{
+    if (ev->type == WOS_EV_TOUCH_DOWN) s_route_down++;
+    if (ev->type == WOS_EV_TOUCH_MOVE) s_route_move++;
+    if (ev->type == WOS_EV_TOUCH_UP) s_route_up++;
+    if (ev->type == WOS_EV_TAP) s_route_tap++;
+    return 1;
+}
+static void route_test_draw(gfx_fb *fb) { gfx_clear(fb, GFX_BLACK); }
+static const wos_app s_route_test = {
+    "gesture test", NULL, route_test_event, route_test_draw, GFX_WHITE, ICON_NONE
+};
+
 int main(int argc, char **argv)
 {
     QueryPerformanceFrequency(&s_qpf);
@@ -907,6 +922,37 @@ int main(int argc, char **argv)
 
     notif_push("Messages", "Mom: call me back", GFX_GREEN);
     notif_push("Calendar", "Standup in 10 min", GFX_RED);
+
+    if (argc > 1 && strcmp(argv[1], "--overlay-gesture-checks") == 0) {
+        wos_register_overlay(WOS_EDGE_LEFT, &s_route_test, WOS_OV_PANNABLE);
+        wos_pointer(8, 233, 1);
+        wos_pointer(300, 233, 1);
+        wos_pointer(300, 233, 0);
+        for (int i = 0; i < 24; i++) { Sleep(5); wos_run_frame(); }
+        wos_pointer(233, 100, 1);
+        wos_pointer(233, 100, 0);
+        assert(s_route_tap == 1 && s_route_down == 0 && s_route_up == 0);
+        /* Out and back ends at the same point, but already crossed drag slop. */
+        wos_pointer(233, 100, 1);
+        wos_pointer(300, 100, 1);
+        wos_pointer(233, 100, 1);
+        wos_pointer(233, 100, 0);
+        assert(s_route_tap == 1 && s_route_down == 1 && s_route_up == 1);
+        wos_pointer(233, 100, 1);
+        wos_pointer(366, 233, 1);
+        wos_pointer(233, 366, 1);
+        wos_pointer(100, 233, 1);
+        wos_pointer(233, 100, 1);
+        wos_pointer(233, 100, 0);
+        assert(s_route_tap == 1 && s_route_down == 2 && s_route_up == 2);
+        assert(s_route_move == 6);
+        /* A subsequent genuine tap is still delivered. */
+        wos_pointer(233, 100, 1);
+        wos_pointer(233, 100, 0);
+        assert(s_route_tap == 2);
+        puts("PASS overlay routing: taps, returning drags and full circles");
+        return 0;
+    }
 
     if (argc > 1 && strcmp(argv[1], "--handtest") == 0) {
         /* Sweep the second hand via the dirty-rect path for a while, then force a

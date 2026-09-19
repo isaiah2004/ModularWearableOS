@@ -1,0 +1,116 @@
+{"time": "2026-09-19T22:21:57.278325+05:30", "command": "face", "response": ["face=2"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:21:57.438553+05:30", "command": "awake 1", "response": ["awake=1"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:21:57.594086+05:30", "command": "board", "response": ["BOARD ESP32-S3-Touch-AMOLED-1.43-B flash=16MB psram=8388608 touch=1 imu=1 rtc=1 rtc_valid=0 audio=0 sd=0 total=0 free=0 sys_mv=4179 heap_internal=57467 heap_largest=30720 heap_min=39080"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:21:57.788644+05:30", "command": "perf display info", "response": ["PERF_INFO,{\"fw\":\"display-optimized-20260919-5-g7\",\"idf\":\"897cf407\",\"cpu_mhz\":240,\"clock_requested_hz\":40000000,\"clock_actual_hz\":40000000,\"clock_basis\":\"80MHz divided by two; not scope measured\",\"panel_identity\":\"unconfirmed\",\"legacy_id\":255,\"legacy_gap\":6,\"te_routed\":false,\"panel_init\":\"CO5300\",\"panel_selection\":\"board_profile\",\"panel_gap_x\":6,\"width\":466,\"height\":466,\"stripe_rows\":16,\"dma_buffer_bytes\":14912,\"internal_free\":57467,\"internal_largest\":30720,\"dma_largest\":30720,\"psram_free\":2245860,\"main_stack_free_bytes\":3620,\"flush_stack_free_bytes\":1780,\"render_core\":0,\"flush_core\":1,\"queue_capacity\":2,\"lvgl\":false,\"tearing_observed\":null,\"current_ma\":null}"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:21:57.975284+05:30", "command": "apps", "response": ["APP 0 watchface", "APP 1 stopwatch", "APP 2 Timer", "APP 3 Alarm", "APP 4 World", "APP 5 Calendar", "APP 6 Weather", "APP 7 Activity", "APP 8 Breathe", "APP 9 Music", "APP 10 Recorder", "APP 11 Assistant", "APP 12 Find Phone", "APP 13 BLE", "APP 14 Channels", "APP 15 Wi-Fi", "APP 16 Diagnostics", "APP 17 Level", "APP 18 Calc", "APP 19 2048", "APP 20 Torch", "APP 21 Battery", "APP 22 Pomodoro", "APP 23 Settings", "APP 24 Storage", "APP 25 Pet care"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:21:58.130645+05:30", "command": "open 0", "response": ["open 0 -> watchface"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:21:58.516969+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:21:58.776083+05:30", "command": "open 1", "response": ["I (87195) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "open 1 -> stopwatch"], "ack_ms": 108.99999999674037}
+{"time": "2026-09-19T22:21:59.156010+05:30", "command": "info", "response": ["app=1/26 name=stopwatch"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:21:59.370650+05:30", "command": "open 2", "response": ["open 2 -> Timer"], "ack_ms": 62.000000034458935}
+{"time": "2026-09-19T22:21:59.756609+05:30", "command": "info", "response": ["app=2/26 name=Timer"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:21:59.967824+05:30", "command": "open 3", "response": ["open 3 -> Alarm"], "ack_ms": 63.000000023748726}
+{"time": "2026-09-19T22:22:00.345690+05:30", "command": "info", "response": ["app=3/26 name=Alarm"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:00.550804+05:30", "command": "open 4", "response": ["open 4 -> World"], "ack_ms": 46.999999962281436}
+{"time": "2026-09-19T22:22:00.936995+05:30", "command": "info", "response": ["app=4/26 name=World"], "ack_ms": 32.00000000651926}
+{"time": "2026-09-19T22:22:01.141391+05:30", "command": "open 5", "response": ["open 5 -> Calendar"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:01.549127+05:30", "command": "info", "response": ["app=5/26 name=Calendar"], "ack_ms": 46.999999962281436}
+{"time": "2026-09-19T22:22:01.749537+05:30", "command": "open 6", "response": ["open 6 -> Weather"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:02.129956+05:30", "command": "info", "response": ["I (90334) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "app=6/26 name=Weather"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:02.351545+05:30", "command": "open 7", "response": ["open 7 -> Activity"], "ack_ms": 63.000000023748726}
+{"time": "2026-09-19T22:22:02.747615+05:30", "command": "info", "response": ["app=7/26 name=Activity"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:02.975729+05:30", "command": "open 8", "response": ["open 8 -> Breathe"], "ack_ms": 77.9999999795109}
+{"time": "2026-09-19T22:22:03.359606+05:30", "command": "info", "response": ["app=8/26 name=Breathe"], "ack_ms": 32.00000000651926}
+{"time": "2026-09-19T22:22:03.627528+05:30", "command": "open 9", "response": ["open 9 -> Music"], "ack_ms": 108.99999999674037}
+{"time": "2026-09-19T22:22:04.338516+05:30", "command": "info", "response": ["app=9/26 name=Music"], "ack_ms": 358.99999999674037}
+{"time": "2026-09-19T22:22:04.592286+05:30", "command": "open 10", "response": ["open 10 -> Recorder"], "ack_ms": 108.99999999674037}
+{"time": "2026-09-19T22:22:04.967276+05:30", "command": "info", "response": ["app=10/26 name=Recorder"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:05.164182+05:30", "command": "open 11", "response": ["I (93473) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "open 11 -> Assistant"], "ack_ms": 46.999999962281436}
+{"time": "2026-09-19T22:22:05.541734+05:30", "command": "info", "response": ["app=11/26 name=Assistant"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:22:05.755525+05:30", "command": "open 12", "response": ["open 12 -> Find Phone"], "ack_ms": 62.000000034458935}
+{"time": "2026-09-19T22:22:06.140675+05:30", "command": "info", "response": ["app=12/26 name=Find Phone"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:06.344457+05:30", "command": "open 13", "response": ["open 13 -> BLE"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:06.723436+05:30", "command": "info", "response": ["app=13/26 name=BLE"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:06.927151+05:30", "command": "open 14", "response": ["W (95395) wifi:sta_scan: STA is connecting, scan are not allowed!", "wifi scan start: ESP_ERR_WIFI_STATE", "open 14 -> Channels"], "ack_ms": 46.999999962281436}
+{"time": "2026-09-19T22:22:07.306005+05:30", "command": "info", "response": ["app=14/26 name=Channels"], "ack_ms": 32.00000000651926}
+{"time": "2026-09-19T22:22:07.507672+05:30", "command": "open 15", "response": ["W (95978) wifi:sta_scan: STA is connecting, scan are not allowed!", "wifi scan start: ESP_ERR_WIFI_STATE", "open 15 -> Wi-Fi"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:07.884971+05:30", "command": "info", "response": ["app=15/26 name=Wi-Fi"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:08.085785+05:30", "command": "open 16", "response": ["open 16 -> Diagnostics"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:08.473533+05:30", "command": "info", "response": ["I (96612) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "app=16/26 name=Diagnostics"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:08.685616+05:30", "command": "open 17", "response": ["open 17 -> Level"], "ack_ms": 62.999999965541065}
+{"time": "2026-09-19T22:22:09.068878+05:30", "command": "info", "response": ["app=17/26 name=Level"], "ack_ms": 32.00000000651926}
+{"time": "2026-09-19T22:22:09.284996+05:30", "command": "open 18", "response": ["open 18 -> Calc"], "ack_ms": 61.999999976251274}
+{"time": "2026-09-19T22:22:09.665965+05:30", "command": "info", "response": ["app=18/26 name=Calc"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:22:09.894596+05:30", "command": "open 19", "response": ["open 19 -> 2048"], "ack_ms": 78.00000003771856}
+{"time": "2026-09-19T22:22:10.281152+05:30", "command": "info", "response": ["app=19/26 name=2048"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:22:10.501299+05:30", "command": "open 20", "response": ["open 20 -> Torch"], "ack_ms": 62.000000034458935}
+{"time": "2026-09-19T22:22:10.878016+05:30", "command": "info", "response": ["app=20/26 name=Torch"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:11.076617+05:30", "command": "open 21", "response": ["open 21 -> Battery"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:11.457664+05:30", "command": "info", "response": ["I (99750) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "app=21/26 name=Battery"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:11.684091+05:30", "command": "open 22", "response": ["open 22 -> Pomodoro"], "ack_ms": 77.9999999795109}
+{"time": "2026-09-19T22:22:12.079420+05:30", "command": "info", "response": ["app=22/26 name=Pomodoro"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:12.311001+05:30", "command": "open 23", "response": ["open 23 -> Settings"], "ack_ms": 77.9999999795109}
+{"time": "2026-09-19T22:22:12.692005+05:30", "command": "info", "response": ["app=23/26 name=Settings"], "ack_ms": 32.00000000651926}
+{"time": "2026-09-19T22:22:12.897467+05:30", "command": "open 24", "response": ["open 24 -> Storage"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:13.279268+05:30", "command": "info", "response": ["app=24/26 name=Storage"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:22:13.481118+05:30", "command": "open 25", "response": ["open 25 -> Pet care"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:13.862078+05:30", "command": "info", "response": ["app=25/26 name=Pet care"], "ack_ms": 32.00000000651926}
+{"time": "2026-09-19T22:22:14.127135+05:30", "command": "face 0", "response": ["face=0"], "ack_ms": 108.99999999674037}
+{"time": "2026-09-19T22:22:14.744589+05:30", "command": "info", "response": ["I (102889) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "app=0/26 name=watchface"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:14.912402+05:30", "command": "face", "response": ["face=0"], "ack_ms": 14.999999955762178}
+{"time": "2026-09-19T22:22:15.082754+05:30", "command": "face 1", "response": ["face=1"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:15.688790+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:22:15.859521+05:30", "command": "face", "response": ["face=1"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:16.031312+05:30", "command": "face 2", "response": ["face=2"], "ack_ms": 14.999999955762178}
+{"time": "2026-09-19T22:22:16.653274+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:22:16.838302+05:30", "command": "face", "response": ["face=2"], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:17.016168+05:30", "command": "face 3", "response": ["face=3"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:17.627303+05:30", "command": "info", "response": ["I (106027) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "app=0/26 name=watchface"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:17.794765+05:30", "command": "face", "response": ["face=3"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:18.046857+05:30", "command": "face 4", "response": ["face=4"], "ack_ms": 93.99999998277053}
+{"time": "2026-09-19T22:22:18.653509+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 14.999999955762178}
+{"time": "2026-09-19T22:22:18.813899+05:30", "command": "face", "response": ["face=4"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:18.978122+05:30", "command": "face 5", "response": ["face=5"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:19.582227+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:22:19.749312+05:30", "command": "face", "response": ["face=5"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:19.941017+05:30", "command": "face 6", "response": ["face=6"], "ack_ms": 32.00000000651926}
+{"time": "2026-09-19T22:22:20.545477+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:22:20.714845+05:30", "command": "face", "response": ["I (109165) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "face=6"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:20.885602+05:30", "command": "face 7", "response": ["face=7"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:21.490292+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:22:21.657796+05:30", "command": "face", "response": ["face=7"], "ack_ms": 14.999999955762178}
+{"time": "2026-09-19T22:22:21.828494+05:30", "command": "face 8", "response": ["face=8"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:22.430407+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:22.599121+05:30", "command": "face", "response": ["face=8"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:22.768730+05:30", "command": "face 9", "response": ["face=9"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:23.377853+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:22:23.545979+05:30", "command": "face", "response": ["face=9"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:23.716367+05:30", "command": "face 10", "response": ["face=10"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:24.329974+05:30", "command": "info", "response": ["I (112303) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "app=0/26 name=watchface"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:24.497036+05:30", "command": "face", "response": ["face=10"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:24.667364+05:30", "command": "face 11", "response": ["face=11"], "ack_ms": 30.999999959021807}
+{"time": "2026-09-19T22:22:25.284145+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 14.999999955762178}
+{"time": "2026-09-19T22:22:25.449484+05:30", "command": "face", "response": ["face=11"], "ack_ms": 15.000000013969839}
+{"time": "2026-09-19T22:22:25.621998+05:30", "command": "face 12", "response": ["face=12"], "ack_ms": 31.000000017229468}
+{"time": "2026-09-19T22:22:26.234465+05:30", "command": "info", "response": ["app=0/26 name=watchface"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:26.401288+05:30", "command": "face", "response": ["face=12"], "ack_ms": 14.999999955762178}
+{"time": "2026-09-19T22:22:26.894337+05:30", "command": "left", "response": [], "ack_ms": 344.0000000409782}
+{"time": "2026-09-19T22:22:27.544472+05:30", "command": "close", "response": ["I (115441) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying"], "ack_ms": 46.999999962281436}
+{"time": "2026-09-19T22:22:28.482710+05:30", "command": "right", "response": [], "ack_ms": 343.99999998277053}
+{"time": "2026-09-19T22:22:29.159385+05:30", "command": "close", "response": [], "ack_ms": 77.9999999795109}
+{"time": "2026-09-19T22:22:30.108787+05:30", "command": "top", "response": ["I (118579) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying"], "ack_ms": 343.99999998277053}
+{"time": "2026-09-19T22:22:30.757045+05:30", "command": "close", "response": [], "ack_ms": 47.0000000204891}
+{"time": "2026-09-19T22:22:31.703997+05:30", "command": "bottom", "response": [], "ack_ms": 342.99999999348074}
+{"time": "2026-09-19T22:22:32.368456+05:30", "command": "close", "response": [], "ack_ms": 78.00000003771856}
+{"time": "2026-09-19T22:22:32.972744+05:30", "command": "home", "response": [], "ack_ms": 0.0}
+{"time": "2026-09-19T22:22:33.952041+05:30", "command": "swipe 310 275 130 275", "response": ["I (121718) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying"], "ack_ms": 375.0}
+{"time": "2026-09-19T22:22:34.567304+05:30", "command": "home", "response": [], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:35.176412+05:30", "command": "imu", "response": ["IMU valid=1 accel=-0.0610,0.0024,-0.9917 gyro=3.27,2.64,-0.19"], "ack_ms": 0.0}
+{"time": "2026-09-19T22:22:35.343203+05:30", "command": "bleinfo", "response": ["BLEINFO: conns=0 enc_status=-2 bonded=0 last_disc=0xff"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:35.512117+05:30", "command": "sd", "response": ["SD mounted=0 total=0 free=0 Absent or not FAT32; no format"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:35.679056+05:30", "command": "bri", "response": ["BRIGHTNESS level=75 percent=29 panel_command=75"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:35.846278+05:30", "command": "screen", "response": ["SCREEN state=awake aod=0 glance=0"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:36.020055+05:30", "command": "perf display info", "response": ["PERF_INFO,{\"fw\":\"display-optimized-20260919-5-g7\",\"idf\":\"897cf407\",\"cpu_mhz\":240,\"clock_requested_hz\":40000000,\"clock_actual_hz\":40000000,\"clock_basis\":\"80MHz divided by two; not scope measured\",\"panel_identity\":\"unconfirmed\",\"legacy_id\":255,\"legacy_gap\":6,\"te_routed\":false,\"panel_init\":\"CO5300\",\"panel_selection\":\"board_profile\",\"panel_gap_x\":6,\"width\":466,\"height\":466,\"stripe_rows\":16,\"dma_buffer_bytes\":14912,\"internal_free\":57243,\"internal_largest\":30720,\"dma_largest\":30720,\"psram_free\":476372,\"main_stack_free_bytes\":3140,\"flush_stack_free_bytes\":1780,\"render_core\":0,\"flush_core\":1,\"queue_capacity\":2,\"lvgl\":false,\"tearing_observed\":null,\"current_ma\":null}"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:36.184402+05:30", "command": "face 2", "response": ["face=2"], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:36.338694+05:30", "command": "home", "response": [], "ack_ms": 16.00000000325963}
+{"time": "2026-09-19T22:22:36.512966+05:30", "command": "awake 0", "response": ["I (124856) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy", "WIFI: disconnected reason=201, retrying", "awake=0"], "ack_ms": 31.000000017229468}

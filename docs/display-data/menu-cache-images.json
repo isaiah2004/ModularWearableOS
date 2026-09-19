@@ -1,0 +1,18 @@
+{
+  "menu-cache-only-image": {
+    "app_applist.c": "c295cd6a639312049ab79d61e4c0c27a75eb5343f6e8dc050f878cf87e8b3185",
+    "app_launcher.c": "fc5aab5ea563e331fa60fe37963fc366f8e6896409ca21f44922750091c184ec",
+    "sdkconfig": "584899a637a2c791d9597ff87ba3a1ff47e73e2ee5d18d2f7bbe443b0d28ca66",
+    "watchfw.bin": "c6dda1dd1764eaa4d863194d46e257caa8e4c64b282fccb4245f85d7e2a0727e",
+    "watchfw.elf": "b88747a564e802dc8b792db31a23b4cac15181e040e9a458d2727c423a56d2fe",
+    "wos.c": "43d9284b904fff176b580bd6f843fc8f4183913bd1f1b0ab576917d95fa0fd7c"
+  },
+  "menu-final-image": {
+    "app_applist.c": "c295cd6a639312049ab79d61e4c0c27a75eb5343f6e8dc050f878cf87e8b3185",
+    "app_launcher.c": "05d735cc65051d00278b016401e67e2edeefe037d59aa1799ba1f233cf7bebd2",
+    "sdkconfig": "584899a637a2c791d9597ff87ba3a1ff47e73e2ee5d18d2f7bbe443b0d28ca66",
+    "watchfw.bin": "0212b9869f2bd52351b78d425b806d18e52a11d26e0b43ad9df811a6e225b677",
+    "watchfw.elf": "20354ce691f8aa03e5accc8d228e37fd87a4b660b12a92e5111e59e0d81fb949",
+    "wos.c": "43d9284b904fff176b580bd6f843fc8f4183913bd1f1b0ab576917d95fa0fd7c"
+  }
+}

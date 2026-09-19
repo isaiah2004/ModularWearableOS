@@ -78,3 +78,4 @@ if ($LASTEXITCODE -ne 0) { throw 'Ultra test compilation failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Ultra render test failed' }
 & python -m unittest "$projectRoot\tests\test_display_perf.py" "$projectRoot\tests\test_display_perf_report.py" "$projectRoot\tests\test_display_soak_report.py"
 if ($LASTEXITCODE -ne 0) { throw 'Display performance Python tests failed' }
+& (Join-Path $PSScriptRoot 'test_launcher.ps1')
