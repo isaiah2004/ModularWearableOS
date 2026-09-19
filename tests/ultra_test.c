@@ -17,6 +17,8 @@ static int external;
 void hal_power_get(hal_power *out) {battery_reads++;*out=(hal_power){3900,battery,!external,external,1,0};}
 void hal_activity_get(hal_activity *out) {step_reads++;*out=(hal_activity){(uint32_t)steps,0,0,1};}
 void hal_weather_get(hal_weather *out) {*out=weather;}
+int hal_location(char *city, int n, float *lat, float *lon)
+{ (void)city; (void)n; (void)lat; (void)lon; return 0; }
 int hal_battery_percent(void) { battery_reads++; return battery; }
 int hal_step_count(void) { step_reads++; return steps; }
 void *hal_big_alloc(uint32_t size) { return malloc(size); }
@@ -50,7 +52,7 @@ static void transparent_hands(void)
         now.second = 23; now.millis = 0;
         wos_frame_id++;
         face_ultra_draw(&fb, &now);
-        layer_blit(&base, 10);
+        layer_blit(&base, LAYER_TAG_ULTRA);
         float angles[2] = {
             (now.hour % 12 + now.minute / 60.0f) * (6.2831853f / 12),
             (now.minute + now.second / 60.0f) * (6.2831853f / 60)
@@ -78,11 +80,16 @@ static void transparent_hands(void)
 
 int main(void)
 {
+    /* Reproduce the gallery order that exposed the original tag collision:
+     * another face has already populated tag 10 before Ultra is first shown. */
+    face_nothing_draw(&fb, &now);
+    battery_reads = step_reads = 0;
+    int expected_renders = layer_dbg + 1;
     face_ultra_draw(&fb, &now);
-    assert(layer_dbg == 1 && battery_reads == 1 && step_reads == 1);
+    assert(layer_dbg == expected_renders && battery_reads == 1 && step_reads == 1);
     memcpy(previous, pixels, sizeof pixels);
     face_ultra_draw(&fb, &now);
-    assert(layer_dbg == 1 && battery_reads == 1 && step_reads == 1);
+    assert(layer_dbg == expected_renders && battery_reads == 1 && step_reads == 1);
     assert(memcmp(previous, pixels, sizeof pixels) == 0);
     /* A one-step change within the former 50-step bucket must appear. */
     steps++;
@@ -131,12 +138,29 @@ int main(void)
     face_ultra_draw(&fb, &now);
     assert(layer_dbg == count + 1);
     assert(memcmp(pixels, previous, sizeof pixels) == 0);
+
+    /* A face tour can recycle every cache slot. Ultra must then rebuild its
+     * own complete dial even if the former conflicting tag is populated. */
+    count = layer_dbg;
+    for (int tag = 20; tag < 24; tag++) {
+        gfx_fb *tour = layer_need_render(tag);
+        assert(tour);
+        gfx_clear(tour, (uint16_t)tag);
+    }
+    face_nothing_draw(&fb, &now);
+    battery_reads = step_reads = 0;
+    wos_frame_id++;
+    face_ultra_draw(&fb, &now);
+    assert(layer_dbg == count + 6);
+    assert(memcmp(pixels, previous, sizeof pixels) == 0);
+    count = layer_dbg;
+
     /* Framed hands must stay within the damage command budget used on device. */
     gfx_rec face_rec = {0};
     gfx_fb face_recorded = { .rec = &face_rec, .h = GFX_H };
     face_ultra_draw(&face_recorded, &now);
     assert(face_rec.n > 0 && face_rec.n < 64 && !face_rec.overflow);
-    assert(layer_dbg == count + 1);
+    assert(layer_dbg == count);
 
     transparent_hands();
 

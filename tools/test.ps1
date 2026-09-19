@@ -68,7 +68,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Lid raster test failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Arc sweep test compilation failed' }
 & "$outDir\arc_sweep_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Arc sweep test failed' }
-$ultraSources = @('tests/ultra_test.c','core/apps/face_ultra.c','core/pathtext.c',
+$ultraSources = @('tests/ultra_test.c','core/apps/face_ultra.c','core/apps/face_nothing.c','core/pathtext.c',
                   'core/gfx.c','core/layer.c','core/icons.c','core/font.c') |
     ForEach-Object { Join-Path $projectRoot $_ }
 $ultraSources += @(Get-ChildItem "$projectRoot/core/fonts/*.c" | ForEach-Object FullName)

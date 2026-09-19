@@ -26,6 +26,10 @@
  * RAM cost = LAYER_MAX * GFX_W * GFX_H * 2 bytes = 4 * ~424 KB ~= 1.7 MB PSRAM. */
 #define LAYER_MAX 4
 
+/* Process-wide tags used by faces implemented outside app_watchface.c. Keep
+ * these here so tests and faces cannot silently disagree about cache identity. */
+enum { LAYER_TAG_ULTRA = 13 };
+
 /* If layer `tag` is not cached yet (first sight, or after layer_invalidate),
  * claim a slot and return a zeroed-translate gfx_fb* to draw the static
  * background into ONCE; the caller must then draw the background and it stays

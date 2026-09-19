@@ -2,16 +2,19 @@
  * Reference objects are built by tools/test_launcher.ps1 from git 7b5c1b3. */
 #include "wos.h"
 #include "icons.h"
+#include "pathtext.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 extern const wos_app app_launcher_ref, app_launcher;
 extern const wos_app app_applist_ref, app_applist;
+extern int launcher_label_dbg_renders;
 
 uint32_t wos_frame_id = 1;
 static uint32_t now_ms;
 uint32_t hal_millis(void) { return now_ms; }
+void *hal_big_alloc(uint32_t bytes) { return malloc(bytes); }
 
 typedef struct { int x0,y0,x1,y1; } rect_t;
 static rect_t dirty[2][128];
@@ -43,7 +46,13 @@ static void fail(const char *which,const char *phase,const char *what,int detail
 }
 static void compare_dirty(const char *which,const char *phase) {
     if (ndirty[0]!=ndirty[1]) fail(which,phase,"dirty count",ndirty[1]);
-    for(int i=0;i<ndirty[0];i++) if(memcmp(&dirty[0][i],&dirty[1][i],sizeof(rect_t))) fail(which,phase,"dirty rect",i);
+    for(int i=0;i<ndirty[0];i++) if(memcmp(&dirty[0][i],&dirty[1][i],sizeof(rect_t))) {
+        /* A sole top-left launcher rect is the deliberately changed arc-label
+         * damage. Geometry damage everywhere else remains baseline exact. */
+        rect_t c=dirty[1][i];
+        if(!strcmp(which,"launcher") && ndirty[0]==1 && c.x0>=0 && c.y0>=0 && c.x1<=210 && c.y1<=190) continue;
+        fail(which,phase,"dirty rect",i);
+    }
 }
 static void raster_one(const wos_app *app,uint16_t *px,int ox,int oy,int ybase,int h,int cx0,int cx1) {
     size_t n=(size_t)GFX_W*h; for(size_t i=0;i<n;i++) px[i]=(uint16_t)(0x39E7u+(i*17u)%997u);
@@ -52,7 +61,13 @@ static void raster_one(const wos_app *app,uint16_t *px,int ox,int oy,int ybase,i
 static void check_pixels(const char *which,const char *phase,const wos_app *ref,const wos_app *cur,
                          int ox,int oy,int ybase,int h,int cx0,int cx1) {
     raster_one(ref,a,ox,oy,ybase,h,cx0,cx1); raster_one(cur,b,ox,oy,ybase,h,cx0,cx1);
-    size_t n=(size_t)GFX_W*h; for(size_t i=0;i<n;i++) if(a[i]!=b[i]) fail(which,phase,"pixel",(int)i);
+    size_t n=(size_t)GFX_W*h; for(size_t i=0;i<n;i++) if(a[i]!=b[i]) {
+        int x=(int)(i%GFX_W), y=(int)(i/GFX_W)+ybase-oy;
+        /* Launcher intentionally replaced the old bitmap arc label with the
+         * Ultra face's vector renderer. Keep comparing every other pixel. */
+        if(!strcmp(which,"launcher") && x-ox<210 && y<190) continue;
+        fail(which,phase,"pixel",(int)i);
+    }
     checks++;
 }
 static void frame(const char *which,const char *phase,const wos_app *ref,const wos_app *cur,uint32_t ms) {
@@ -97,7 +112,13 @@ static void launcher_case(void) {
     const wos_app *r=&app_launcher_ref,*c=&app_launcher;
     start_pair(r,c,1000);
     const uint32_t enter[]={1000,1060,1199,1320,1580,1800};
-    for(unsigned i=0;i<sizeof enter/sizeof enter[0];i++) frame("launcher","entrance",r,c,enter[i]);
+    for(unsigned i=0;i<sizeof enter/sizeof enter[0];i++) {
+        int renders=launcher_label_dbg_renders;
+        frame("launcher","entrance",r,c,enter[i]);
+        int expected=i==0 ? 1 : 0;
+        if(launcher_label_dbg_renders-renders!=expected)
+            fail("launcher","label cache","unexpected vector renders",launcher_label_dbg_renders-renders);
+    }
     /* Gesture mapping intentionally differs from the reference; animated rendering below
      * reaches states shared by both versions without using drag input. */
     /* Drive each input model clockwise, then let both snap to the exact same non-zero
@@ -116,6 +137,62 @@ static void launcher_case(void) {
         for(unsigned j=0;j<sizeof dt/sizeof dt[0];j++) frame("launcher","drill",r,c,base+710+dt[j]);
         event_pair(r,c,WOS_EV_TAP,(int)GFX_CX,(int)GFX_CY); frame("launcher","back",r,c,base+1900);
     }
+}
+
+static void launcher_label_bounds_case(void) {
+    static const char *groups[]={"Time","Health","Media","Connect","Tools"};
+    static const char *actual_variants[]={"watchface","stopwatch","Wi-Fi","Calc","Torch","Diagnostics","Pet care"};
+    int maxw=0,maxh=0;
+    for(unsigned pass=0;pass<3;pass++) {
+        unsigned n=pass==0 ? (unsigned)(sizeof groups/sizeof groups[0]) :
+                   pass==1 ? 24u : (unsigned)(sizeof actual_variants/sizeof actual_variants[0]);
+        for(unsigned i=0;i<n;i++) {
+            const char *s=pass==0 ? groups[i] : pass==1 ? names[i] : actual_variants[i]; int x0,y0,x1,y1;
+            if(!pathtext_arc_bounds(PATHTEXT_CONDENSED,s,GFX_CX-GFX_S(13),-0.92f,
+                                    GFX_S(7),&x0,&y0,&x1,&y1))
+                fail("launcher","label bounds","missing bounds",(int)i);
+            int w=x1-x0,h=y1-y0; if(w>maxw)maxw=w;if(h>maxh)maxh=h;
+            if(w>(int)GFX_S(125)||h>(int)GFX_S(46))
+                fail("launcher","label bounds","cache capacity",w>h?w:h);
+        }
+    }
+    printf("launcher label cache: largest registered label %dx%d within %dx%d capacity\n",
+           maxw,maxh,(int)GFX_S(125),(int)GFX_S(46));
+}
+
+static void launcher_label_cache_case(void) {
+    const int cx=(int)GFX_CX,cy=(int)GFX_CY;
+    /* A cached full render and the real translated stripe pipeline must agree,
+     * including every antialiased label pixel. */
+    now_ms=40000; app_launcher.on_start(); now_ms=40700; wos_frame_id++;
+    memset(a,0x29,(size_t)GFX_W*GFX_H*sizeof *a);
+    memset(b,0x29,(size_t)GFX_W*GFX_H*sizeof *b);
+    int renders=launcher_label_dbg_renders;
+    gfx_fb full={a,-19,-11,0,GFX_H,0,GFX_W,0}; app_launcher.on_draw(&full);
+    for(int y=0;y<GFX_H;y+=37) {
+        int h=GFX_H-y<37?GFX_H-y:37;
+        gfx_fb stripe={b+(size_t)y*GFX_W,-19,-11,y,h,0,GFX_W,0};
+        app_launcher.on_draw(&stripe);
+    }
+    if(memcmp(a,b,(size_t)GFX_W*GFX_H*sizeof *a)) fail("launcher","label stripes","full/stripe mismatch",0);
+    if(launcher_label_dbg_renders-renders!=1) fail("launcher","label stripes","cache miss count",launcher_label_dbg_renders-renders);
+
+    /* Put the longer Connect label in the cache, then focus Time. The one
+     * label-only dirty rect must cover both bounds so Connect's ends clear. */
+    now_ms=41000; app_launcher.on_start(); current_shot(a,41700);
+    event_one(&app_launcher,WOS_EV_TOUCH_DOWN,cx,cy-150);
+    now_ms=41716; event_one(&app_launcher,WOS_EV_TOUCH_MOVE,cx+90,cy+120);
+    current_shot(a,41716); /* cache focused Connect */
+    event_one(&app_launcher,WOS_EV_TOUCH_DOWN,cx+90,cy+120);
+    now_ms=41732; event_one(&app_launcher,WOS_EV_TOUCH_MOVE,cx,cy-150);
+    gfx_rec rec={0}; gfx_fb record={0,0,0,0,GFX_H,0,GFX_W,&rec};
+    ndirty[1]=0;dirty_side=1;wos_frame_id++;app_launcher.on_draw(&record);
+    if(ndirty[1]!=1) fail("launcher","long-short cleanup","dirty count",ndirty[1]);
+    int ax0,ay0,ax1,ay1,bx0,by0,bx1,by1; rect_t d=dirty[1][0];
+    pathtext_arc_bounds(PATHTEXT_CONDENSED,"Connect",GFX_CX-GFX_S(13),-0.92f,GFX_S(7),&ax0,&ay0,&ax1,&ay1);
+    pathtext_arc_bounds(PATHTEXT_CONDENSED,"Time",GFX_CX-GFX_S(13),-0.92f,GFX_S(7),&bx0,&by0,&bx1,&by1);
+    if(d.x0>ax0||d.y0>ay0||d.x1<ax1||d.y1<ay1||d.x0>bx0||d.y0>by0||d.x1<bx1||d.y1<by1)
+        fail("launcher","long-short cleanup","outgoing/incoming not covered",0);
 }
 
 static void angular_input_case(void) {
@@ -181,7 +258,7 @@ static void applist_case(void) {
 int main(void) {
     a=(uint16_t*)malloc((size_t)GFX_W*GFX_H*sizeof *a); b=(uint16_t*)malloc((size_t)GFX_W*GFX_H*sizeof *b);
     if(!a||!b) return 2;
-    launcher_case(); applist_case(); angular_input_case();
+    launcher_label_bounds_case(); launcher_label_cache_case(); launcher_case(); applist_case(); angular_input_case();
     printf("launcher renders: %u baseline/current pixel+dirty comparisons passed; angular drag/wrap/deadzone/release/tap passed (reference 7b5c1b3)\n",checks);
     free(a);free(b); return 0;
 }

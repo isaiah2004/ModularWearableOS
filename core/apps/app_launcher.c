@@ -12,9 +12,11 @@
  * the fat auto-damage boxes. A settled view declares nothing -> 0 dirty -> free/60fps. */
 #include "apps.h"
 #include "../icons.h"
-#include "../font.h"
 #include "../anim.h"
+#include "../pathtext.h"
+#include "../hal.h"
 #include <math.h>
+#include <string.h>
 
 #define PI 3.14159265f
 
@@ -71,19 +73,18 @@ static int      iflush_foc = -1, iflush_af = -1;   /* focus at last icon flush -
 static int      prev_foc = -1, prev_af = -1, prev_mode = -1;
 static int      s_af = -1;      /* focused app this frame (set in draw, used by dirty) */
 
-#define MAX_LABEL_GLYPHS 64
-typedef struct {
-    const font_glyph *g;
-    const uint8_t *bm;
-    float ccx, ccy, ca, sa, hw, hh, ext;
-} label_glyph;
+#define LABEL_SIZE GFX_S(7.0f)
+#define LABEL_MAX_W  GFX_S(125)
+#define LABEL_MAX_H  GFX_S(46)
 typedef struct {
     const char *text;
-    float radius, angle;
-    int n, bx0, by0, bx1, by1;
-    label_glyph glyph[MAX_LABEL_GLYPHS];
-} label_plan;
-static label_plan s_label;
+    uint16_t col;
+    int x0, y0, w, h;
+    uint8_t *alpha;       /* compact retained label, allocated in PSRAM */
+    uint16_t *stage;      /* short GFX_W-stride target required by gfx_fb */
+} label_cache;
+static label_cache s_label;
+int launcher_label_dbg_renders;
 
 typedef struct { float x, y, r, a; } disc_geom;
 typedef struct {
@@ -114,84 +115,66 @@ static float ease_back(float t)
     return 1.0f + c3 * x * x * x + c1 * x * x;
 }
 
-/* ---- circular (rotated-glyph) text ---- */
-static const font_glyph *find_glyph(const font_t *f, int code)
+/* Ultra's supersampled vector arc renderer is expensive, so rasterize only
+ * when focus changes. The retained alpha patch is compact; stage is merely a
+ * bounded-height GFX_W-stride framebuffer used while pathtext is composing. */
+static void prepare_label(const char *s, float R, float a_mid, uint16_t col)
 {
-    for (int i = 0; i < f->nglyphs; i++)
-        if (f->glyphs[i].code == code) return &f->glyphs[i];
-    return 0;
-}
-static void blit_glyph_rot(gfx_fb *fb, const label_glyph *p, uint16_t col)
-{
-    const font_glyph *g = p->g;
-    int x0 = (int)(p->ccx - p->ext), x1 = (int)(p->ccx + p->ext);
-    int y0 = (int)(p->ccy - p->ext), y1 = (int)(p->ccy + p->ext);
-    int c0 = fb->cx0, c1 = fb->cx1;
-    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
-    if (c0 < 0) c0 = 0;
-    if (c1 > GFX_W) c1 = GFX_W;
-    if (x0 < c0 - fb->ox) x0 = c0 - fb->ox;
-    if (x1 >= c1 - fb->ox) x1 = c1 - fb->ox - 1;
-    if (x0 < -fb->ox) x0 = -fb->ox;
-    if (x1 >= GFX_W - fb->ox) x1 = GFX_W - fb->ox - 1;
-    if (y0 < fb->y_base - fb->oy) y0 = fb->y_base - fb->oy;
-    if (y1 >= fb->y_base + fb->h - fb->oy) y1 = fb->y_base + fb->h - fb->oy - 1;
-    if (x1 < x0 || y1 < y0) return;
-    for (int oy = y0; oy <= y1; oy++)
-        for (int ox = x0; ox <= x1; ox++) {
-            float rx = (ox + 0.5f) - p->ccx, ry = (oy + 0.5f) - p->ccy;
-            float sx = p->ca * rx + p->sa * ry, sy = -p->sa * rx + p->ca * ry;
-            int bx = (int)(sx + p->hw), by = (int)(sy + p->hh);
-            if ((unsigned)bx >= (unsigned)g->w || (unsigned)by >= (unsigned)g->h) continue;
-            uint8_t a = p->bm[by * g->w + bx];
-            if (a) gfx_px_blend(fb, ox, oy, col, a);
-        }
-}
-static void prepare_label(const char *s, float R, float a_mid)
-{
-    if (s_label.text == s && s_label.radius == R && s_label.angle == a_mid) return;
-    const font_t *f = &font_small;
-    float total = 0.0f;
-    int len = 0;
-    while (s[len] && len < MAX_LABEL_GLYPHS) {
-        const font_glyph *g = find_glyph(f, (unsigned char)s[len++]);
-        total += g ? g->xadv : GFX_S(6);
+    if (s_label.text == s && s_label.col == col) return;
+    int x0, y0, x1, y1;
+    if (!pathtext_arc_bounds(PATHTEXT_CONDENSED, s, R, a_mid, LABEL_SIZE,
+                             &x0, &y0, &x1, &y1)) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > GFX_W) x1 = GFX_W;
+    if (y1 > GFX_H) y1 = GFX_H;
+    int w = x1 - x0, h = y1 - y0;
+    if (w > (int)LABEL_MAX_W || h > (int)LABEL_MAX_H) return;
+    if (!s_label.alpha) s_label.alpha = hal_big_alloc((uint32_t)LABEL_MAX_W * (uint32_t)LABEL_MAX_H);
+    if (!s_label.stage) s_label.stage = hal_big_alloc((uint32_t)GFX_W * (uint32_t)LABEL_MAX_H * 2u);
+    if (!s_label.alpha || !s_label.stage) return;
+    memset(s_label.stage, 0, (size_t)GFX_W * h * 2u);
+    gfx_fb stage = { s_label.stage, 0, 0, y0, h, x0, x1, 0 };
+    launcher_label_dbg_renders++;
+    pathtext_arc(&stage, PATHTEXT_CONDENSED, s, R, a_mid, LABEL_SIZE, GFX_WHITE);
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        uint16_t p = s_label.stage[y * GFX_W + x0 + x];
+        s_label.alpha[y * (int)LABEL_MAX_W + x] = (uint8_t)(((p >> 5) & 63) * 255 / 63);
     }
-    float aw = total / R, a = a_mid - aw * 0.5f;
-    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
-    s_label.text = s; s_label.radius = R; s_label.angle = a_mid; s_label.n = 0;
-    for (int i = 0; i < len; i++) {
-        const font_glyph *g = find_glyph(f, (unsigned char)s[i]);
-        float adv = (g ? g->xadv : GFX_S(6)) / R, phi = a + adv * 0.5f;
-        float x = GFX_CX + R * gfx_fast_sin(phi), y = GFX_CY - R * gfx_fast_cos(phi);
-        if (x < minx) minx = x;
-        if (x > maxx) maxx = x;
-        if (y < miny) miny = y;
-        if (y > maxy) maxy = y;
-        if (g && g->w && g->h) {
-            label_glyph *p = &s_label.glyph[s_label.n++];
-            p->g = g; p->bm = f->bitmap + g->bitmap_off; p->ccx = x; p->ccy = y;
-            p->hw = g->w * 0.5f; p->hh = g->h * 0.5f;
-            p->ca = gfx_fast_cos(phi); p->sa = gfx_fast_sin(phi);
-            p->ext = gfx_fast_sqrt(p->hw * p->hw + p->hh * p->hh) + 1.5f;
-        }
-        a += adv;
-    }
-    int pad = (int)f->line_height;
-    s_label.bx0 = (int)minx - pad; s_label.by0 = (int)miny - pad;
-    s_label.bx1 = (int)maxx + pad; s_label.by1 = (int)maxy + pad;
+    s_label.text = s; s_label.col = col; s_label.x0 = x0; s_label.y0 = y0;
+    s_label.w = w; s_label.h = h;
 }
 /* text bounding box (used both to draw and to declare its dirty rect) */
-static void circ_text_bbox(const char *s, float R, float a_mid, int *bx0, int *by0, int *bx1, int *by1)
+static void circ_text_bbox(const char *s, float R, float a_mid, uint16_t col, int *bx0, int *by0, int *bx1, int *by1)
 {
-    prepare_label(s, R, a_mid);
-    *bx0 = s_label.bx0; *by0 = s_label.by0; *bx1 = s_label.bx1; *by1 = s_label.by1;
+    (void)col;
+    if (!pathtext_arc_bounds(PATHTEXT_CONDENSED, s, R, a_mid, LABEL_SIZE,
+                             bx0, by0, bx1, by1))
+        *bx0 = *by0 = *bx1 = *by1 = 0;
 }
 static void circ_text(gfx_fb *fb, const char *s, float R, float a_mid, uint16_t col)
 {
     if (fb->rec) return;   /* explicit-dirty: its box is declared in the dirty pass */
-    prepare_label(s, R, a_mid);
-    for (int i = 0; i < s_label.n; i++) blit_glyph_rot(fb, &s_label.glyph[i], col);
+    prepare_label(s, R, a_mid, col);
+    if (s_label.text != s || s_label.col != col) {
+        /* Allocation/size failure is unusual, but must not make the focus
+         * label disappear. This slow path remains stripe-correct. */
+        pathtext_arc(fb, PATHTEXT_CONDENSED, s, R, a_mid, LABEL_SIZE, col);
+        return;
+    }
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    int x0 = c0 - fb->ox - s_label.x0, x1 = c1 - fb->ox - s_label.x0;
+    int y0 = fb->y_base - fb->oy - s_label.y0;
+    int y1 = fb->y_base + fb->h - fb->oy - s_label.y0;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > s_label.w) x1 = s_label.w;
+    if (y1 > s_label.h) y1 = s_label.h;
+    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+        uint8_t a = s_label.alpha[y * (int)LABEL_MAX_W + x];
+        if (a) gfx_px_blend(fb, s_label.x0 + x, s_label.y0 + y, col, a);
+    }
 }
 
 static void draw_disc(gfx_fb *fb, float cx, float cy, float r, uint16_t accent, int icon, float alpha)
@@ -320,7 +303,7 @@ static void on_start(void)
     dragging = drag_angle_valid = 0; t0 = hal_millis(); last_drag_ms = t0;
     iflush_e = iflush_rot = iflush_arot = 0.0f;
     iflush_foc = iflush_af = prev_foc = prev_af = prev_mode = -1;
-    s_frame.fid = 0xFFFFFFFFu; s_label.text = 0;
+    s_frame.fid = 0xFFFFFFFFu; s_label.text = 0; s_label.w = s_label.h = 0;
 }
 
 static void on_draw(gfx_fb *fb)
@@ -389,7 +372,16 @@ static void on_draw(gfx_fb *fb)
              * gets one more full box and is cleared (no orphan ring), even after a snap. */
             int moving = (rot != iflush_rot) || (foc != iflush_foc) || (e < NGROUP * ENTER_STAGGER + ENTER_DUR + 40.0f);
             if (focus_changed) {                 /* LABEL frame: only the text box */
-                circ_text_bbox(GROUPS[foc].name, TEXT_R, TEXT_MID, &tx0, &ty0, &tx1, &ty1);
+                int ox0 = s_label.x0, oy0 = s_label.y0;
+                int ox1 = ox0 + s_label.w, oy1 = oy0 + s_label.h;
+                uint16_t lc = dim565(GROUPS[foc].accent, 1.0f);
+                circ_text_bbox(GROUPS[foc].name, TEXT_R, TEXT_MID, lc, &tx0, &ty0, &tx1, &ty1);
+                if (s_label.w) {
+                    if (ox0 < tx0) tx0 = ox0;
+                    if (oy0 < ty0) ty0 = oy0;
+                    if (ox1 > tx1) tx1 = ox1;
+                    if (oy1 > ty1) ty1 = oy1;
+                }
                 wos_dirty(tx0, ty0, tx1, ty1);
             } else if (moving) {                 /* ICON frame: per-disc sweep, no text */
                 /* diagonal-clustered dots reach only ~0.8*dr on each axis -> tighter box */
@@ -410,7 +402,16 @@ static void on_draw(gfx_fb *fb)
             int focus_changed = (s_af != prev_af);
             int moving = (arot != iflush_arot) || (s_af != iflush_af) || (e < FADE_MS + MOVE_MS + g->n * APP_STAG + APP_ITEM + 40.0f);
             if (focus_changed && s_af >= 0) {    /* LABEL frame */
-                circ_text_bbox(wos_app_name(g->apps[s_af]), TEXT_R, TEXT_MID, &tx0, &ty0, &tx1, &ty1);
+                int ox0 = s_label.x0, oy0 = s_label.y0;
+                int ox1 = ox0 + s_label.w, oy1 = oy0 + s_label.h;
+                uint16_t lc = dim565(g->accent, 1.0f);
+                circ_text_bbox(wos_app_name(g->apps[s_af]), TEXT_R, TEXT_MID, lc, &tx0, &ty0, &tx1, &ty1);
+                if (s_label.w) {
+                    if (ox0 < tx0) tx0 = ox0;
+                    if (oy0 < ty0) ty0 = oy0;
+                    if (ox1 > tx1) tx1 = ox1;
+                    if (oy1 > ty1) ty1 = oy1;
+                }
                 wos_dirty(tx0, ty0, tx1, ty1);
             } else if (moving) {                 /* ICON frame */
                 /* group despawn / disc fly-in: ONLY during the transition (not while spinning

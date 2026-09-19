@@ -26,7 +26,10 @@
 #include <string.h>
 
 #define PI 3.14159265f
-#define LAY_ULTRA 10
+/* Layer tags are process-wide, including faces implemented in other files.
+ * Tag 10 belongs to the Nothing face; sharing it made a face tour occasionally
+ * reuse Nothing's sparse black dial as Ultra's background. */
+#define LAY_ULTRA LAYER_TAG_ULTRA
 
 /* palette */
 #define U_BG      GFX_RGB(24, 24, 24)     /* neutral charcoal after RGB565 quantization */

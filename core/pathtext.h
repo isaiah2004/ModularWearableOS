@@ -40,4 +40,10 @@ int  pathtext_draw(gfx_fb *fb, pathtext_font font, const char *s, int x, int y,
 /* Pixel width of a straight string at size_px. */
 float pathtext_width(pathtext_font font, const char *s, float size_px);
 
+/* Conservative screen-space bounds for pathtext_arc(). Returns 0 when the
+ * font/string/geometry cannot produce pixels. The returned x1/y1 are
+ * exclusive, matching dirty rectangles and gfx clip windows. */
+int pathtext_arc_bounds(pathtext_font font, const char *s, float R, float a_mid,
+                        float size_px, int *x0, int *y0, int *x1, int *y1);
+
 #endif

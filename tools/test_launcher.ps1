@@ -31,7 +31,8 @@ $exe = Join-Path $outDir 'launcher_render_test.exe'
 & $compiler -std=c99 -O2 -Wall -Wextra -Werror "-I$projectRoot\core" `
     (Join-Path $projectRoot 'tests\launcher_render_test.c') @objects `
     (Join-Path $projectRoot 'core\gfx.c') (Join-Path $projectRoot 'core\font.c') `
-    (Join-Path $projectRoot 'core\icons.c') @fontSources -lm -o $exe
+    (Join-Path $projectRoot 'core\icons.c') (Join-Path $projectRoot 'core\pathtext.c') `
+    @fontSources -lm -o $exe
 if ($LASTEXITCODE -ne 0) { throw 'Launcher render test compilation failed' }
 & $exe
 if ($LASTEXITCODE -ne 0) { throw 'Launcher render regression failed' }

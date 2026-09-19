@@ -1,0 +1,26 @@
+[
+  {
+    "Path": "A:\\makerspace\\smartwatch2.0\\firmware\\build\\watchfw.bin",
+    "Hash": "4AEE76E87D1EF7F08B1ED5FBEEC9C7B2812B192B09D34A34CFC109FF38100E01"
+  },
+  {
+    "Path": "A:\\makerspace\\smartwatch2.0\\core\\apps\\app_launcher.c",
+    "Hash": "7C2E5EC4E2014B87D69BF05EB4774BC70A81A1D7362A896D22B24498DB1F332A"
+  },
+  {
+    "Path": "A:\\makerspace\\smartwatch2.0\\core\\apps\\face_ultra.c",
+    "Hash": "C033BA20438762EB386ADDA6678C6F5A13961225EB89ABBA4E1421A1D1389C85"
+  },
+  {
+    "Path": "A:\\makerspace\\smartwatch2.0\\core\\layer.h",
+    "Hash": "B51D000F9D380342155327E9806B54B0762807A74291221B34CF1ACE5CEC32C2"
+  },
+  {
+    "Path": "A:\\makerspace\\smartwatch2.0\\core\\pathtext.c",
+    "Hash": "0D6258B230BEFE18020FB2BCE512A3FE50DBE72F3C1F5101BD53C3B23BF565C1"
+  },
+  {
+    "Path": "A:\\makerspace\\smartwatch2.0\\core\\pathtext.h",
+    "Hash": "CB9D898017ABE2574E1842CAA039FD92BD0C318124AF1CD342BDD1B3D66C7806"
+  }
+]

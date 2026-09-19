@@ -144,6 +144,43 @@ void pathtext_arc_inward(gfx_fb *fb, pathtext_font font, const char *s, float R,
     pt_arc(fb, font, s, R, a_mid, size_px, col, -1.0f);
 }
 
+int pathtext_arc_bounds(pathtext_font font, const char *s, float R, float a_mid,
+                        float size_px, int *x0, int *y0, int *x1, int *y1)
+{
+    if (!s || !*s || R <= 0 || size_px <= 0 || !x0 || !y0 || !x1 || !y1) return 0;
+    stbtt_fontinfo *info = pt_init(font);
+    if (!info) return 0;
+    float scale = size_px / s_cap_height[font], total = 0.0f;
+    for (const char *c = s; *c; c++) total += pt_advance(info, c, scale);
+    float a = a_mid - (total / R) * 0.5f, run = 0.0f;
+    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+    int any = 0;
+    for (const char *c = s; *c; c++) {
+        int adv, lsb, gx0, gy0, gx1, gy1;
+        stbtt_GetCodepointHMetrics(info, (unsigned char)*c, &adv, &lsb);
+        float half = adv * scale * 0.5f;
+        float phi = a + (run + half) / R, cs = cosf(phi), sn = sinf(phi);
+        float Ox = GFX_CX + R * sn - half * cs;
+        float Oy = GFX_CY - R * cs - half * sn;
+        stbtt_GetCodepointBitmapBox(info, (unsigned char)*c, scale, scale,
+                                    &gx0, &gy0, &gx1, &gy1);
+        for (int iy = 0; iy <= 1; iy++) for (int ix = 0; ix <= 1; ix++) {
+            float px = (float)(ix ? gx1 : gx0), py = (float)(iy ? gy1 : gy0);
+            float X = Ox + px * cs - py * sn, Y = Oy + px * sn + py * cs;
+            if (X < minx) minx = X;
+            if (X > maxx) maxx = X;
+            if (Y < miny) miny = Y;
+            if (Y > maxy) maxy = Y;
+            any = 1;
+        }
+        run += pt_advance(info, c, scale);
+    }
+    if (!any) return 0;
+    *x0 = (int)floorf(minx) - 2; *y0 = (int)floorf(miny) - 2;
+    *x1 = (int)ceilf(maxx) + 3;  *y1 = (int)ceilf(maxy) + 3;
+    return 1;
+}
+
 float pathtext_width(pathtext_font font, const char *s, float size_px)
 {
     stbtt_fontinfo *info = pt_init(font);
