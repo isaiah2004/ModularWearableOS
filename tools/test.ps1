@@ -15,6 +15,13 @@ New-Item -ItemType Directory -Force $outDir | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed' }
 & "$outDir\board_protocol_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Board protocol test failed' }
+& $compiler -std=c99 -O2 -Wall -Wextra -Werror `
+    "-I$projectRoot\tests\stubs" "-I$projectRoot\firmware\main" `
+    "$projectRoot\tests\display_perf_test.c" "$projectRoot\firmware\main\display_perf.c" `
+    -o "$outDir\display_perf_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Display performance test compilation failed' }
+& "$outDir\display_perf_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Display performance test failed' }
 & $compiler -std=c99 -O2 -Wall -Wextra -Werror "-I$projectRoot\core" `
     "$projectRoot\tests\pip_test.c" "$projectRoot\core\pip.c" -lm -o "$outDir\pip_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Pip test compilation failed' }
@@ -64,3 +71,5 @@ $ultraSources += @(Get-ChildItem "$projectRoot/core/fonts/*.c" | ForEach-Object 
 if ($LASTEXITCODE -ne 0) { throw 'Ultra test compilation failed' }
 & "$outDir/ultra_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Ultra render test failed' }
+& python -m unittest "$projectRoot\tests\test_display_perf.py" "$projectRoot\tests\test_display_perf_report.py"
+if ($LASTEXITCODE -ne 0) { throw 'Display performance Python tests failed' }

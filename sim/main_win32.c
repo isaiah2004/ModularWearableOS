@@ -1162,7 +1162,14 @@ int main(int argc, char **argv)
         for (int i = 0; i < 40; i++) { Sleep(16); wos_run_frame(); }   /* settle open */
         /* fast upward fling */
         wos_pointer(240, 380, 1); wos_run_frame();
-        wos_pointer(240, 300, 1); Sleep(8); wos_run_frame();
+        wos_pointer(240, 300, 1); Sleep(8);
+        /* The list declares tight explicit damage while scrolling. A display
+         * invalidation must still win and repaint a complete trusted baseline. */
+        wos_invalidate();
+        wos_run_frame();
+        assert(wos_dbg_nr == 1 &&
+               wos_dbg_rect[0][0] == 0 && wos_dbg_rect[0][1] == 0 &&
+               wos_dbg_rect[0][2] == GFX_W && wos_dbg_rect[0][3] == GFX_H);
         wos_pointer(240, 200, 1); Sleep(8); wos_run_frame();
         wos_pointer(240, 120, 1); Sleep(8); wos_run_frame();
         wos_pointer(240, 120, 0);

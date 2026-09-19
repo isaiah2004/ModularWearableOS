@@ -36,6 +36,10 @@
 #include "board.h"
 #include "board_protocol.h"
 #include "cJSON.h"
+#include "esp_app_desc.h"
+#include "display_perf.h"
+#include "lcd_probe.h"
+#include "display_bench.h"
 
 #define TAG "main"
 
@@ -85,12 +89,20 @@ static const sh8601_lcd_init_cmd_t co5300_init[] = {
 static uint8_t s_panel_id;
 static volatile int s_panel_brightness=-1; /* Last successful DCS write; not optical readback. */
 static SemaphoreHandle_t s_sleep_ready;
-uint8_t board_lcd_probe(void);
+static void perf_command(const char *s);
+static void perf_benchmark_worker(void);
+static SemaphoreHandle_t s_bench_done;
+static int s_bench_w, s_bench_h, s_bench_frames, s_bench_source;
+static size_t s_bench_capacity = GFX_W*STRIPE_ROWS*2;
+static int s_trace_restore_awake, s_trace_restore_face, s_trace_running;
+static TaskHandle_t s_flush_handle;
+static display_bench_result s_bench_result;
 
 static bool on_stripe_done(esp_lcd_panel_io_handle_t io,
                            esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
     BaseType_t woken = pdFALSE;
+    display_perf_complete_isr(0, esp_timer_get_time());
     xSemaphoreGiveFromISR(s_dma_ready, &woken);
     return woken == pdTRUE;
 }
@@ -104,6 +116,7 @@ static void flush_task(void *arg)
     flush_job j;
     for (;;) {
         xQueueReceive(s_flush_q, &j, portMAX_DELAY);
+        if (j.atomic == 4) { perf_benchmark_worker(); continue; }
         if (j.atomic == 3) {
             ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, false));
             ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(s_io, (0x02ULL << 24) | (0x10 << 8), NULL, 0));
@@ -118,6 +131,7 @@ static void flush_task(void *arg)
             s_panel_brightness=level;
             continue;
         }
+        int64_t stage_start = esp_timer_get_time();
         if (j.atomic == 1) {                    /* accumulate into the back-buffer, no DMA */
             uint16_t *b = j.buf;           /* copy just this band's [x0,x0+w) columns,
                                             * byte-swapped, into the back-buffer */
@@ -129,6 +143,7 @@ static void flush_task(void *arg)
                     dst[i] = (uint16_t)((v << 8) | (v >> 8));
                 }
             }
+            display_perf_add_stage(DISPLAY_PERF_COPY, esp_timer_get_time()-stage_start);
             xSemaphoreGive(s_buf_free);    /* stripe buffer reusable immediately */
             continue;
         }
@@ -155,13 +170,19 @@ static void flush_task(void *arg)
                 }
             }
         }
+        display_perf_add_stage(DISPLAY_PERF_SWAP, esp_timer_get_time()-stage_start);
 submit:
         /* Mounted panel is 90 degrees clockwise from the UI. The official
          * driver cannot swap axes, so rotate the packed stripe CCW in software.
          * Keep the native controller gap; only logical pixels/rectangles rotate. */
+        stage_start = esp_timer_get_time();
         xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+        display_perf_add_stage(DISPLAY_PERF_DMA_WAIT, esp_timer_get_time()-stage_start);
+        stage_start = esp_timer_get_time();
         board_pixels_ccw(b, s_rotated, j.w, j.rows);
+        display_perf_add_stage(DISPLAY_PERF_ROTATE, esp_timer_get_time()-stage_start);
         xSemaphoreGive(s_buf_free); /* DMA reads s_rotated, never b from here on */
+        display_perf_submit((uint32_t)j.w*j.rows*2, esp_timer_get_time());
         ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel,
             j.y0, GFX_W - j.x0 - j.w, j.y0 + j.rows, GFX_W - j.x0, s_rotated));
     }
@@ -188,7 +209,7 @@ static void lcd_init(void)
     ESP_ERROR_CHECK(gpio_set_level(PIN_LCD_EN, 1));
     vTaskDelay(pdMS_TO_TICKS(20));
     s_panel_id = board_lcd_probe();
-    ESP_LOGI(TAG, "PANEL id=0x%02x controller=%s gap=%d", s_panel_id,
+    ESP_LOGI(TAG, "PANEL id=0x%02x legacy_init=%s identity=unconfirmed gap=%d", s_panel_id,
              s_panel_id == 0x86 ? "SH8601" : "CO5300", s_panel_id == 0x86 ? 0 : 6);
     const spi_bus_config_t bus = SH8601_PANEL_BUS_QSPI_CONFIG(
         PIN_LCD_PCLK, PIN_LCD_D0, PIN_LCD_D1, PIN_LCD_D2, PIN_LCD_D3,
@@ -319,11 +340,106 @@ static void inj_poll(void)
     wos_pointer(g_inj_x, g_inj_y, g_inj_down);
     if (elapsed >= s_inj_ms + 50) g_inj_active = 0;
 }
+/* All diagnostic display writes run on the existing sole LCD owner. */
+static void perf_benchmark_worker(void)
+{
+    s_bench_result=display_bench_run(s_io,s_panel,s_rotated,s_bench_capacity,
+        s_backbuf,s_bench_w,s_bench_h,s_panel_id==0x86 ? 0 : 6,
+        s_bench_frames,(display_bench_source)s_bench_source,s_dma_ready);
+    xSemaphoreGive(s_bench_done);
+}
+
+static void perf_info(void)
+{
+    const esp_app_desc_t *app=esp_app_get_description();
+    printf("PERF_INFO,{\"fw\":\"%s\",\"idf\":\"%s\",\"cpu_mhz\":%d,"
+        "\"clock_requested_hz\":%d,\"clock_actual_hz\":40000000,\"clock_basis\":\"80MHz divided by two; not scope measured\","
+        "\"panel_identity\":\"unconfirmed\",\"legacy_id\":%u,\"legacy_gap\":%d,\"te_routed\":false,"
+        "\"width\":466,\"height\":466,\"stripe_rows\":%d,\"dma_buffer_bytes\":%d,"
+        "\"internal_free\":%u,\"internal_largest\":%u,\"dma_largest\":%u,\"psram_free\":%u,"
+        "\"main_stack_free_bytes\":%u,\"flush_stack_free_bytes\":%u,\"render_core\":0,\"flush_core\":1,"
+        "\"queue_capacity\":2,\"lvgl\":false,\"tearing_observed\":null,\"current_ma\":null}\n",
+        app->version,app->idf_ver,CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,LCD_SPI_HZ,s_panel_id,s_panel_id==0x86?0:6,
+        STRIPE_ROWS,GFX_W*STRIPE_ROWS*2,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),(unsigned)uxTaskGetStackHighWaterMark(NULL),
+        (unsigned)uxTaskGetStackHighWaterMark(s_flush_handle));
+}
+
+static void perf_run(int w,int h,int frames,int source,size_t capacity)
+{
+    if(s_trace_running) { printf("ERR finish app trace before synthetic run\n"); return; }
+    if(w<2 || w>GFX_W || h<2 || h>GFX_H || (w&1) || (h&1) || frames<1 || frames>2000 ||
+        capacity<(size_t)w*4 || capacity>GFX_W*STRIPE_ROWS*2) { printf("ERR invalid even geometry/count/capacity\n"); return; }
+    /* Previous UI frame has drained. The worker will process earlier control jobs first. */
+    if(source==DISPLAY_BENCH_SOURCE_PSRAM) {
+        if(!s_backbuf) { printf("ERR no PSRAM buffer\n"); return; }
+        for(size_t i=0;i<(size_t)w*h;i++) s_backbuf[i]=(uint16_t)(0x1008u ^ (i&0x1fu));
+    }
+    display_perf_reset();
+    s_bench_w=w;s_bench_h=h;s_bench_frames=frames;s_bench_source=source;s_bench_capacity=capacity;
+    flush_job job={.atomic=4};
+    xQueueSend(s_flush_q,&job,portMAX_DELAY);
+    xSemaphoreTake(s_bench_done,portMAX_DELAY);
+    /* A timed-out transfer retains DMA ownership; do not resume drawing into it. */
+    if(s_bench_result.err==ESP_ERR_TIMEOUT) ESP_ERROR_CHECK(s_bench_result.err);
+    display_perf_snapshot snapshot; display_perf_snapshot_get(&snapshot);
+    snapshot.elapsed_us=s_bench_result.elapsed_us;
+    snprintf(snapshot.trace_name,sizeof snapshot.trace_name,"%s",source==0?"sram":source==1?"generator":"psram");
+    printf("PERF_CONFIG,{\"width\":%d,\"height\":%d,\"frames_requested\":%d,\"buffer_bytes\":%u,"
+        "\"source\":\"%s\",\"errors\":%d,\"error_name\":\"%s\",\"completed_frames\":%lu,"
+        "\"requested_hz\":%d,\"apps_suspended\":true,\"radios_running\":true}\n",
+        w,h,frames,(unsigned)capacity,snapshot.trace_name,s_bench_result.err!=ESP_OK,
+        esp_err_to_name(s_bench_result.err),(unsigned long)s_bench_result.frames_completed,LCD_SPI_HZ);
+    display_perf_print("PERF_RUN",&snapshot);
+    wos_invalidate();
+}
+
+static void perf_command(const char *s)
+{
+    while(*s==' ')s++;
+    int w,h,n,used=0; char source[16]="generator",name[24];
+    if(!strcmp(s,"info")) perf_info();
+    else if(!strcmp(s,"probe")) board_lcd_probe_print();
+    else if(!strcmp(s,"status")) {
+        display_perf_snapshot snapshot; display_perf_snapshot_get(&snapshot); display_perf_print("PERF_STATUS",&snapshot);
+    } else if(!strcmp(s,"export")) {
+        display_perf_trace trace;
+        for(size_t i=display_perf_trace_count();i>0;i--) if(display_perf_trace_get(i-1,&trace)) display_perf_print("PERF_APP",&trace.perf);
+    } else if(sscanf(s,"app %23s %d %n",name,&n,&used)==2 && used>0 && !s[used]) {
+        if(n<1 || n>1800 || s_trace_running) { printf("ERR app seconds 1..1800; one active trace\n"); return; }
+        int app=-1; s_trace_restore_face=g_saved_face;
+        if(!strcmp(name,"current")) app=wos_current_app();
+        else if(!strcmp(name,"face0")) { g_saved_face=0; app=0; }
+        else if(!strcmp(name,"pip")) { g_saved_face=1; app=0; }
+        else if(!strcmp(name,"level")) app=17;
+        else if(!strcmp(name,"breathe")) app=8;
+        else if(!strcmp(name,"stopwatch")) app=1;
+        else { printf("ERR app current|face0|pip|level|breathe|stopwatch\n"); return; }
+        wos_open_app(app); s_trace_restore_awake=g_no_sleep;g_no_sleep=1;s_trace_running=1;
+        display_perf_trace_start(name,n,esp_timer_get_time());
+        printf("PERF_STARTED,{\"name\":\"%s\",\"seconds\":%d}\n",name,n);
+    } else if(!strcmp(s,"sweep")) {
+        printf("PERF_SWEEP,{\"clock_hz\":%d,\"clock_sweep\":\"unavailable; panel unknown\",\"max_buffer_bytes\":%d}\n",LCD_SPI_HZ,GFX_W*STRIPE_ROWS*2);
+        for(int source_id=0;source_id<3;source_id++)
+            for(int rows=4;rows<=STRIPE_ROWS;rows*=2) perf_run(466,466,500,source_id,466*rows*2);
+    } else if(sscanf(s,"fill %d %15s %n",&n,source,&used)==2 && used>0 && !s[used]) {
+        int src=!strcmp(source,"sram")?0:!strcmp(source,"generator")?1:!strcmp(source,"psram")?2:-1;
+        if(src<0)printf("ERR source sram|generator|psram\n"); else perf_run(466,466,n,src,GFX_W*STRIPE_ROWS*2);
+    } else if(sscanf(s,"rect %d %d %d %15s %n",&w,&h,&n,source,&used)==4 && used>0 && !s[used]) {
+        int src=!strcmp(source,"sram")?0:!strcmp(source,"generator")?1:!strcmp(source,"psram")?2:-1;
+        if(src<0)printf("ERR source sram|generator|psram\n"); else perf_run(w,h,n,src,GFX_W*STRIPE_ROWS*2);
+    } else if(sscanf(s,"rect %d %d %d %n",&w,&h,&n,&used)==3 && used>0 && !s[used]) perf_run(w,h,n,1,GFX_W*STRIPE_ROWS*2);
+    else printf("perf display info|probe|status|export|fill N sram|generator|psram|rect W H N [source]|app NAME SEC|sweep\n");
+}
+
 static void dbg_exec(char *s)
 {
     int a, b, c, d, e, f;
     char ws[40], wp[68];
-    if (sscanf(s, "tap %d %d", &a, &b) == 2) {
+    if (!strncmp(s, "perf display", 12) && (s[12]==0 || s[12]==' ')) perf_command(s+12);
+    else if (sscanf(s, "tap %d %d", &a, &b) == 2) {
         if (a < 0 || a >= GFX_W || b < 0 || b >= GFX_H) printf("ERR coordinates\n");
         else inj_tap(a, b);
     }
@@ -518,6 +634,7 @@ static void stripe_wait(void)
     int64_t t = esp_timer_get_time();
     xSemaphoreTake(s_buf_free, portMAX_DELAY);
     s_prof_wait_us += esp_timer_get_time() - t;
+    display_perf_add_stage(DISPLAY_PERF_QUEUE_WAIT, esp_timer_get_time()-t);
 }
 
 /* wos calls this after drawing a dirty rect's stripe: hand it to the flush core
@@ -527,6 +644,7 @@ static void stripe_flush(uint16_t *buf, int x0, int y0, int w, int rows)
 {
     flush_job j = { buf, x0, y0, w, rows, s_atomic };
     xQueueSend(s_flush_q, &j, portMAX_DELAY);
+    display_perf_queue_depth(uxQueueMessagesWaiting(s_flush_q));
 }
 
 /* Wait for all stripes at every frame boundary, including the final DMA. */
@@ -568,6 +686,7 @@ static void frame_end(int atomic)
 
 void app_main(void)
 {
+    display_perf_init();
     /* Reserve the display's internal DMA stripe buffers FIRST. The radios
      * (Wi-Fi + BT, brought up in hal_esp32_start_radios) consume most of the
      * internal RAM, so grabbing these before them guarantees the panel always
@@ -597,13 +716,15 @@ void app_main(void)
     s_dma_ready = xSemaphoreCreateBinary();
     s_flush_q = xQueueCreate(2, sizeof(flush_job));
     s_sleep_ready = xSemaphoreCreateBinary();
+    s_bench_done = xSemaphoreCreateBinary();
+    assert(s_bench_done);
     assert(s_buf_free && s_dma_ready && s_flush_q && s_sleep_ready);
     xSemaphoreGive(s_dma_ready);
     s_backbuf = heap_caps_malloc((size_t)GFX_W * GFX_H * 2, MALLOC_CAP_SPIRAM);
     if (!s_backbuf)
         ESP_LOGW(TAG, "no PSRAM back-buffer -> atomic present disabled");
     BaseType_t task_ok = xTaskCreatePinnedToCore(flush_task, "flush", 3072, NULL,
-                            configMAX_PRIORITIES - 2, NULL, 1);   /* core 1 */
+                            configMAX_PRIORITIES - 2, &s_flush_handle, 1);   /* core 1 */
     assert(task_ok == pdPASS);
     ESP_LOGI(TAG, "free internal DRAM: %u KB",
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
@@ -634,6 +755,7 @@ void app_main(void)
     assert(task_ok == pdPASS);
 
     ESP_LOGI(TAG, "watch os running (%dx%d)", GFX_W, GFX_H);
+    printf("READY,{\"fw\":\"%s\",\"commands\":\"perf display help\",\"panel\":\"unconfirmed\",\"clock_hz\":%d}\n",esp_app_get_description()->version,LCD_SPI_HZ);
     s_frame_tick=xSemaphoreCreateBinary();assert(s_frame_tick);
     const esp_timer_create_args_t pace_timer={.callback=frame_tick,.name="frame_pace"};
     ESP_ERROR_CHECK(esp_timer_create(&pace_timer,&s_frame_timer));
@@ -648,6 +770,11 @@ void app_main(void)
     uint32_t s_activity = (uint32_t)(esp_timer_get_time() / 1000);
     int scr = 0;   /* 0 = on, 1 = dim, 2 = off */
     for (;;) {
+        display_perf_trace finished;
+        if(display_perf_tick(esp_timer_get_time(), &finished)) {
+            display_perf_print("PERF_APP", &finished.perf);
+            if(s_trace_running){g_no_sleep=s_trace_restore_awake;g_saved_face=s_trace_restore_face;s_trace_running=0;wos_invalidate();}
+        }
         int64_t a = esp_timer_get_time();
         int command_activity = 0;
         if (!g_inj_active && !s_debug_done) {
@@ -779,6 +906,9 @@ void app_main(void)
         int drew = wos_run_frame();      /* renders + flushes only the dirty band */
         int64_t c = esp_timer_get_time();
         extern uint32_t wos_dbg_record_us,wos_dbg_raster_us,wos_dbg_present_us;
+        extern int wos_dbg_nr;
+        extern uint32_t wos_dbg_dirty_pixels;
+        display_perf_frame(wos_dbg_dirty_pixels,wos_dbg_nr,s_atomic && drew,wos_dbg_record_us,wos_dbg_raster_us,wos_dbg_present_us,c-b);
         record_acc+=wos_dbg_record_us;raster_acc+=wos_dbg_raster_us;present_acc+=wos_dbg_present_us;
         if(previous_present && c-previous_present<100000) {
             int us=(int)(c-previous_present),bucket=(us+999)/1000;

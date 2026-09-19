@@ -71,7 +71,9 @@ void wos_dirty(int x0, int y0, int x1, int y1)
 /* Forces the next app frame to redraw the whole screen (after boot, an app
  * switch, or an overlay). Partial redraws only kick in once the panel is known
  * to already hold this app's full frame. */
+uint32_t wos_dbg_dirty_pixels;
 static int s_force_full = 1;
+void wos_invalidate(void) { s_force_full = 1; }
 
 /* Retained-mode damage: each frame is drawn once into a recorder (bbox+hash per
  * primitive), diffed against last frame to find the changed rows. */
@@ -812,7 +814,11 @@ int wos_run_frame(void)
     int ov_moving = s_active >= 0 && (s_settling || s_off > 0.5f);
     if (ov_moving)
         s_force_full = 1;
-    if (s_force_full || ov_moving)
+    /* Preserve this frame's decision until explicit damage has been considered.
+     * Clearing s_force_full early let an overlay's wos_dirty() rectangles replace
+     * the required full repaint, leaving untouched panel pixels stale. */
+    int force_full = s_force_full;
+    if (force_full)
         nrects = -1;
     else
         nrects = compute_damage(s_rec_cur, s_rec_prev, rects);
@@ -828,7 +834,7 @@ int wos_run_frame(void)
      * element's old->new sweep, so it stays a tight box that self-clears the
      * vacated spot -> no tall chained band -> small fast flushes that stay ahead
      * of the scan (no tear) and fit the frame. */
-    if (s_ex_n > 0 && !s_force_full && !ov_moving && s_active >= 0) {
+    if (s_ex_n > 0 && !force_full && !ov_moving && s_active >= 0) {
         nrects = 0;
         for (int i = 0; i < s_ex_n && nrects < WOS_MAXRECTS; i++) {
             int x0 = s_ex[i][0], y0 = s_ex[i][1], x1 = s_ex[i][2], y1 = s_ex[i][3];
@@ -868,6 +874,8 @@ int wos_run_frame(void)
         wos_dbg_rect[i][2] = rects[i][2]; wos_dbg_rect[i][3] = rects[i][3];
     }
 
+    wos_dbg_dirty_pixels=0;
+    for(int i=0;i<nrects;i++) wos_dbg_dirty_pixels+=(rects[i][2]-rects[i][0])*(rects[i][3]-rects[i][1]);
     int dirty_rows = 0;
     for (int i = 0; i < nrects; i++)
         dirty_rows += rects[i][3] - rects[i][1];
@@ -878,29 +886,28 @@ int wos_run_frame(void)
     wos_dbg_rows = dirty_rows;
 
     /* Big full-screen repaint (e.g. a scrolling overlay): compose the whole frame
-     * OFF-SCREEN into a back-buffer, then present it in one TE-synced transfer so
-     * it appears atomically — no progressive-stripe banding, no scan-catch tear.
-     * The host does its own vblank wait in frame_end, so skip the stripe vsync. */
+     * OFF-SCREEN into a back-buffer, then submit one coherent image instead of
+     * exposing progressive stripe composition. The installed board has no
+     * confirmed TE connection, so this does not itself guarantee tear-free output. */
     /* A single TALL band (full-screen redraw, OR a big scrolling band like the
      * app-list rail) renders too slowly to stay ahead of the scan -> tears mid
-     * screen. Compose it off-screen and present in one TE-synced blast instead.
+     * screen. Compose it off-screen and present as one coherent image instead.
      * The band may be narrow (the list rail), so pass its bounds through. */
     int atomic = nrects == 1 && (rects[0][3] - rects[0][1]) >= GFX_H / 2;
     if (s_frame_begin && nrects>0)
         s_frame_begin(atomic, rects[0][0], rects[0][1], rects[0][2], rects[0][3]);
 
-    /* Wait for the panel's vblank so the flush lands tear-free and paces to the
-     * real refresh — but ONLY when last frame's work comfortably fit a refresh
-     * (~16.7ms). That way even a fast full-redraw (a scrolling overlay) locks
-     * and stops tearing, while a genuinely heavy frame presents immediately
-     * instead of quantizing to 30fps. Uses the previous frame's render time
+    /* If the platform provides a real synchronization callback, wait for it to
+     * pace the flush — but ONLY when last frame's work comfortably fit a refresh
+     * (~16.7ms). That way even a fast full-redraw (a scrolling overlay) can stay
+     * aligned when synchronization is available, while a genuinely heavy frame
+     * presents immediately instead of quantizing to 30fps. Uses the previous frame's render time
      * (this frame's isn't known yet, but successive frames are similar). */
     static uint32_t s_last_render_us = 0;
     /* Overlays (launcher/app-list/etc.) redraw the whole screen every frame, so
-     * writing bands into the live panel GRAM without vblank alignment tears. For
-     * an overlay ALWAYS wait for TE first, so the flush starts at vblank and
-     * stays ahead of the scan (tear-free) even if the frame is heavy — trading a
-     * possible drop to 30fps for no tearing. Non-overlay frames keep the
+     * writing bands into the live panel GRAM without synchronization can tear.
+     * For an overlay always invoke the configured sync callback first — trading a
+     * possible drop to 30fps for more stable pacing. Non-overlay frames keep the
      * time-gated behaviour so a genuinely heavy face presents immediately. */
     if (!atomic && nrects > 0 && s_vsync && (s_active >= 0 || s_last_render_us < 14000u))
         s_vsync();

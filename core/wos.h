@@ -103,6 +103,8 @@ void wos_app_crossfade(int axis, int dir, void (*apply)(void));
 
 /* Render one frame. Returns nonzero if it should be flushed. */
 int  wos_run_frame(void);
+/* Request a complete redraw after an exclusive display diagnostic. */
+void wos_invalidate(void);
 
 /* Bumped once per frame. A face draw runs once per stripe, so guard any
  * frame-invariant work (sensor reads, string formatting, heavy math) behind
