@@ -1,5 +1,12 @@
 # Watch OS v1 — Waveshare 1.43-B
 
+**2026-09-19 display prototype:** measured Breathe performance improved from
+26.8 to 44.1 presentations/s on COM3 with the existing 40 MHz transport.
+The branch includes USB benchmarks, completed-DMA accounting and regression
+tools. See [results and limits](docs/display_results.md) and the
+[reproducible baseline](docs/display_baseline.md). Controller identity and
+physical tearing/power checks remain unverified.
+
 Port of `A:\makerspace\smartwatch` into this independent workspace for the
 **ESP32-S3-Touch-AMOLED-1.43-B**, the metal-case version of the plain 1.43.
 The older directory is unchanged. Its actual firmware targeted the **1.43C**;
