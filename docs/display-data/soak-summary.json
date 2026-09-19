@@ -1,0 +1,66 @@
+{
+  "status": "pass",
+  "coverage": {
+    "expected_trace_count": 30,
+    "actual_trace_count": 30,
+    "expected_elapsed_seconds": 1800.0,
+    "actual_elapsed_seconds": 1800.984379,
+    "trace_count_satisfied": true,
+    "elapsed_satisfied": true
+  },
+  "present_fps": {
+    "min": 43.31833207174102,
+    "max": 43.801967492480536,
+    "weighted": 43.625586604824186
+  },
+  "transactions": {
+    "submitted": 1688044,
+    "completed": 1688044
+  },
+  "bytes": {
+    "submitted": 4180890040,
+    "completed": 4180890040
+  },
+  "anomalies": {
+    "accounting_mismatches": [],
+    "cancelled_tx": 0,
+    "cancelled_bytes": 0,
+    "pending_tx": 0,
+    "pending_bytes": 0,
+    "unmatched_completions": 0,
+    "submit_overlaps": 0
+  },
+  "perf_info": {
+    "internal_free": {
+      "min": 59971,
+      "max": 60103
+    },
+    "internal_largest": {
+      "min": 31744,
+      "max": 31744
+    },
+    "dma_largest": {
+      "min": 31744,
+      "max": 31744
+    },
+    "psram_free": {
+      "min": 476364,
+      "max": 476384
+    },
+    "main_stack_free_bytes": {
+      "min": 3068,
+      "max": 3068
+    },
+    "flush_stack_free_bytes": {
+      "min": 1784,
+      "max": 1784
+    }
+  },
+  "runtime_faults": [],
+  "missing_evidence": [],
+  "notes": [
+    "No pooled percentiles are reported because raw histograms are unavailable.",
+    "Pass checks trace coverage, counter accounting, and captured runtime fault lines; it does not verify the physical screen, current draw, or prove absence of a leak.",
+    "Coverage assumes each Breathe PERF_APP is one live trace; exported or duplicate records cannot be identified because trace IDs are unavailable."
+  ]
+}

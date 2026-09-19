@@ -60,3 +60,21 @@ by the optimization. Previous application SHA-256:
 The optimization preserves the NVS layout and care records. Rolling back with
 the three separate segments preserves the watch's current settings and Pip
 memory; this folder does not contain an additional NVS dump.
+
+## Display optimization prototype (2026-09-19)
+
+The original source is `dc1999c`, tagged `display-baseline-20260919`.
+Its preserved application is `build/display-perf-baseline/watchfw.bin`, SHA-256
+`7188cc7cc3aeb0bb07f05fd119bb638394abf53ed422f55688c28855b76919eb`.
+The tested optimized image is preserved separately under
+`build/display-optimization/optimized-image/`; see the
+[image manifest](display-data/images.json) and [results](display_results.md).
+
+To restore only the original application on the same confirmed watch, close
+all serial tools and verify the hash, then run:
+
+```powershell
+& 'C:\Users\isaia\.espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe' -m esptool --chip esp32s3 --port COM3 --baud 460800 write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x10000 build/display-perf-baseline/watchfw.bin
+```
+
+This retains the current partition table, NVS settings, Pip memory and storage.

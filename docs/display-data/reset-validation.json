@@ -1,0 +1,55 @@
+{
+  "warm_resets": [
+    {
+      "reset": 1,
+      "ready_lines": [
+        "READY,{\"fw\":\"display-baseline-20260919-4-ga7\",\"commands\":\"perf display help\",\"panel\":\"unconfirmed\",\"clock_hz\":40000000}"
+      ],
+      "faults": [],
+      "log": "build\\display-optimization\\reset-1.log",
+      "sha256": "89f1fc40b7ee16ff1962659e639fb4b59b45b70d175313317453c6e5001c3ae9"
+    },
+    {
+      "reset": 2,
+      "ready_lines": [
+        "READY,{\"fw\":\"display-baseline-20260919-4-ga7\",\"commands\":\"perf display help\",\"panel\":\"unconfirmed\",\"clock_hz\":40000000}"
+      ],
+      "faults": [],
+      "log": "build\\display-optimization\\reset-2.log",
+      "sha256": "a9056b467f4c584164215ff1333f5183e936afd0f415790f88e3b694175bbe31"
+    },
+    {
+      "reset": 3,
+      "ready_lines": [
+        "READY,{\"fw\":\"display-baseline-20260919-4-ga7\",\"commands\":\"perf display help\",\"panel\":\"unconfirmed\",\"clock_hz\":40000000}"
+      ],
+      "faults": [],
+      "log": "build\\display-optimization\\reset-3.log",
+      "sha256": "d22cfb489d9ab65fe7b4badd75d8ea26da06d6d0ebc2d4380c28f4d549d6bfb7"
+    }
+  ],
+  "final_state": [
+    {
+      "time": "2026-09-19T20:32:18.792420+05:30",
+      "command": "board",
+      "response": [
+        "BOARD ESP32-S3-Touch-AMOLED-1.43-B flash=16MB psram=8388608 touch=1 imu=1 rtc=1 rtc_valid=0 audio=0 sd=0 total=0 free=0 sys_mv=4178 heap_internal=60323 heap_largest=31744 heap_min=29448"
+      ]
+    },
+    {
+      "time": "2026-09-19T20:32:19.156163+05:30",
+      "command": "face",
+      "response": [
+        "face=4"
+      ]
+    },
+    {
+      "time": "2026-09-19T20:32:19.500411+05:30",
+      "command": "bri",
+      "response": [
+        "BRIGHTNESS level=75 percent=29 panel_command=75"
+      ]
+    }
+  ],
+  "cold_power_cycles_tested": false
+}

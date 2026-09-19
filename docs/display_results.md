@@ -97,6 +97,7 @@ run through the normal OS scheduler with radios active.
 |---|---|
 | ESP-IDF firmware build and application-only flash | Passed; esptool verified the written hash |
 | 60-second reset/boot capture | Passed; READY and normal OS start observed |
+| Three subsequent reset/boot cycles | Passed; READY each time, no captured runtime faults, face 4/brightness 75 retained; these were warm USB resets, not power-cycle cold boots |
 | Existing native unit suites | Passed, including board transforms, Pip, motion wake, notifications, weather and Ultra rendering |
 | Arc rendering and retained damage | Exact pixel comparisons, clips and 1,198 forward/backward incremental frames passed |
 | Required full redraw during list scrolling | Simulator `--listrects` assertion passed |
@@ -106,6 +107,7 @@ run through the normal OS scheduler with radios active.
 | USB gesture/command responsiveness | Passed; 116 commands, maximum acknowledgement 422 ms including transitions |
 | Sensors and display settings after regression | IMU valid; brightness setting and panel command both 75; display awake |
 | User state restoration | Original face 4 restored, returned home, normal sleep timers restored |
+| Repeated animated soak | Passed: 30 Breathe traces, 1,800.98 seconds of trace coverage |
 | Physical screen/touch/tearing and battery current | Not measured remotely |
 
 The app/face regression checks state and command completion, not physical
@@ -126,6 +128,27 @@ Inspect the JSON `status`; it stays `incomplete` until the required coverage is
 present and reports `fail` for cancelled, pending or inconsistent transfers.
 Memory/stack ranges are evidence for review, not a substitute for power or
 physical display measurements.
+
+The completed [soak summary](display-data/soak-summary.json) is generated from
+the [full captured JSONL](display-data/soak.jsonl). It contains 78,569 Breathe
+presentations, 1,688,044 completed DMA transactions and 4,180,890,040 completed
+payload bytes. The weighted rate was **43.63 presentations/s**, with individual
+minute windows between **43.32 and 43.80**. Longest measured frame work was
+**74.107 ms**. There were no cancelled/pending/unmatched/overlapping transfers,
+accounting mismatches or captured watchdog, panic, brownout or reboot messages.
+
+Internal free memory ranged from 59,971 to 60,103 bytes: a single 132-byte
+decrease remained bounded through the remainder of the run. The largest DMA
+block stayed at 31,744 bytes. PSRAM free varied from 476,364 to 476,384 bytes
+after the all-face tour populated the existing caches. Main/flush task stack
+high-water margins stayed at 3,068/1,784 bytes. These measurements showed no
+continuing decline during this workload; they are not a proof of no leak under
+all possible apps and radio loads.
+
+The [reset validation record](display-data/reset-validation.json) includes the
+final board/settings responses and hashes of the three local boot logs. Touch
+and IMU devices responded after reset. RTC validity was already zero at the
+baseline and remained zero; setting/calibrating the RTC was outside this change.
 
 ## Limits and next experiment
 
