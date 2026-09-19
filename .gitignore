@@ -1,0 +1,13 @@
+/build/
+/dist/
+/reference/
+/firmware/build/
+/firmware/managed_components/
+/firmware/sdkconfig
+/firmware/sdkconfig.old
+__pycache__/
+*.pyc
+/shot_*.bmp
+/diag_*.bmp
+/store_*.dat
+/build-*.log

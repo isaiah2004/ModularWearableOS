@@ -1,0 +1,45 @@
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# Rated CPU speed gives the software AA renderer enough headroom for 60 Hz.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# 15MB app partition (baked Earth sprite + fonts need more than the 1MB default)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# ESP32-S3R8: 8MB octal PSRAM — holds the 466x466 framebuffer
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+# 1kHz scheduler tick -> finer task timing, snappier touch/UI loop
+CONFIG_FREERTOS_HZ=1000
+# Bluetooth: NimBLE host only (passive observer). Bluedroid is deselected by
+# choosing NimBLE, keeping RAM/flash down.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# Wi-Fi + BLE share the radio -> enable software coexistence so a Wi-Fi scan
+# and the background BLE discovery don't fight over the antenna.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+# Keep Wi-Fi buffer pools small to
+# reclaim internal RAM — the display's DMA stripe buffers + BT need it. Boot with
+# defaults left only ~28KB internal free (crash-prone); this restores headroom.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+# NimBLE scanner + one companion connection.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# Offload Wi-Fi/LWIP buffers and the NimBLE host into PSRAM (8MB) to free the
+# scarce internal DMA RAM for the display and BT controller.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=128
+CONFIG_FATFS_FS_LOCK=8
+# TLS record buffers belong in PSRAM; reserve internal memory for display DMA.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
