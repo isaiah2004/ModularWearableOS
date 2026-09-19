@@ -1,0 +1,15 @@
+{
+  "build/display-perf-baseline/watchfw.bin": {
+    "bytes": 6623840,
+    "sha256": "7188cc7cc3aeb0bb07f05fd119bb638394abf53ed422f55688c28855b76919eb"
+  },
+  "build/display-optimization/instrumented-image/watchfw.bin": {
+    "bytes": 6636528,
+    "sha256": "ec879bffec61a1746cfdd9e3d6e872e2ca0ca81b8d43d4d3b51fe147913b834a"
+  },
+  "build/display-optimization/optimized-image/watchfw.bin": {
+    "bytes": 6636736,
+    "sha256": "e36b29648ace49e99976f4f8441010bdc8e9128642a7a19ef9f105a81b1b95f0",
+    "firmware_commit": "a75a68e"
+  }
+}

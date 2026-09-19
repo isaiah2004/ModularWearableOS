@@ -90,6 +90,9 @@ intentional frame pacing; `completion_cadence` measures **stripe** completions,
 not panel refresh or complete-frame cadence. App fps is present frames divided
 by trace duration. Stage totals on different cores overlap and must not simply
 be summed. Unmeasured values are null, including physical tearing and current.
+`present` measures only `frame_end` and the tail drain, not all transport time.
+`dirty_pixels` sums requested rectangle areas (overlaps can count twice), not
+unique screen pixels. Reports distinguish evaluation FPS from present FPS.
 Wi-Fi/BLE remain running; the captured device was retrying an unavailable Wi-Fi
 network, not exercising successful Wi-Fi traffic or BLE streaming.
 
