@@ -17,7 +17,8 @@ class DisplayPerfReportTests(unittest.TestCase):
             ("capture.jsonl", 1, "PERF_CONFIG",
              {"source": "sram", "frames_requested": 2, "completed_frames": 2, "errors": 0}),
             ("capture.jsonl", 2, "PERF_RUN",
-             {"elapsed_us": 500000, "frames": 2, "dirty_pixels": 200,
+             {"elapsed_us": 500000, "frames": 2, "present_frames": 2,
+              "dirty_pixels": 200,
               "submitted_tx": 2, "completed_tx": 2, "cancelled_tx": 0, "pending_tx": 0,
               "submitted_bytes": 400, "completed_bytes": 400,
               "cancelled_bytes": 0, "pending_bytes": 0,
@@ -26,7 +27,8 @@ class DisplayPerfReportTests(unittest.TestCase):
         ])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["name"], "sram")
-        self.assertEqual(rows[0]["fps"], 4.0)
+        self.assertEqual(rows[0]["evaluation_fps"], 4.0)
+        self.assertEqual(rows[0]["present_fps"], 4.0)
         self.assertEqual(rows[0]["dirty_pixels_per_frame"], 100.0)
         self.assertEqual(rows[0]["stage_us_per_frame"]["copy"], 40.0)
         self.assertIsNone(rows[0]["stage_us_per_frame"]["swap"])
@@ -56,6 +58,18 @@ class DisplayPerfReportTests(unittest.TestCase):
         ])
         self.assertIsNone(rows[0]["config"])
         self.assertIn("missing preceding PERF_CONFIG", rows[0]["anomalies"])
+
+    def test_distinguishes_evaluation_and_present_rates(self):
+        rows = report.summarize([
+            ("apps.jsonl", 1, "PERF_APP",
+             {"trace": "level", "elapsed_us": 60000000,
+              "frames": 3444, "present_frames": 2765}),
+        ])
+        self.assertEqual(rows[0]["evaluation_fps"], 57.4)
+        self.assertAlmostEqual(rows[0]["present_fps"], 46.0833333333)
+        rendered = report.markdown(rows)
+        self.assertIn("present FPS", rendered)
+        self.assertIn("evaluation FPS", rendered)
 
 
 if __name__ == "__main__":

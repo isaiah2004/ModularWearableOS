@@ -109,6 +109,9 @@ class Capture:
         errors = []
         done = False
         deadline = self.monotonic() + timeout
+        # A sweep consists of multiple complete runs. Progress extends the
+        # per-run timeout; a stalled device still expires after `timeout`.
+        sweep = command.lower().split() == ["perf", "display", "sweep"]
         while self.monotonic() < deadline:
             line, parsed = self.receive()
             if line is None:
@@ -120,6 +123,8 @@ class Capture:
                 errors.append(line)
             if parsed:
                 seen.add(parsed[0])
+                if sweep and parsed[0] == "PERF_RUN":
+                    deadline = self.monotonic() + timeout
         if not done:
             raise TimeoutError(f"No DONE for {command!r} within {timeout:g}s")
         if errors:

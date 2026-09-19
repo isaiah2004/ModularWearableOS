@@ -103,6 +103,7 @@ def summarize(records):
             pending_source = None
         elapsed_us = payload.get("elapsed_us")
         frames = payload.get("frames")
+        present_frames = payload.get("present_frames")
         row = {
             "kind": kind,
             "source_file": source,
@@ -110,8 +111,13 @@ def summarize(records):
             "name": payload.get("trace") or (config or {}).get("source"),
             "elapsed_us": elapsed_us,
             "frames": frames,
-            "fps": _ratio(frames * 1000000 if isinstance(frames, (int, float)) else None,
-                          elapsed_us),
+            "present_frames": present_frames,
+            "evaluation_fps": _ratio(
+                frames * 1000000 if isinstance(frames, (int, float)) else None,
+                elapsed_us),
+            "present_fps": _ratio(
+                present_frames * 1000000 if isinstance(present_frames, (int, float)) else None,
+                elapsed_us),
             "throughput_Bps": payload.get("throughput_Bps"),
             "frame_p50_us": (payload.get("frame_work") or {}).get("p50_us"),
             "frame_p95_us": (payload.get("frame_work") or {}).get("p95_us"),
@@ -139,7 +145,8 @@ def _display(value, digits=2):
 
 
 def markdown(rows):
-    columns = ["kind", "name", "fps", "frame P50 µs", "P95 µs", "P99 µs",
+    columns = ["kind", "name", "present FPS", "evaluation FPS",
+               "frame P50 µs", "P95 µs", "P99 µs",
                "dirty px/frame", "throughput B/s", "stage µs/frame", "anomalies"]
     output = ["| " + " | ".join(columns) + " |",
               "| " + " | ".join(["---"] * len(columns)) + " |"]
@@ -148,7 +155,8 @@ def markdown(rows):
                            for name, value in row["stage_us_per_frame"].items()
                            if value is not None) or "—"
         anomalies = "; ".join(row["anomalies"]) or "—"
-        values = [row["kind"], _display(row["name"]), _display(row["fps"]),
+        values = [row["kind"], _display(row["name"]), _display(row["present_fps"]),
+                  _display(row["evaluation_fps"]),
                   _display(row["frame_p50_us"]), _display(row["frame_p95_us"]),
                   _display(row["frame_p99_us"]), _display(row["dirty_pixels_per_frame"]),
                   _display(row["throughput_Bps"]), stages, anomalies]
