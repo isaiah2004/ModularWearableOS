@@ -1,5 +1,12 @@
 # Menu FPS and 80 MHz QSPI trial — 2026-09-19
 
+**Rejected after owner visual review.** The owner reported identical perceived
+frame rate and noticeably worse performance in the left circular menu at
+80 MHz. The exact visual failure mode was not specified; do not label it
+electrical corruption or tearing without more evidence. The saved 40 MHz
+CO-profile firmware and corresponding source were restored. The measurements
+below are retained as evidence of why bus throughput alone was insufficient.
+
 The owner requested a higher display clock and investigation of
 [Civic Boost Gauge](https://github.com/kytos22/esp32-s3-civic-boost-gauge).
 The CO5300 initialization and six-pixel offset remain selected. Only QSPI
@@ -34,7 +41,7 @@ and submission overlaps; synthetic runs also returned ESP_OK.
 The circular menu remains strongly limited by raster work. The list gets
 essentially no measured FPS gain; its frame-work tail did not improve.
 Bus improvements alone do not imply improved interactive menu performance.
-No physical acceptance or long-duration 80 MHz soak has yet been established.
+The trial failed physical acceptance; no long-duration 80 MHz soak was run.
 The previously reported fade defect is not fixed by this change.
 
 ESP-IDF's ESP32-S3 SPI divider uses an 80 MHz APB source here. A requested
@@ -86,4 +93,6 @@ The previous 40 MHz CO-profile application is preserved at
 `build/display-optimization/co5300-40mhz-image/watchfw.bin`.
 Application-only flashing at offset `0x10000` preserves NVS and partitions.
 Source rollback is changing `LCD_SPI_HZ` in `firmware/main/pins.h` to 40 MHz
-and rebuilding. The SH profile remains disabled.
+and rebuilding. The SH profile remains disabled. The 80 MHz clock-diagnostic
+changes (including the deprecated API calls) were also reverted when restoring
+the matching 40 MHz source and binary.
