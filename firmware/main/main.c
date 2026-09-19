@@ -1,7 +1,7 @@
 /* main.c — device entry point for the ESP32-S3-Touch-AMOLED-1.43.
  *
  * Panel: 466x466 round AMOLED, SH8601 *or* CO5300 controller depending on
- * production batch. Boot retains the legacy selector (+6px fallback offset);
+ * production batch. SH8601 initialization is explicitly selected by the owner;
  * all-FF probe readback does not establish the controller identity.
  * Init sequences and pin map come from Waveshare's official demo package.
  *
@@ -46,6 +46,7 @@
 #define TAG "main"
 
 #define STRIPE_ROWS    16   /* Two render buffers + one rotated DMA buffer: 44 KiB. */
+#define PANEL_GAP_X     0   /* SH8601 profile; not derived from unreadable ID. */
 
 void hal_esp32_init_periph(void);
 void hal_esp32_start_radios(void);
@@ -78,14 +79,6 @@ static const sh8601_lcd_init_cmd_t sh8601_init[] = {
     {0x35, (uint8_t[]){0x00}, 1, 0},
     {0x53, (uint8_t[]){0x20}, 1, 10},
     {0x51, (uint8_t[]){0x00}, 1, 10},
-    {0x29, (uint8_t[]){0x00}, 0, 10},
-};
-static const sh8601_lcd_init_cmd_t co5300_init[] = {
-    {0x11, (uint8_t[]){0x00}, 0, 80},
-    {0xC4, (uint8_t[]){0x80}, 1, 0},
-    {0x53, (uint8_t[]){0x20}, 1, 1},
-    {0x63, (uint8_t[]){0xFF}, 1, 1},
-    {0x51, (uint8_t[]){0x00}, 1, 1},
     {0x29, (uint8_t[]){0x00}, 0, 10},
 };
 static uint8_t s_panel_id;
@@ -149,7 +142,7 @@ static void flush_task(void *arg)
             xSemaphoreGive(s_buf_free);    /* stripe buffer reusable immediately */
             continue;
         }
-        /* Byte-swap (CO5300 wants swapped RGB565) and, for a sub-rectangle,
+        /* Byte-swap RGB565 to wire order and, for a sub-rectangle,
          * compact its [x0,x0+w) columns to the front of each buffer row so the
          * draw_bitmap gets a tightly-packed w*rows image. In-place is safe: the
          * write index r*w+i never exceeds the read index r*GFX_W+x0+i. */
@@ -211,8 +204,8 @@ static void lcd_init(void)
     ESP_ERROR_CHECK(gpio_set_level(PIN_LCD_EN, 1));
     vTaskDelay(pdMS_TO_TICKS(20));
     s_panel_id = board_lcd_probe();
-    ESP_LOGI(TAG, "PANEL id=0x%02x legacy_init=%s identity=unconfirmed gap=%d", s_panel_id,
-             s_panel_id == 0x86 ? "SH8601" : "CO5300", s_panel_id == 0x86 ? 0 : 6);
+    ESP_LOGI(TAG, "PANEL id=0x%02x init=SH8601 selection=owner_override identity=unconfirmed gap=%d",
+             s_panel_id, PANEL_GAP_X);
     const spi_bus_config_t bus = SH8601_PANEL_BUS_QSPI_CONFIG(
         PIN_LCD_PCLK, PIN_LCD_D0, PIN_LCD_D1, PIN_LCD_D2, PIN_LCD_D3,
         GFX_W * STRIPE_ROWS * 2 + 64);
@@ -225,8 +218,8 @@ static void lcd_init(void)
                                              &io_cfg, &s_io));
 
     sh8601_vendor_config_t vendor = {
-        .init_cmds = s_panel_id == 0x86 ? sh8601_init : co5300_init,
-        .init_cmds_size = s_panel_id == 0x86 ? sizeof sh8601_init / sizeof sh8601_init[0] : sizeof co5300_init / sizeof co5300_init[0],
+        .init_cmds = sh8601_init,
+        .init_cmds_size = sizeof sh8601_init / sizeof sh8601_init[0],
         .flags = { .use_qspi_interface = 1 },
     };
     const esp_lcd_panel_dev_config_t panel_cfg = {
@@ -238,7 +231,7 @@ static void lcd_init(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_sh8601(s_io, &panel_cfg, &s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, s_panel_id == 0x86 ? 0 : 6, 0));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, PANEL_GAP_X, 0));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 }
 
@@ -346,7 +339,7 @@ static void inj_poll(void)
 static void perf_benchmark_worker(void)
 {
     s_bench_result=display_bench_run(s_io,s_panel,s_rotated,s_bench_capacity,
-        s_backbuf,s_bench_w,s_bench_h,s_panel_id==0x86 ? 0 : 6,
+        s_backbuf,s_bench_w,s_bench_h,PANEL_GAP_X,
         s_bench_frames,(display_bench_source)s_bench_source,s_dma_ready);
     xSemaphoreGive(s_bench_done);
 }
@@ -357,11 +350,12 @@ static void perf_info(void)
     printf("PERF_INFO,{\"fw\":\"%s\",\"idf\":\"%s\",\"cpu_mhz\":%d,"
         "\"clock_requested_hz\":%d,\"clock_actual_hz\":40000000,\"clock_basis\":\"80MHz divided by two; not scope measured\","
         "\"panel_identity\":\"unconfirmed\",\"legacy_id\":%u,\"legacy_gap\":%d,\"te_routed\":false,"
+        "\"panel_init\":\"SH8601\",\"panel_selection\":\"owner_override\",\"panel_gap_x\":%d,"
         "\"width\":466,\"height\":466,\"stripe_rows\":%d,\"dma_buffer_bytes\":%d,"
         "\"internal_free\":%u,\"internal_largest\":%u,\"dma_largest\":%u,\"psram_free\":%u,"
         "\"main_stack_free_bytes\":%u,\"flush_stack_free_bytes\":%u,\"render_core\":0,\"flush_core\":1,"
         "\"queue_capacity\":2,\"lvgl\":false,\"tearing_observed\":null,\"current_ma\":null}\n",
-        app->version,app->idf_ver,CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,LCD_SPI_HZ,s_panel_id,s_panel_id==0x86?0:6,
+        app->version,app->idf_ver,CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,LCD_SPI_HZ,s_panel_id,PANEL_GAP_X,PANEL_GAP_X,
         STRIPE_ROWS,GFX_W*STRIPE_ROWS*2,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),

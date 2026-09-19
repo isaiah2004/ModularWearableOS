@@ -1,5 +1,21 @@
 # Display optimization results — 2026-09-19
 
+**Subsequent owner-requested SH8601 trial:** firmware now explicitly selects
+the existing Waveshare SH8601 initialization table and its zero-pixel native
+X offset, including synthetic benchmark addressing. The former all-FF probe
+fallback selected CO5300 with a six-pixel offset. Raw probe evidence remains
+available; selecting SH8601 does not establish controller identity. QSPI stays
+at 40 MHz. The benchmark results below describe the earlier fallback firmware,
+not a fresh performance measurement of this trial. Visual acceptance is pending.
+The application-only flash was hash-verified on COM3. USB confirms SH8601,
+owner override, gap 0 and 40 MHz; ID reads still return all FF. Both 20-frame
+generator checks (100x100 and 466x466) completed with ESP_OK, no pending or
+cancelled transfers, unmatched completions or overlapping submissions. The
+watch was returned home. Evidence: [SH8601 validation](display-data/sh8601-validation.jsonl).
+The previous working application remains at
+`build/display-optimization/optimized-image/watchfw.bin`; the trial image is
+at `build/display-optimization/sh8601-image/watchfw.bin`.
+
 **Owner visual review: open defect.** During the attended rerun, the owner
 reported uneven left/right gradient fades: vertically stacked square-like
 sections appeared to update at different times. Navigation and DMA accounting
