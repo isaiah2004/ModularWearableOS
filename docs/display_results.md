@@ -1,5 +1,20 @@
 # Display optimization results — 2026-09-19
 
+**Owner visual review: open defect.** During the attended rerun, the owner
+reported uneven left/right gradient fades: vertically stacked square-like
+sections appeared to update at different times. Navigation and DMA accounting
+passes do not establish visual correctness. This transition issue remains
+unfixed and its precise cause is not yet confirmed.
+
+Source inspection found automatic transitions advance `0.16 * 466`, about
+75 pixels per rendered frame, while the fade front is only 34 pixels wide.
+This establishes coarse animation stepping, but does not by itself establish
+the cause of the reported patchwork appearance. The composed frame is also
+sent as separate rotated 16-row strips without panel scan synchronization;
+"atomic" in the current code means coherent CPU composition, not an atomic
+or tear-free panel refresh. Firmware timestamps measure CPU work and DMA
+completion, not the timing/location of a visible tear.
+
 The prototype reduces Breathe's unnecessary progress-ring damage while retaining
 the existing display clock, buffers, panel initialization and smartwatch apps.
 Firmware change: `a75a68e` on `perf/display-optimization`. Original OS rollback:
