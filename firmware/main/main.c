@@ -222,7 +222,9 @@ static void lcd_init(void)
 
     esp_lcd_panel_io_spi_config_t io_cfg =
         SH8601_PANEL_IO_QSPI_CONFIG(PIN_LCD_CS, on_stripe_done, NULL);
-    io_cfg.pclk_hz = LCD_SPI_HZ;   /* 40 MHz actual; a 50 MHz request also divides to 40. */
+    io_cfg.pclk_hz = LCD_SPI_HZ;
+    ESP_LOGI(TAG, "QSPI requested=%d calculated=%d Hz (80 MHz APB source; not scope measured)",
+             LCD_SPI_HZ, spi_get_actual_clock(80000000, LCD_SPI_HZ, 128));
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
                                              &io_cfg, &s_io));
 
@@ -357,14 +359,15 @@ static void perf_info(void)
 {
     const esp_app_desc_t *app=esp_app_get_description();
     printf("PERF_INFO,{\"fw\":\"%s\",\"idf\":\"%s\",\"cpu_mhz\":%d,"
-        "\"clock_requested_hz\":%d,\"clock_actual_hz\":40000000,\"clock_basis\":\"80MHz divided by two; not scope measured\","
+        "\"clock_requested_hz\":%d,\"clock_actual_hz\":%d,\"clock_basis\":\"ESP-IDF divider calculation with 80MHz APB; not scope measured\","
         "\"panel_identity\":\"unconfirmed\",\"legacy_id\":%u,\"legacy_gap\":%d,\"te_routed\":false,"
         "\"panel_init\":\"%s\",\"panel_selection\":\"board_profile\",\"panel_gap_x\":%d,"
         "\"width\":466,\"height\":466,\"stripe_rows\":%d,\"dma_buffer_bytes\":%d,"
         "\"internal_free\":%u,\"internal_largest\":%u,\"dma_largest\":%u,\"psram_free\":%u,"
         "\"main_stack_free_bytes\":%u,\"flush_stack_free_bytes\":%u,\"render_core\":0,\"flush_core\":1,"
         "\"queue_capacity\":2,\"lvgl\":false,\"tearing_observed\":null,\"current_ma\":null}\n",
-        app->version,app->idf_ver,CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,LCD_SPI_HZ,s_panel_id,PANEL_GAP_X,PANEL_INIT_NAME,PANEL_GAP_X,
+        app->version,app->idf_ver,CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,LCD_SPI_HZ,
+        spi_get_actual_clock(80000000, LCD_SPI_HZ, 128),s_panel_id,PANEL_GAP_X,PANEL_INIT_NAME,PANEL_GAP_X,
         STRIPE_ROWS,GFX_W*STRIPE_ROWS*2,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),

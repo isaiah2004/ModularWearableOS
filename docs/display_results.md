@@ -1,5 +1,11 @@
 # Display optimization results — 2026-09-19
 
+**Latest clock trial:** the owner subsequently requested a higher display
+clock. The working CO initialization is now running at requested/calculated
+80 MHz. See [menu FPS and clock trial](menu_fps_clock_trial.md) for the fresh
+40/80 MHz comparison and Civic Gauge source review. Physical acceptance at
+80 MHz is pending; historical measurements below retain their original clock.
+
 **SH8601 trial failed visual acceptance:** the owner reported an entirely black
 screen. Serial boot capture confirmed SH8601 library 2.0.0 creation and a live
 application; ongoing DMA completions did not prove a visible image. The local

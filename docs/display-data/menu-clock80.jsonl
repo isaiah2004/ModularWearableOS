@@ -1,0 +1,64 @@
+{"t": 379695.406, "line": "> awake 1"}
+{"t": 379695.421, "line": "awake=1"}
+{"t": 379695.421, "line": "> perf display info"}
+{"t": 379695.453, "line": "PERF_INFO,{\"fw\":\"display-optimized-20260919-3-g5\",\"idf\":\"897cf407\",\"cpu_mhz\":240,\"clock_requested_hz\":80000000,\"clock_actual_hz\":80000000,\"clock_basis\":\"ESP-IDF divider calculation with 80MHz APB; not scope measured\",\"panel_identity\":\"unconfirmed\",\"legacy_id\":255,\"legacy_gap\":6,\"te_routed\":false,\"panel_init\":\"CO5300\",\"panel_selection\":\"board_profile\",\"panel_gap_x\":6,\"width\":466,\"height\":466,\"stripe_rows\":16,\"dma_buffer_bytes\":14912,\"internal_free\":60339,\"internal_largest\":31744,\"dma_largest\":31744,\"psram_free\":7406828,\"main_stack_free_bytes\":3196,\"flush_stack_free_bytes\":1752,\"render_core\":0,\"flush_core\":1,\"queue_capacity\":2,\"lvgl\":false,\"tearing_observed\":null,\"current_ma\":null}"}
+{"t": 379695.468, "line": "> home"}
+{"t": 379696.312, "line": "WORKLOAD left: 12s including overlay entry and 10 alternating swipes"}
+{"t": 379696.312, "line": "> perf display app current 12"}
+{"t": 379696.343, "line": "PERF_STARTED,{\"name\":\"current\",\"seconds\":12}"}
+{"t": 379696.343, "line": "> left"}
+{"t": 379697.75, "line": "> swipe 140 130 320 130"}
+{"t": 379698.046, "line": "I (27517) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379698.046, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379698.687, "line": "> swipe 320 130 140 130"}
+{"t": 379699.671, "line": "> swipe 140 130 320 130"}
+{"t": 379700.656, "line": "> swipe 320 130 140 130"}
+{"t": 379701.062, "line": "I (30655) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379701.062, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379701.609, "line": "> swipe 140 130 320 130"}
+{"t": 379702.593, "line": "> swipe 320 130 140 130"}
+{"t": 379703.531, "line": "> swipe 140 130 320 130"}
+{"t": 379704.218, "line": "I (33793) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379704.218, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379704.531, "line": "> swipe 320 130 140 130"}
+{"t": 379705.515, "line": "> swipe 140 130 320 130"}
+{"t": 379706.484, "line": "> swipe 320 130 140 130"}
+{"t": 379707.343, "line": "I (36931) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379707.343, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379708.406, "line": "PERF_APP,{\"trace\":\"current\",\"seconds\":12,\"elapsed_us\":12031707,\"frames\":248,\"render_frames\":248,\"present_frames\":226,\"deadline_misses\":193,\"dirty_pixels\":12693072,\"dirty_rects\":1153,\"atomic_frames\":7,\"submitted_tx\":7309,\"submitted_bytes\":25386144,\"completed_tx\":7309,\"completed_bytes\":25386144,\"cancelled_tx\":0,\"cancelled_bytes\":0,\"throughput_Bps\":2109937,\"pending_tx\":0,\"pending_bytes\":0,\"unmatched_completions\":0,\"submit_overlaps\":0,\"queue_highwater\":1,\"frame_work\":{\"n\":248,\"total_us\":11157142,\"p50_us\":56000,\"p95_us\":64000,\"p99_us\":72000,\"max_us\":70360},\"record\":{\"n\":248,\"total_us\":129362,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":2000,\"max_us\":2820},\"raster\":{\"n\":248,\"total_us\":10209703,\"p50_us\":56000,\"p95_us\":64000,\"p99_us\":64000,\"max_us\":66324},\"present\":{\"n\":226,\"total_us\":317960,\"p50_us\":1000,\"p95_us\":2000,\"p99_us\":21000,\"max_us\":22447},\"submit_to_complete\":{\"n\":7309,\"total_us\":2166383,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":759},\"completion_cadence\":{\"n\":7308,\"total_us\":12026482,\"p50_us\":2000,\"p95_us\":3000,\"p99_us\":5000,\"max_us\":199156},\"copy\":{\"n\":210,\"total_us\":123160,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":928},\"swap\":{\"n\":7099,\"total_us\":453880,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":122},\"rotate\":{\"n\":7309,\"total_us\":298510,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":166},\"queue_wait\":{\"n\":7309,\"total_us\":48588,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":447},\"dma_wait\":{\"n\":7309,\"total_us\":94086,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":406}}"}
+{"t": 379710.484, "line": "I (40069) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379710.484, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379712.546, "line": "> home"}
+{"t": 379713.468, "line": "WORKLOAD right: 12s including overlay entry and 10 alternating swipes"}
+{"t": 379713.468, "line": "> perf display app current 12"}
+{"t": 379713.468, "line": "PERF_STARTED,{\"name\":\"current\",\"seconds\":12}"}
+{"t": 379713.468, "line": "> right"}
+{"t": 379713.796, "line": "I (43207) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379713.796, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379714.859, "line": "> swipe 233 330 233 130"}
+{"t": 379715.812, "line": "> swipe 233 130 233 330"}
+{"t": 379716.765, "line": "I (46345) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379716.765, "line": "> swipe 233 330 233 130"}
+{"t": 379717.078, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379717.718, "line": "> swipe 233 130 233 330"}
+{"t": 379718.656, "line": "> swipe 233 330 233 130"}
+{"t": 379719.593, "line": "> swipe 233 130 233 330"}
+{"t": 379719.906, "line": "I (49483) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379719.906, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379720.546, "line": "> swipe 233 330 233 130"}
+{"t": 379721.5, "line": "> swipe 233 130 233 330"}
+{"t": 379722.453, "line": "> swipe 233 330 233 130"}
+{"t": 379723.046, "line": "I (52621) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379723.046, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379723.453, "line": "> swipe 233 130 233 330"}
+{"t": 379725.5, "line": "PERF_APP,{\"trace\":\"current\",\"seconds\":12,\"elapsed_us\":12004447,\"frames\":610,\"render_frames\":610,\"present_frames\":606,\"deadline_misses\":278,\"dirty_pixels\":19320924,\"dirty_rects\":3225,\"atomic_frames\":7,\"submitted_tx\":11146,\"submitted_bytes\":38641848,\"completed_tx\":11146,\"completed_bytes\":38641848,\"cancelled_tx\":0,\"cancelled_bytes\":0,\"throughput_Bps\":3218961,\"pending_tx\":0,\"pending_bytes\":0,\"unmatched_completions\":0,\"submit_overlaps\":0,\"queue_highwater\":1,\"frame_work\":{\"n\":610,\"total_us\":9816545,\"p50_us\":15000,\"p95_us\":27000,\"p99_us\":48000,\"max_us\":48364},\"record\":{\"n\":610,\"total_us\":377306,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":2000,\"max_us\":2725},\"raster\":{\"n\":610,\"total_us\":8032402,\"p50_us\":13000,\"p95_us\":22000,\"p99_us\":25000,\"max_us\":26333},\"present\":{\"n\":606,\"total_us\":618247,\"p50_us\":1000,\"p95_us\":2000,\"p99_us\":21000,\"max_us\":22086},\"submit_to_complete\":{\"n\":11146,\"total_us\":3299468,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":824},\"completion_cadence\":{\"n\":11145,\"total_us\":11994596,\"p50_us\":1000,\"p95_us\":4000,\"p99_us\":9000,\"max_us\":86297},\"copy\":{\"n\":210,\"total_us\":122365,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":1084},\"swap\":{\"n\":10936,\"total_us\":670413,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":249},\"rotate\":{\"n\":11146,\"total_us\":486043,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":182},\"queue_wait\":{\"n\":11146,\"total_us\":149670,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":1012},\"dma_wait\":{\"n\":11146,\"total_us\":256767,\"p50_us\":1000,\"p95_us\":1000,\"p99_us\":1000,\"max_us\":410}}"}
+{"t": 379726.171, "line": "I (55760) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379726.171, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379729.312, "line": "I (58898) wifi:Coexist: Wi-Fi connect fail, apply reconnect coex policy"}
+{"t": 379729.312, "line": "WIFI: disconnected reason=201, retrying"}
+{"t": 379729.437, "line": "> prof 0"}
+{"t": 379729.437, "line": "prof=0"}
+{"t": 379729.437, "line": "> awake 0"}
+{"t": 379729.468, "line": "awake=0"}
+{"t": 379729.468, "line": "> resume"}
+{"t": 379729.484, "line": "> home"}

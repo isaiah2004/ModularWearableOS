@@ -12,7 +12,8 @@
 #define PIN_LCD_RST    21
 #define PIN_LCD_EN     42
 /* No TE, touch reset or touch interrupt routed on this board. */
-#define LCD_SPI_HZ     (40 * 1000 * 1000)
+/* Owner-requested 80 MHz trial; physical display acceptance still required. */
+#define LCD_SPI_HZ     (80 * 1000 * 1000)
 /* Working Demo V3 CO5300 profile. Forced SH8601 produced a black screen.
  * This selects initialization, not a confirmed controller identity. */
 #define LCD_USE_SH8601  0
