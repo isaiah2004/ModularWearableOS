@@ -63,6 +63,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Eye raster test failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Lid raster test compilation failed' }
 & "$outDir\pip_eye_lid_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Lid raster test failed' }
+& $compiler -std=c99 -O2 -Wall -Wextra -Werror "-I$projectRoot\core" `
+    "$projectRoot\tests\arc_sweep_test.c" "$projectRoot\core\gfx.c" -lm -o "$outDir\arc_sweep_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Arc sweep test compilation failed' }
+& "$outDir\arc_sweep_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Arc sweep test failed' }
 $ultraSources = @('tests/ultra_test.c','core/apps/face_ultra.c','core/pathtext.c',
                   'core/gfx.c','core/layer.c','core/icons.c','core/font.c') |
     ForEach-Object { Join-Path $projectRoot $_ }

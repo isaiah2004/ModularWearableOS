@@ -411,8 +411,13 @@ void gfx_arc(gfx_fb *fb, float cx, float cy, float r_mid, float thickness,
         if (arc_angle_in( 3.14159265f, a0, a1)) cmin = -1.0f;
         unsigned hh = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(
                       gfx_hash_u(5u, color), cx), cy), r_mid), thickness), a0), a1);
-        gfx_rec_cmd(fb, (int)(cx + smin * r_mid - pad), (int)(cy - cmax * r_mid - pad),
-                    (int)(cx + smax * r_mid + pad + 1), (int)(cy - cmin * r_mid + pad + 1), hh);
+        /* Raster bounds use floor(low)..ceil(high), both inclusive. Record the
+         * matching half-open box; plain casts and a single +1 can miss the
+         * last row/column when an endpoint crosses a cardinal direction. */
+        gfx_rec_cmd(fb, ifloor(cx + smin * r_mid - pad),
+                    ifloor(cy - cmax * r_mid - pad),
+                    iceil(cx + smax * r_mid + pad) + 1,
+                    iceil(cy - cmin * r_mid + pad) + 1, hh);
         return;
     }
     float half = thickness * 0.5f;
@@ -514,9 +519,45 @@ void gfx_sweep(gfx_fb *fb, float cx, float cy, float r, float th,
                float a1, float snap, uint16_t color)
 {
     if (a1 <= 0.0f) return;
+    /* Splitting an anti-aliased arc changes its pixels at the join: both arcs
+     * paint a rounded cap there, so the overlapping fringe is blended twice.
+     * The split is only a retained-mode recording trick. Raster mode uses the
+     * original primitive and therefore remains exactly pixel-identical to
+     * gfx_arc([0,a1]), including clipped stripes and partial x windows. */
+    if (!fb->rec) {
+        gfx_arc(fb, cx, cy, r, th, 0.0f, a1, color);
+        return;
+    }
+    if (snap <= 0.0f) {
+        gfx_arc(fb, cx, cy, r, th, 0.0f, a1, color);
+        return;
+    }
+    /* The squared bisector test used by gfx_arc becomes ill-conditioned as a
+     * sector approaches a full turn. Above 1.8*pi, record the same unsplit arc
+     * that raster mode draws so its conservative wedge box covers every AA
+     * boundary pixel. This is only the final 10% of a growing sweep. */
+    if (a1 >= 5.65486678f) {
+        gfx_arc(fb, cx, cy, r, th, 0.0f, a1, color);
+        return;
+    }
     float wa = floorf(a1 / snap) * snap;
     if (wa > 0.0002f)        gfx_arc(fb, cx, cy, r, th, 0.0f, wa, color);
-    if (a1 > wa + 0.0002f)   gfx_arc(fb, cx, cy, r, th, wa, a1, color);
+    if (a1 > wa + 0.0002f) {
+        int tip_cmd = fb->rec->n;
+        gfx_arc(fb, cx, cy, r, th, wa, a1, color);
+        /* Include the adjacent AA sample on each side of the analytical box;
+         * compute_damage rounds this guard outward to the panel's even pixel
+         * transfer bounds. */
+        if (tip_cmd < GFX_MAX_CMDS && tip_cmd < fb->rec->n) {
+            gfx_cmd *tip = &fb->rec->c[tip_cmd];
+            tip->x0 -= 2; tip->y0 -= 2;
+            tip->x1 += 2; tip->y1 += 2;
+            if (tip->x0 < 0) tip->x0 = 0;
+            if (tip->y0 < 0) tip->y0 = 0;
+            if (tip->x1 > GFX_W) tip->x1 = GFX_W;
+            if (tip->y1 > GFX_H) tip->y1 = GFX_H;
+        }
+    }
 }
 
 /* Thick AA line = capsule SDF (distance to segment minus half-width). */

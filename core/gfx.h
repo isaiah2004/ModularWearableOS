@@ -92,8 +92,9 @@ void gfx_line(gfx_fb *fb, float x0, float y0, float x1, float y1,
  * One damage command (unlike sweeping fill_circles), so partial redraw works. */
 void gfx_taper(gfx_fb *fb, float ax, float ay, float bx, float by,
                float ha, float hb, uint16_t color);
-/* Growing sweep arc [0,a1] as a settled part (snapped to `snap`) + a moving
- * tip, so partial redraw only repaints the tip each frame. No end caps. */
+/* Growing sweep arc [0,a1]. Recording exposes a settled part (snapped to
+ * `snap`) plus a moving tip so partial redraw usually repaints only the tip;
+ * raster mode draws one gfx_arc and preserves its rounded caps exactly. */
 void gfx_sweep(gfx_fb *fb, float cx, float cy, float r, float th,
                float a1, float snap, uint16_t color);
 

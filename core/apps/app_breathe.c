@@ -163,8 +163,8 @@ static void on_draw(gfx_fb *fb)
     float prog = (float)s_total_ms / (float)SESSION_MS;
     if (prog > 0.0f) {
         if (prog > 1.0f) prog = 1.0f;
-        gfx_arc(fb, cx, cy, RING_R, GFX_S(4), 0.0f, TWO_PI * prog,
-                dim(PETAL_TEAL, 0.7f));
+        gfx_sweep(fb, cx, cy, RING_R, GFX_S(4), TWO_PI * prog,
+                  TWO_PI / 60.0f, dim(PETAL_TEAL, 0.7f));
     }
 
     /* the breathing ring: N small dots in a fixed hexagon, each a single
