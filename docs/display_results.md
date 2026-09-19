@@ -1,6 +1,18 @@
 # Display optimization results — 2026-09-19
 
-**Subsequent owner-requested SH8601 trial:** firmware now explicitly selects
+**SH8601 trial failed visual acceptance:** the owner reported an entirely black
+screen. Serial boot capture confirmed SH8601 library 2.0.0 creation and a live
+application; ongoing DMA completions did not prove a visible image. The local
+Demo V3 ESP-IDF examples 07, 08 and 09 use `esp_lcd_sh8601` for both profiles,
+selecting SH only for DA=0x86 and CO otherwise. CO adds C4=80 and 63=FF and a
+six-pixel X offset. Firmware now restores that previously working CO profile,
+explicitly selected with `LCD_USE_SH8601=0` in `pins.h`, at 40 MHz. Raw identity
+remains unknown. COM3 diagnostics use native USB Serial/JTAG, not a separate
+physical UART adapter. The example's final brightness FF write is intentionally
+replaced by application of the saved brightness; an explicit brightness 75
+command was also sent during diagnosis. Recovery still needs owner visual review.
+
+**Earlier owner-requested SH8601 trial:** firmware explicitly selected
 the existing Waveshare SH8601 initialization table and its zero-pixel native
 X offset, including synthetic benchmark addressing. The former all-FF probe
 fallback selected CO5300 with a six-pixel offset. Raw probe evidence remains
