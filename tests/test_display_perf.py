@@ -92,6 +92,31 @@ class DisplayPerfParserTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ERR bad workload"):
             display_perf.Capture(Port(), io.StringIO()).command("something", 1)
 
+    def test_sweep_extends_timeout_only_on_completed_runs(self):
+        class Clock:
+            def __init__(self): self.now = -1
+            def __call__(self):
+                self.now += 1
+                return self.now
+        class Port:
+            def __init__(self, lines): self.lines, self.reads = iter(lines), 0
+            def write(self, data): pass
+            def flush(self): pass
+            def readline(self):
+                self.reads += 1
+                return next(self.lines, b"")
+
+        progress = Port([b'PERF_CONFIG,{"source":"sram"}\n',
+                         b'PERF_RUN,{"frames":1}\n', b"", b"DONE\n"])
+        display_perf.Capture(progress, io.StringIO(), Clock()).command(
+            "perf display sweep", 3)
+
+        metadata_only = Port([b'PERF_CONFIG,{"source":"sram"}\n'])
+        with self.assertRaises(TimeoutError):
+            display_perf.Capture(metadata_only, io.StringIO(), Clock()).command(
+                "perf display sweep", 3)
+        self.assertEqual(metadata_only.reads, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

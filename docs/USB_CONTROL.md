@@ -35,6 +35,10 @@ the next queued command is executed.
 | `screen off`, `screen dim` | Enter display off/dim immediately with motion and touch wake available |
 | `screen` | Read off/dim/awake state plus AOD and temporary glance flags |
 | `prof 0`, `prof 1` | Disable/enable USB frame telemetry (off on boot) |
+| `perf display info`, `perf display probe` | Display configuration and cached raw controller probe evidence |
+| `perf display app NAME SEC` | Timed app trace; acknowledge now, emit PERF_APP after SEC |
+| `perf display fill N SOURCE`, `perf display rect W H N [SOURCE]` | Synthetic transfer test; SOURCE is sram, generator or psram |
+| `perf display sweep`, `perf display status`, `perf display export` | Fixed-clock buffer/source sweep, counters, last four app traces |
 | `aod` | Toggle dim watchface display; not deep sleep |
 | `sleep` | Deep sleep; BOOT wakes, USB disconnects (no DONE expected) |
 | `pause`, `resume` | Pause/resume rendering; USB remains responsive |
@@ -47,6 +51,11 @@ the next queued command is executed.
 
 Apps 0..23 keep their previous IDs; **24 is Storage**, **25 Pet care**, **16 Diagnostics**,
 **17 Level**. Recorder 10 and Assistant 11 show the no-microphone state.
+
+Use `tools/display_perf.py` for asynchronous performance traces and long sweeps,
+then `tools/display_perf_report.py` for Markdown/JSON analysis. Synthetic tests
+temporarily occupy the UI task; touch/commands resume after completion. See
+[display baseline and metric definitions](display_baseline.md).
 
 `watchctl.py --sync-time` copies this PC's local date/time and offset. Use
 `--script commands.txt --log build/session.jsonl` for a repeatable sequence.

@@ -144,8 +144,20 @@ def _display(value, digits=2):
     return str(value)
 
 
+def _configuration(config):
+    if not config:
+        return "—"
+    width, height = config.get("width"), config.get("height")
+    geometry = f"{width}×{height}" if width is not None and height is not None else "—"
+    buffer_size = config.get("buffer_bytes")
+    clock = config.get("requested_hz")
+    return (f"{geometry} / "
+            f"{f'{buffer_size} B' if buffer_size is not None else '—'} / "
+            f"{f'{clock} Hz' if clock is not None else '—'}")
+
+
 def markdown(rows):
-    columns = ["kind", "name", "present FPS", "evaluation FPS",
+    columns = ["kind", "name", "configuration", "present FPS", "evaluation FPS",
                "frame P50 µs", "P95 µs", "P99 µs",
                "dirty px/frame", "throughput B/s", "stage µs/frame", "anomalies"]
     output = ["| " + " | ".join(columns) + " |",
@@ -155,7 +167,8 @@ def markdown(rows):
                            for name, value in row["stage_us_per_frame"].items()
                            if value is not None) or "—"
         anomalies = "; ".join(row["anomalies"]) or "—"
-        values = [row["kind"], _display(row["name"]), _display(row["present_fps"]),
+        values = [row["kind"], _display(row["name"]), _configuration(row["config"]),
+                  _display(row["present_fps"]),
                   _display(row["evaluation_fps"]),
                   _display(row["frame_p50_us"]), _display(row["frame_p95_us"]),
                   _display(row["frame_p99_us"]), _display(row["dirty_pixels_per_frame"]),

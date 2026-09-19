@@ -1,12 +1,14 @@
 /* main.c — device entry point for the ESP32-S3-Touch-AMOLED-1.43.
  *
  * Panel: 466x466 round AMOLED, SH8601 *or* CO5300 controller depending on
- * production batch (detected at boot; CO5300 needs a +6px x offset).
+ * production batch. Boot retains the legacy selector (+6px fallback offset);
+ * all-FF probe readback does not establish the controller identity.
  * Init sequences and pin map come from Waveshare's official demo package.
  *
  * Rendering is banded: the OS draws horizontal stripes straight into two
- * small internal-SRAM buffers (fast — no PSRAM framebuffer), and each stripe
- * is byte-swapped, rotated counterclockwise, and DMA'd while the next renders. */
+ * small internal-SRAM buffers, and each stripe is byte-swapped, rotated
+ * counterclockwise, and DMA'd while the next renders. Tall single-region
+ * updates first compose into PSRAM, then present the completed image. */
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"

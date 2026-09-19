@@ -15,7 +15,9 @@ class DisplayPerfReportTests(unittest.TestCase):
     def test_pairs_config_and_preserves_missing_metrics(self):
         rows = report.summarize([
             ("capture.jsonl", 1, "PERF_CONFIG",
-             {"source": "sram", "frames_requested": 2, "completed_frames": 2, "errors": 0}),
+             {"source": "sram", "width": 466, "height": 440,
+              "buffer_bytes": 32768, "requested_hz": 40000000,
+              "frames_requested": 2, "completed_frames": 2, "errors": 0}),
             ("capture.jsonl", 2, "PERF_RUN",
              {"elapsed_us": 500000, "frames": 2, "present_frames": 2,
               "dirty_pixels": 200,
@@ -33,6 +35,7 @@ class DisplayPerfReportTests(unittest.TestCase):
         self.assertEqual(rows[0]["stage_us_per_frame"]["copy"], 40.0)
         self.assertIsNone(rows[0]["stage_us_per_frame"]["swap"])
         self.assertEqual(rows[0]["anomalies"], [])
+        self.assertIn("466×440 / 32768 B / 40000000 Hz", report.markdown(rows))
 
     def test_loads_capture_and_flags_accounting(self):
         records = [
