@@ -76,5 +76,5 @@ $ultraSources += @(Get-ChildItem "$projectRoot/core/fonts/*.c" | ForEach-Object 
 if ($LASTEXITCODE -ne 0) { throw 'Ultra test compilation failed' }
 & "$outDir/ultra_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Ultra render test failed' }
-& python -m unittest "$projectRoot\tests\test_display_perf.py" "$projectRoot\tests\test_display_perf_report.py"
+& python -m unittest "$projectRoot\tests\test_display_perf.py" "$projectRoot\tests\test_display_perf_report.py" "$projectRoot\tests\test_display_soak_report.py"
 if ($LASTEXITCODE -ne 0) { throw 'Display performance Python tests failed' }

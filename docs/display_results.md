@@ -100,7 +100,7 @@ run through the normal OS scheduler with radios active.
 | Existing native unit suites | Passed, including board transforms, Pip, motion wake, notifications, weather and Ultra rendering |
 | Arc rendering and retained damage | Exact pixel comparisons, clips and 1,198 forward/backward incremental frames passed |
 | Required full redraw during list scrolling | Simulator `--listrects` assertion passed |
-| Python discovery | 17 tests passed |
+| Python discovery | 24 tests passed |
 | Native USB app inventory/selection | All 26 apps reached their requested app IDs |
 | Watchface selection and overlays | All 13 faces and four overlay open/close command sequences passed |
 | USB gesture/command responsiveness | Passed; 116 commands, maximum acknowledgement 422 ms including transitions |
@@ -119,6 +119,13 @@ to Level between Breathe sessions ensures the one-minute animation restarts;
 simply tracing Breathe for 1,800 seconds would mostly measure its finished,
 static screen. The script represents 30 minutes of Breathe trace windows plus
 one minute of intervening Level traces and command overhead.
+
+`python tools/display_soak_report.py build/soak.jsonl -o build/soak-summary.json`
+checks duration, trace count, transfer accounting and captured runtime faults.
+Inspect the JSON `status`; it stays `incomplete` until the required coverage is
+present and reports `fail` for cancelled, pending or inconsistent transfers.
+Memory/stack ranges are evidence for review, not a substitute for power or
+physical display measurements.
 
 ## Limits and next experiment
 
