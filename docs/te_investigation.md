@@ -66,3 +66,51 @@ host when that signal is not connected and consumed.
    remain useful software work, but cannot be advertised as guaranteed tear-free.
 
 No firmware settings were changed or flashed during this investigation.
+
+## Module-pinout follow-up — 2026-09-21
+
+Found a strong candidate for the missing TE contact: **J9 pin 27**. This is a
+pinout-correspondence inference, not identification of the installed module.
+
+The DWO manufacturer specifications for DO0143FMST05 (SH8601/FT3168) and
+DO0143FMST10 (CO5300/FT3168) both assign TE output to connector pin 27.
+The latter's [official product page](https://www.dwo.net.cn/cn/h-pd-12011.html?fromColId=104)
+links its [module datasheet](https://18746902.s21i.faimallusr.com/61/1/ABUIABA9GAAg1tbEvgYox4O_qQc.pdf);
+the pin table is on pages 7–8. The
+[FMST05 specification](https://18746902.s21i.faimallusr.com/61/1/ABUIABA9GAAgkejBrgYogNP71wQ.pdf)
+provides the same positions for these signals:
+
+| Connector contacts | DWO module function | Waveshare J9 evidence |
+| --- | --- | --- |
+| 3 / 5 | Touch SCL / SDA | Same signals |
+| 4 / 6 | Display clock / CS | Same signals |
+| 8 / 10 / 12 / 14 | QSPI D3 / D2 / D1 / D0 | Same signals |
+| 7 / 9 | Touch interrupt / reset | Unconnected |
+| 13 | VPP, leave open | Unconnected |
+| 15 / 17 | IM1 / IM0 | High / low selection straps |
+| 19 | Display reset | OLED_RESET |
+| 21 | Power enable | Pull-up; unpopulated R9 to OLED_EN |
+| 25 | I/O supply | 3V3 |
+| 27 | **TE output** | **Unconnected** |
+| 29 / 30 | VBAT supply | 3V3 |
+
+This correspondence is substantially stronger than matching screen size or
+controller alone. There are module-specific differences: FMST10 describes pin 2
+as unused and pin 23 as internally unused, whereas Waveshare connects these to
+ground and 3V3 respectively. FMST05 uses pin 2 for DC and pin 23 for VCI.
+Do not treat either specification as confirmation that a replacement module
+is electrically interchangeable.
+
+No Waveshare source located names either DWO part as its installed module.
+The public product photos inspected do not reveal a readable module part number.
+LilyGO documents use of FMST10 on its own board, which does not establish
+Waveshare's supplier or the revision in this watch.
+
+Next confirmation: read the part number printed on this watch's display flex,
+or obtain Waveshare's confirmation of J9-27's panel-side function. If matched,
+pin 27 becomes a specific place to verify TE with a scope after TEON; it still
+has no existing route to the ESP32 and would require a physical connection.
+No probe or solder connection has been performed or prescribed as confirmed.
+
+Local evidence: `build/te-research/dwo-a.pdf` (FMST10), `dwo-b.pdf` (FMST05),
+their extracted text, `dwo-a-pinout.png`, and Waveshare product photos.
