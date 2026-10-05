@@ -10,6 +10,7 @@
 extern const wos_app app_launcher_ref, app_launcher;
 extern const wos_app app_applist_ref, app_applist;
 extern int launcher_label_dbg_renders;
+extern int launcher_sprites;   /* sprite path rounds positions; compare the exact vector path */
 
 uint32_t wos_frame_id = 1;
 static uint32_t now_ms;
@@ -256,6 +257,7 @@ static void applist_case(void) {
 }
 
 int main(void) {
+    launcher_sprites = 0;
     a=(uint16_t*)malloc((size_t)GFX_W*GFX_H*sizeof *a); b=(uint16_t*)malloc((size_t)GFX_W*GFX_H*sizeof *b);
     if(!a||!b) return 2;
     launcher_label_bounds_case(); launcher_label_cache_case(); launcher_case(); applist_case(); angular_input_case();

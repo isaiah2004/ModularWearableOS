@@ -177,6 +177,60 @@ static void circ_text(gfx_fb *fb, const char *s, float R, float a_mid, uint16_t 
     }
 }
 
+/* ---- prerendered disc sprites (experiment; toggle with dbg "sprites 0|1") ----
+ * A steady-state disc is a fixed image that only translates, so it is rendered once
+ * into PSRAM and copied row-by-row. Positions round to whole pixels. Fades and
+ * scale-ins keep the vector path. */
+int launcher_sprites = 1;
+#define SPR_MAX 40
+typedef struct { uint16_t accent; int icon, size; uint16_t *px; } disc_sprite;
+static disc_sprite s_spr[SPR_MAX];
+static int s_nspr;
+static uint16_t *s_spr_stage;
+static int s_spr_stage_rows;
+
+static const disc_sprite *sprite_for(uint16_t accent, int icon, float r)
+{
+    if (fabsf(r - GDISC_R) > 0.01f && fabsf(r - APP_R) > 0.01f) return NULL;
+    int size = ((int)ceilf(2.0f * r) + 7) & ~1;
+    for (int i = 0; i < s_nspr; i++)
+        if (s_spr[i].accent == accent && s_spr[i].icon == icon && s_spr[i].size == size) return &s_spr[i];
+    if (s_nspr >= SPR_MAX) return NULL;
+    if (size > s_spr_stage_rows) {
+        uint16_t *st = hal_big_alloc((uint32_t)GFX_W * size * 2u);
+        if (!st) return NULL;
+        s_spr_stage = st; s_spr_stage_rows = size;     /* old stage leaks once; sizes are fixed */
+    }
+    uint16_t *px = hal_big_alloc((uint32_t)size * size * 2u);
+    if (!px) return NULL;
+    gfx_fb st = { s_spr_stage, 0, 0, 0, size, 0, size, 0 };
+    gfx_clear(&st, GFX_BLACK);
+    float c = size * 0.5f;
+    gfx_fill_circle(&st, c, c, r, accent);
+    icon_glyph(&st, icon, c, c, r * 0.6f, GFX_WHITE);
+    for (int y = 0; y < size; y++) memcpy(&px[y * size], &s_spr_stage[y * GFX_W], (size_t)size * 2u);
+    s_spr[s_nspr] = (disc_sprite){ accent, icon, size, px };
+    return &s_spr[s_nspr++];
+}
+
+static void blit_sprite(gfx_fb *fb, const disc_sprite *s, float cx, float cy)
+{
+    int S = s->size, x0 = (int)lroundf(cx) - S / 2, y0 = (int)lroundf(cy) - S / 2;
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    if (c0 < 0) c0 = 0;
+    if (c1 > GFX_W) c1 = GFX_W;
+    int bx0 = x0 + fb->ox, bx1 = bx0 + S, sx0 = 0;
+    if (bx0 < c0) { sx0 = c0 - bx0; bx0 = c0; }
+    if (bx1 > c1) bx1 = c1;
+    if (bx1 <= bx0) return;
+    int by0 = y0 + fb->oy - fb->y_base, sy0 = 0, sy1 = S;
+    if (by0 < 0) { sy0 = -by0; }
+    if (by0 + sy1 > fb->h) sy1 = fb->h - by0;
+    for (int sy = sy0; sy < sy1; sy++)
+        memcpy(&fb->px[(by0 + sy) * GFX_W + bx0], &s->px[sy * S + sx0], (size_t)(bx1 - bx0) * 2u);
+}
+
 static void draw_disc(gfx_fb *fb, float cx, float cy, float r, uint16_t accent, int icon, float alpha)
 {
     if (alpha <= 0.003f) return;
@@ -188,6 +242,10 @@ static void draw_disc(gfx_fb *fb, float cx, float cy, float r, uint16_t accent, 
         if (cx + ext + fb->ox < c0 || cx - ext + fb->ox >= c1 ||
             cy + ext + fb->oy < fb->y_base || cy - ext + fb->oy >= fb->y_base + fb->h)
             return;
+    }
+    if (launcher_sprites && !fb->rec && alpha >= 0.999f && icon != ICON_NONE) {
+        const disc_sprite *s = sprite_for(accent, icon, r);
+        if (s) { blit_sprite(fb, s, cx, cy); return; }
     }
     gfx_fill_circle(fb, cx, cy, r, dim565(accent, alpha));
     if (icon != ICON_NONE && r > DOT_R + 1.0f)
@@ -304,6 +362,12 @@ static void on_start(void)
     iflush_e = iflush_rot = iflush_arot = 0.0f;
     iflush_foc = iflush_af = prev_foc = prev_af = prev_mode = -1;
     s_frame.fid = 0xFFFFFFFFu; s_label.text = 0; s_label.w = s_label.h = 0;
+    if (launcher_sprites)                         /* prerender once; later opens hit the cache */
+        for (int k = 0; k < NGROUP; k++) {
+            sprite_for(GROUPS[k].accent, GROUPS[k].icon, GDISC_R);
+            for (int i = 0; i < GROUPS[k].n; i++)
+                sprite_for(wos_app_accent(GROUPS[k].apps[i]), wos_app_icon(GROUPS[k].apps[i]), APP_R);
+        }
 }
 
 static void on_draw(gfx_fb *fb)

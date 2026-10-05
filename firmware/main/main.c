@@ -587,6 +587,7 @@ static void dbg_exec(char *s)
     else if (!strcmp(s, "sdmount")) printf("SDMOUNT %s\n", esp_err_to_name(board_sd_mount()));
     else if (!strcmp(s, "sdeject")) printf("SDEJECT %s\n", esp_err_to_name(board_sd_unmount()));
     else if (!strcmp(s, "sdtest")) printf("SDTEST %s\n", esp_err_to_name(board_sd_test()));
+    else if (sscanf(s, "sprites %d", &a) == 1) { extern int launcher_sprites; launcher_sprites = a != 0; printf("sprites=%d\n", launcher_sprites); }
     else if (sscanf(s, "awake %d", &a) == 1) { g_no_sleep = a != 0; printf("awake=%d\n", g_no_sleep); }
     else if (!strcmp(s, "apps")) {
         for (int i = 0; i < wos_app_count(); i++) printf("APP %d %s\n", i, wos_app_name(i));
