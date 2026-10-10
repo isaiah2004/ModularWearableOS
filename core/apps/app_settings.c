@@ -21,6 +21,9 @@
 int  g_setting_24h = 1;
 int  g_setting_tilt_wake = 1;
 extern int wos_debug_hud;    /* the on-screen FPS/touch HUD (defined in wos.c) */
+extern int wos_debug_rects;  /* outline every repainted rectangle (wos.c) */
+extern int wos_fps_cap48;    /* experimental 48fps frame cap (wos.c) */
+extern int wos_fast_display; /* 8-bit panel wire format: 0 off, 1 256 colours, 2 grey (wos.c) */
 #define s_bright g_brightness   /* unified brightness (persisted) */
 
 /* ---- main page geometry (shifted up from the original to make room for the
@@ -38,7 +41,7 @@ extern int wos_debug_hud;    /* the on-screen FPS/touch HUD (defined in wos.c) *
 #define TIMEBTN_H GFX_S(30)
 
 /* ---- setter page ---- */
-enum { PAGE_MAIN = 0, PAGE_TIME, PAGE_WAKE };
+enum { PAGE_MAIN = 0, PAGE_TIME, PAGE_WAKE, PAGE_DEV };
 enum { F_HOUR = 0, F_MIN, F_DAY, F_MON, F_YEAR, F_TZ, F_COUNT };
 
 static int          s_page = PAGE_MAIN;
@@ -235,7 +238,8 @@ static void draw_main(gfx_fb *fb)
     toggle_row(fb, ROW1_Y, "24-Hour", g_setting_24h);
     font_draw(fb,&font_small,(int)GFX_S(54),(int)(ROW2_Y+font_small.ascent*.34f),"Wake gestures",GFX_WHITE);
     font_draw(fb,&font_medium,(int)GFX_S(184),(int)(ROW2_Y+font_medium.ascent*.34f),">",GFX_ACCENT);
-    toggle_row(fb, ROW3_Y, "FPS HUD", wos_debug_hud);
+    font_draw(fb,&font_small,(int)GFX_S(54),(int)(ROW3_Y+font_small.ascent*.34f),"Developer",GFX_WHITE);
+    font_draw(fb,&font_medium,(int)GFX_S(184),(int)(ROW3_Y+font_medium.ascent*.34f),">",GFX_ACCENT);
 
     /* "Date & Time" entry button (centred pill). Shows the live clock — a plain
      * static read in on_draw is fine (nothing animates here). */
@@ -317,9 +321,34 @@ static void draw_wake(gfx_fb *fb)
     font_draw_centered(fb,&font_small,GFX_CX,GFX_S(206),status,GFX_GREY);
     font_draw_centered(fb,&font_small,GFX_CX,GFX_S(223),info.learning?"Hold still 1 second":"Lift or turn to wake",GFX_GREY);
 }
+/* Developer page: rendering diagnostics */
+#define DEV_ROW1_Y GFX_S(78)
+#define DEV_ROW2_Y GFX_S(108)
+#define DEV_ROW3_Y GFX_S(138)
+#define DEV_ROW4_Y GFX_S(168)
+#define DEV_HIT    GFX_S(15)       /* rows sit 30 apart: half-pitch tap zones */
+static void draw_dev(gfx_fb *fb)
+{
+    gfx_clear(fb,GFX_BLACK);
+    font_draw_centered(fb,&font_medium,GFX_CX,GFX_S(34),"Developer",GFX_WHITE);
+    font_draw(fb,&font_medium,GFX_S(34),GFX_S(50),"<",GFX_GREY);
+    toggle_row_font(fb,DEV_ROW1_Y,"FPS HUD",wos_debug_hud,&font_small);
+    toggle_row_font(fb,DEV_ROW2_Y,"Redraw boxes",wos_debug_rects,&font_small);
+    toggle_row_font(fb,DEV_ROW3_Y,"48 FPS cap",wos_fps_cap48,&font_small);
+    /* Fast display cycles Off -> 256 colours -> grey on tap */
+    static const char *const fast_names[3] = { "Off", "256", "Grey" };
+    font_draw(fb,&font_small,(int)GFX_S(54),(int)(DEV_ROW4_Y+font_small.ascent*0.34f),"Fast display",GFX_WHITE);
+    const char *fv = fast_names[wos_fast_display % 3];
+    float pw = GFX_S(42), ph = GFX_S(24), px = GFX_W - GFX_S(44) - pw / 2;
+    pill(fb,px,DEV_ROW4_Y,pw,ph,wos_fast_display ? GFX_GREEN : GFX_DGREY);
+    font_draw_centered(fb,&font_small,(int)px,(int)(DEV_ROW4_Y+font_small.ascent*0.34f),fv,
+                       wos_fast_display ? GFX_BLACK : GFX_WHITE);
+    font_draw_centered(fb,&font_small,GFX_CX,GFX_S(196),"Boxes: green stripes, red atomic",GFX_GREY);
+}
 static void on_draw(gfx_fb *fb)
 {
-    if(s_page==PAGE_WAKE)draw_wake(fb);
+    if(s_page==PAGE_DEV)draw_dev(fb);
+    else if(s_page==PAGE_WAKE)draw_wake(fb);
     else if (s_page == PAGE_TIME)
         draw_setter(fb);
     else
@@ -383,7 +412,7 @@ static int on_event_main(const wos_event *ev)
         s_page=PAGE_WAKE;return 1;
     }
     if (ev->y > ROW3_Y - ROW_H / 2 && ev->y < ROW3_Y + ROW_H / 2) {
-        wos_debug_hud = !wos_debug_hud; settings_save(); return 1;
+        s_page=PAGE_DEV;return 1;
     }
     /* Date & Time entry button */
     if (ev->x > GFX_CX - TIMEBTN_W / 2 && ev->x < GFX_CX + TIMEBTN_W / 2 &&
@@ -445,6 +474,18 @@ static int on_event_setter(const wos_event *ev)
 
 static int on_event(const wos_event *ev)
 {
+    if(s_page==PAGE_DEV) {
+        if(ev->type==WOS_EV_SWIPE_RIGHT){s_page=PAGE_MAIN;return 1;}
+        if(ev->type==WOS_EV_TAP) {
+            if(ev->x<GFX_S(58) && ev->y<GFX_S(65))s_page=PAGE_MAIN;
+            else if(ev->y>DEV_ROW1_Y-DEV_HIT && ev->y<DEV_ROW1_Y+DEV_HIT){wos_debug_hud=!wos_debug_hud;settings_save();}
+            else if(ev->y>DEV_ROW2_Y-DEV_HIT && ev->y<DEV_ROW2_Y+DEV_HIT){wos_debug_rects=!wos_debug_rects;settings_save();}
+            else if(ev->y>DEV_ROW3_Y-DEV_HIT && ev->y<DEV_ROW3_Y+DEV_HIT){wos_fps_cap48=!wos_fps_cap48;settings_save();}
+            else if(ev->y>DEV_ROW4_Y-DEV_HIT && ev->y<DEV_ROW4_Y+DEV_HIT){wos_fast_display=(wos_fast_display+1)%3;settings_save();}
+            return 1;
+        }
+        return 0;
+    }
     if(s_page==PAGE_WAKE) {
         if(ev->type==WOS_EV_SWIPE_RIGHT){s_page=PAGE_MAIN;return 1;}
         if(ev->type==WOS_EV_TAP) {

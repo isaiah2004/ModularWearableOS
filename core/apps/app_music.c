@@ -144,7 +144,7 @@ static void blit_row(gfx_fb *fb, int lx, int ly, const uint16_t *src, int n)
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
-    uint16_t *row = &fb->px[y * GFX_W];
+    uint16_t *row = gfx_row(fb, y);
     for (int i = 0; i < n; i++) {
         int x = lx + i + fb->ox;
         if ((unsigned)x >= GFX_W || x < c0 || x >= c1) continue;
@@ -601,7 +601,7 @@ static void render_screen_to(uint16_t *buf, int screen)
 {
     gfx_fb fb;
     fb.px = buf; fb.ox = fb.oy = 0; fb.y_base = 0; fb.h = GFX_H;
-    fb.cx0 = 0; fb.cx1 = GFX_W; fb.rec = 0;
+    fb.cx0 = 0; fb.cx1 = GFX_W; fb.rec = 0; fb.stride = fb.x_base = 0;
     if (screen == 1) draw_volume(&fb); else draw_music(&fb);
 }
 static void start_trans(int to, int dir)
@@ -642,12 +642,17 @@ static void draw_transition(gfx_fb *fb)
     }
     uint16_t *lbuf = (s_trans_dir > 0) ? s_bufB : s_bufA;   /* solid field left of the front  */
     uint16_t *rbuf = (s_trans_dir > 0) ? s_bufA : s_bufB;   /* solid field right of the front */
+    int c0 = fb->cx0, c1 = fb->cx1;           /* only the columns this buffer holds */
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    if (c0 < 0) c0 = 0;
+    if (c1 > GFX_W) c1 = GFX_W;
+    int l1 = f0 < c1 ? f0 : c1, b0 = f0 > c0 ? f0 : c0, b1 = f1 < c1 ? f1 : c1, r0 = f1 > c0 ? f1 : c0;
     for (int y = 0; y < fb->h; y++) {
         int ly = y + fb->y_base;
-        uint16_t *arow = &s_bufA[ly * GFX_W], *brow = &s_bufB[ly * GFX_W], *drow = &fb->px[y * GFX_W];
-        if (f0 > 0)        memcpy(drow,      &lbuf[ly * GFX_W],      (size_t)f0 * 2);
-        for (int c = f0; c < f1; c++) drow[c] = gfx_blend565(arow[c], brow[c], wt[c - f0]);
-        if (f1 < GFX_W)    memcpy(drow + f1, &rbuf[ly * GFX_W + f1], (size_t)(GFX_W - f1) * 2);
+        uint16_t *arow = &s_bufA[ly * GFX_W], *brow = &s_bufB[ly * GFX_W], *drow = gfx_row(fb, y);
+        if (l1 > c0)       memcpy(drow + c0, &lbuf[ly * GFX_W + c0], (size_t)(l1 - c0) * 2);
+        for (int c = b0; c < b1; c++) drow[c] = gfx_blend565(arow[c], brow[c], wt[c - f0]);
+        if (c1 > r0)       memcpy(drow + r0, &rbuf[ly * GFX_W + r0], (size_t)(c1 - r0) * 2);
     }
 }
 static void on_draw(gfx_fb *fb)

@@ -1,5 +1,6 @@
-/* Board services for Waveshare 1.43 / 1.43-B. Register settings and wiring
- * follow the official Demo V3; modern IDF I2C master API used throughout. */
+/* Board services for Waveshare 1.43 / 1.43-B, or the 1.43C (CST820 touch, no
+ * IMU, RTC or SD). Register settings and wiring follow the official demos;
+ * modern IDF I2C master API used throughout. */
 #include "board.h"
 #include "board_protocol.h"
 #include "pins.h"
@@ -12,6 +13,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include "driver/i2c_master.h"
+#include "driver/gpio.h"
 #include "driver/sdmmc_host.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -58,12 +60,49 @@ static int device(uint8_t addr, i2c_master_dev_handle_t *dev)
     ESP_ERROR_CHECK(i2c_master_bus_add_device(s_bus, &cfg, dev));
     return i2c_master_probe(s_bus, addr, 50) == ESP_OK;
 }
+#if CONFIG_WATCH_BOARD_143C
+/* The CST820 auto-sleeps and NAKs while idle, so a failed boot probe or read
+ * never disables touch. After a failure, I2C is retried only once the chip
+ * signals activity on TP_INT (falling edge), so an idle bus logs no errors. */
+static volatile int s_touch_irq;
+static void touch_isr(void *arg) { (void)arg; s_touch_irq = 1; }
+int board_touch_read(int *x, int *y)
+{
+    uint8_t r[5];
+    if (!s_touch) return 0;
+    if (!s_touch_ok) {
+        if (!s_touch_irq && gpio_get_level(PIN_TP_INT)) return 0;
+        s_touch_irq = 0;
+    }
+    if (rd(s_touch, 0x02, r, sizeof r) != ESP_OK) { s_touch_ok = 0; return 0; }
+    s_touch_ok = 1;
+    return board_touch_decode(r, x, y);
+}
+static void touch_init(void)
+{
+    gpio_config_t rst = { .pin_bit_mask = 1ULL << PIN_TP_RST, .mode = GPIO_MODE_OUTPUT,
+                          .pull_up_en = GPIO_PULLUP_ENABLE };
+    ESP_ERROR_CHECK(gpio_config(&rst));
+    /* Demo reset: high, low, high with 200 ms steps; probe right after it. */
+    gpio_set_level(PIN_TP_RST, 1); vTaskDelay(pdMS_TO_TICKS(200));
+    gpio_set_level(PIN_TP_RST, 0); vTaskDelay(pdMS_TO_TICKS(200));
+    gpio_set_level(PIN_TP_RST, 1); vTaskDelay(pdMS_TO_TICKS(200));
+    gpio_config_t irq = { .pin_bit_mask = 1ULL << PIN_TP_INT, .mode = GPIO_MODE_INPUT,
+                          .pull_up_en = GPIO_PULLUP_ENABLE, .intr_type = GPIO_INTR_NEGEDGE };
+    ESP_ERROR_CHECK(gpio_config(&irq));
+    esp_err_t err = gpio_install_isr_service(0);
+    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) gpio_isr_handler_add(PIN_TP_INT, touch_isr, NULL);
+    /* FT-style registers 0x02..0x06; no mode write (reg 0x00 is not FT here). */
+    s_touch_ok = device(TOUCH_ADDR, &s_touch);
+}
+#else
 int board_touch_read(int *x, int *y)
 {
     uint8_t r[5];
     if (!s_touch_ok || rd(s_touch, 0x02, r, sizeof r) != ESP_OK) return 0;
     return board_touch_decode(r, x, y);
 }
+#endif
 int board_imu_read(hal_imu *out)
 {
     int64_t now = esp_timer_get_time();
@@ -107,14 +146,22 @@ static void storage_status(const char *msg)
     s_storage = state;
     portEXIT_CRITICAL(&s_state_lock);
 }
+#if BOARD_HAS_SD
 static int make_dir(const char *path)
 {
     if (mkdir(path, 0775) == 0) return 1;
     struct stat st;
     return errno == EEXIST && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
+#endif
 esp_err_t board_sd_mount(void)
 {
+#if !BOARD_HAS_SD
+    xSemaphoreTake(s_sd_lock, portMAX_DELAY);
+    storage_status("No SD slot on this board");
+    xSemaphoreGive(s_sd_lock);
+    return ESP_ERR_NOT_SUPPORTED;
+#else
     xSemaphoreTake(s_sd_lock, portMAX_DELAY);
     if (s_card) { xSemaphoreGive(s_sd_lock); return ESP_OK; }
     /* Same one-bit SDMMC wiring as Waveshare 04_SD_Card. 20 MHz for v1. */
@@ -139,6 +186,7 @@ esp_err_t board_sd_mount(void)
     }
     xSemaphoreGive(s_sd_lock);
     return err;
+#endif
 }
 esp_err_t board_sd_unmount(void)
 {
@@ -246,7 +294,13 @@ void board_apply_timezone(void)
     snprintf(tz, sizeof tz, "UTC%c%d:%02d", off >= 0 ? '-' : '+', magnitude / 60, magnitude % 60);
     setenv("TZ", tz, 1); tzset();
 }
-int board_clock_valid(void) { return s_rtc_valid; }
+int board_clock_valid(void)
+{
+#if !BOARD_HAS_RTC
+    if (!s_rtc_valid && time(NULL) >= 1577836800) s_rtc_valid = 1; /* set via USB/BLE/SNTP */
+#endif
+    return s_rtc_valid;
+}
 void board_restore_clock(void)
 {
     board_apply_timezone();
@@ -257,6 +311,10 @@ void board_restore_clock(void)
         struct timeval tv = { .tv_sec = (time_t)epoch };
         settimeofday(&tv, NULL); s_rtc_valid = 1;
         hal_log("RTC: restored UTC time");
+    } else if (!BOARD_HAS_RTC && time(NULL) >= 1577836800) {
+        /* No RTC chip: system time survives a soft reset or deep sleep, not power-off. */
+        s_rtc_valid = 1;
+        hal_log("RTC: none; kept system time across reset");
     } else {
         /* Explicitly unsynchronised until USB/BLE/NTP sets it; do not seed RTC. */
         struct timeval tv = { .tv_sec = 0 };
@@ -328,6 +386,11 @@ void board_init(void)
         .flags.enable_internal_pullup = true,
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&cfg, &s_bus));
+#if CONFIG_WATCH_BOARD_143C
+    touch_init();
+    ESP_LOGI(TAG, "I2C touch@%02x=%d (CST820; retried on TP_INT) no rtc/imu on this board",
+             TOUCH_ADDR, s_touch_ok);
+#else
     s_touch_ok = device(TOUCH_ADDR, &s_touch);
     if (s_touch_ok) s_touch_ok = wr(s_touch, 0x00, 0x00) == ESP_OK;
     s_rtc_ok = device(RTC_ADDR, &s_rtc);
@@ -343,16 +406,17 @@ void board_init(void)
             wr(s_imu, 0x08, 0x03) == ESP_OK;
     }
     ESP_LOGI(TAG, "I2C touch@38=%d rtc@51=%d imu@6b=%d", s_touch_ok, s_rtc_ok, s_imu_ok);
+#endif
     s_sd_lock = xSemaphoreCreateMutex(); assert(s_sd_lock);
     s_board_stopped = xSemaphoreCreateBinary(); assert(s_board_stopped);
-    board_sd_mount(); /* optional: absent/faulty cards never abort boot */
+    board_sd_mount(); /* optional: absent/faulty cards (or no slot) never abort boot */
     BaseType_t ok = xTaskCreate(board_task, "board", 4096, NULL, 2, NULL);
     assert(ok == pdPASS);
 }
 void board_print_info(void)
 {
     hal_storage sd; hal_storage_get(&sd);
-    printf("BOARD %s flash=16MB psram=%u touch=%d imu=%d rtc=%d rtc_valid=%d audio=0 sd=%d total=%llu free=%llu sys_mv=%d heap_internal=%u heap_largest=%u heap_min=%u\n",
+    printf("BOARD %s flash=" CONFIG_ESPTOOLPY_FLASHSIZE " psram=%u touch=%d imu=%d rtc=%d rtc_valid=%d audio=0 sd=%d total=%llu free=%llu sys_mv=%d heap_internal=%u heap_largest=%u heap_min=%u\n",
         WATCH_BOARD_NAME, (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
         s_touch_ok, s_imu_ok, s_rtc_ok, s_rtc_valid, sd.mounted,
         (unsigned long long)sd.total_bytes, (unsigned long long)sd.free_bytes, hal_battery_mv(),

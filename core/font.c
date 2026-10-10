@@ -46,7 +46,7 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
         int row0 = by0 < 0 ? -by0 : 0;
         int row1 = by0 + g->h > fb->h ? fb->h - by0 : g->h;
         for (int row = row0; row < row1; row++) {
-            uint16_t *dst = &fb->px[(by0 + row) * GFX_W];
+            uint16_t *dst = gfx_row(fb, by0 + row);
             const uint8_t *brow = &bm[row * g->w];
             for (int col = col0; col < col1; col++) {
                 uint8_t a = brow[col];

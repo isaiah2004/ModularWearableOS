@@ -23,11 +23,12 @@
 static uint16_t s_fb[GFX_W * GFX_H];
 /* Headless regression can exercise the device's real 16-row stripe geometry. */
 static uint16_t s_test_stripes[2][GFX_W*16];
-static void test_stripe_flush(uint16_t *pixels,int x0,int y0,int width,int rows)
+static void test_stripe_flush(uint16_t *pixels,int stride,int x0,int y0,int width,int rows)
 {
-    assert(x0>=0 && y0>=0 && x0+width<=GFX_W && y0+rows<=GFX_H && rows<=16);
+    assert(x0>=0 && y0>=0 && x0+width<=GFX_W && y0+rows<=GFX_H && width*rows<=GFX_W*16);
+    assert(pixels>=s_test_stripes[0] && pixels+(rows-1)*stride+width<=s_test_stripes[1]+GFX_W*16);
     for(int r=0;r<rows;r++)
-        memcpy(&s_fb[(y0+r)*GFX_W+x0],&pixels[r*GFX_W+x0],(size_t)width*2);
+        memcpy(&s_fb[(y0+r)*GFX_W+x0],&pixels[r*stride],(size_t)width*2);
 }
 static uint16_t s_disp[GFX_W * GFX_H];
 static uint8_t  s_mask[GFX_W * GFX_H]; /* circular panel coverage */
@@ -357,7 +358,7 @@ static void draw_debug_rects(void)
     extern int wos_dbg_rect[16][4], wos_dbg_nr;
     gfx_fb fb;
     fb.px = s_disp; fb.ox = 0; fb.oy = 0; fb.y_base = 0; fb.h = GFX_H;
-    fb.cx0 = 0; fb.cx1 = GFX_W; fb.rec = 0;
+    fb.cx0 = 0; fb.cx1 = GFX_W; fb.rec = 0; fb.stride = fb.x_base = 0;
     /* Just the box OUTLINES here (panel space, aligned with the icons). The size
      * readout is drawn as crisp native GDI text in present() so it can be tiny —
      * see draw_debug_text(). Red box = >150px tall (tear/60fps risk). */
@@ -505,6 +506,35 @@ static void simulate_tear(void)
     memcpy(prev, clean, sizeof prev);           /* next frame's "old" = intended */
 }
 
+/* --txcheck: one frame on a virtual 16 ms clock through the device stripe path (the
+ * framebuffer stands in for panel RAM), then a hash of the visible glass. Run once
+ * with damage tracking and once forcing full repaints: any differing frame means a
+ * damage rect missed pixels the screen actually changed. */
+static int s_txc_full, s_txc_fr, s_txc_dump = -1;
+static FILE *s_txc_out;
+static void save_bmp(const char *path);
+static void compose_display(void);
+static void txc_frame(void)
+{
+    s_preview_ms += 16;
+    if (s_txc_full) wos_invalidate();
+    wos_run_frame();
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < GFX_W * GFX_H; i++) {
+        float px = i % GFX_W + 0.5f - GFX_W * 0.5f, py = i / GFX_W + 0.5f - GFX_H * 0.5f;
+        if (px * px + py * py <= GFX_W * GFX_W * 0.25f) h = (h ^ s_fb[i]) * 16777619u;
+    }
+    fprintf(s_txc_out, "%d %08x\n", s_txc_fr, (unsigned)h);
+    if (s_txc_fr == s_txc_dump) { compose_display(); save_bmp(s_txc_full ? "txc_full.bmp" : "txc_damage.bmp"); }
+    s_txc_fr++;
+}
+static void txc_frames(int n) { while (n-- > 0) txc_frame(); }
+static void txc_drag(int x0, int y0, int x1, int y1, int steps)
+{
+    for (int s = 0; s <= steps; s++) { wos_pointer(x0 + (x1 - x0) * s / steps, y0 + (y1 - y0) * s / steps, 1); txc_frame(); }
+    wos_pointer(x1, y1, 0);
+}
+
 static void compose_display(void)
 {
     /* apply round-panel mask: outside the glass fades to near-black */
@@ -648,6 +678,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == 'T') { s_tear_sim = !s_tear_sim; }      /* toggle tear simulation */
         if (wp == 'F') { s_fps30 = !s_fps30; }            /* toggle 30fps device cadence */
         if (wp == 'I') { s_overlay = !s_overlay; }        /* toggle debug overlay */
+        if (wp == 'L') { extern int applist_pills; applist_pills = !applist_pills; wos_invalidate(); } /* list style */
         if (wp == 'R') {
             s_real_mode = !s_real_mode;
             update_ppi();
@@ -736,6 +767,8 @@ int main(int argc, char **argv)
     wos_init(s_fb, apps, sizeof apps / sizeof apps[0]);
     wos_register_overlay(WOS_EDGE_LEFT,   &app_launcher,      WOS_OV_PANNABLE);
     wos_register_overlay(WOS_EDGE_RIGHT,  &app_applist,       0);
+    { extern int applist_pills;                   /* --list-pills: every row a moving pill */
+      for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--list-pills")) applist_pills = 1; }
     wos_register_overlay(WOS_EDGE_TOP,    &app_notifications, 0);
     wos_register_overlay(WOS_EDGE_BOTTOM, &app_control,       0);
 
@@ -1235,6 +1268,215 @@ int main(int argc, char **argv)
                 compose_display(); save_bmp(nm);
             }
             Sleep(16);
+        }
+        return 0;
+    }
+
+    /* --rectcheck: device "redraw boxes" debug. Scroll the app list with outlines on
+     * (saves rectcheck_on.bmp), switch them off, and verify the framebuffer then
+     * matches a clean full repaint - i.e. every old outline was erased. */
+    if (argc > 1 && strcmp(argv[1], "--rectcheck") == 0) {
+        extern int wos_debug_rects;
+        static uint16_t clean[GFX_W * GFX_H];
+        int C = GFX_W / 2;
+        s_overlay = 0;
+        wos_debug_rects = 1;
+        for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--no-outline")) wos_debug_rects = 0;
+        wos_pointer(GFX_W - 8, C, 1); Sleep(20); wos_run_frame();
+        for (int s = 1; s <= 6; s++) {
+            wos_pointer((GFX_W - 8) + ((GFX_W - 300) - (GFX_W - 8)) * s / 6, C, 1);
+            Sleep(16); wos_run_frame();
+        }
+        wos_pointer(GFX_W - 300, C, 0);
+        for (int i = 0; i < 40; i++) { Sleep(16); wos_run_frame(); }
+        for (int d = 0; d <= 200; d += 12) { wos_pointer(C, 380 - d, 1); Sleep(16); wos_run_frame(); }
+        compose_display(); save_bmp("rectcheck_on.bmp");
+        wos_pointer(C, 180, 0);
+        for (int i = 0; i < 5; i++) { Sleep(16); wos_run_frame(); }
+        wos_debug_rects = 0;
+        for (int i = 0; i < 90; i++) { Sleep(16); wos_run_frame(); }
+        memcpy(clean, s_fb, sizeof clean);
+        wos_invalidate(); wos_run_frame();
+        int bad = 0, bx0 = GFX_W, by0 = GFX_H, bx1 = -1, by1 = -1;
+        for (int i = 0; i < GFX_W * GFX_H; i++) {
+            int x = i % GFX_W, y = i / GFX_W;
+            float px = x + 0.5f - GFX_W * 0.5f, py = y + 0.5f - GFX_H * 0.5f;
+            if (px * px + py * py > GFX_W * GFX_W * 0.25f) continue;   /* off the glass */
+            if (clean[i] != s_fb[i]) {
+                bad++;
+                if (x < bx0) bx0 = x;
+                if (x > bx1) bx1 = x;
+                if (y < by0) by0 = y;
+                if (y > by1) by1 = y;
+            }
+        }
+        printf("rectcheck: %d stale pixels after turning outlines off", bad);
+        if (bad) printf(" in [%d,%d]-[%d,%d]", bx0, by0, bx1, by1);
+        printf("\n");
+        if (bad) { memcpy(s_fb, clean, sizeof clean); compose_display(); save_bmp("rectcheck_stale.bmp"); }
+        return bad != 0;
+    }
+
+    /* --facerects N [SECONDS]: run face N on the virtual 16 ms clock and summarise what
+     * damage repaints per frame (rects, pixels, how often it is the whole screen); saves
+     * facerects_N.bmp with the dirty-rect overlay at the frame with the most damage. */
+    if (argc > 2 && strcmp(argv[1], "--facerects") == 0) {
+        extern uint32_t wos_dbg_dirty_pixels;
+        extern int wos_dbg_rect[16][4], wos_dbg_nr;
+        int face = atoi(argv[2]), n = (argc > 3 ? atoi(argv[3]) : 3) * 60;
+        s_pip_preview = 1; s_preview_ms = 1000; g_saved_face = face;
+        wos_open_app(0); wos_invalidate();
+        for (int i = 0; i < 20; i++) { s_preview_ms += 16; wos_run_frame(); }
+        double sum = 0; uint32_t mx = 0; int full = 0, drew = 0, mxf = -1;
+        static uint16_t best[GFX_W * GFX_H]; int best_r[16][4], best_n = 0;
+        for (int i = 0; i < n; i++) {
+            s_preview_ms += 16;
+            wos_run_frame();
+            uint32_t px = wos_dbg_dirty_pixels;
+            sum += px; drew += px > 0; full += px >= (uint32_t)(GFX_W * GFX_H * 9 / 10);
+            if (px > mx) {
+                mx = px; mxf = i; best_n = wos_dbg_nr;
+                memcpy(best, s_fb, sizeof best);
+                memcpy(best_r, wos_dbg_rect, sizeof best_r);
+            }
+        }
+        printf("face %d: %d frames, drew %d, avg %.0f px/frame, max %u px (frame %d), full-screen %d\n",
+               face, n, drew, sum / n, mx, mxf, full);
+        for (int r = 0; r < best_n && r < 16; r++)
+            printf("  max-frame rect %d: [%d,%d]-[%d,%d] %dx%d\n", r, best_r[r][0], best_r[r][1], best_r[r][2],
+                   best_r[r][3], best_r[r][2] - best_r[r][0], best_r[r][3] - best_r[r][1]);
+        memcpy(s_fb, best, sizeof best);
+        memcpy(wos_dbg_rect, best_r, sizeof best_r); wos_dbg_nr = best_n;
+        s_overlay = 1; compose_display();
+        char nm[32]; snprintf(nm, sizeof nm, "facerects_%d.bmp", face); save_bmp(nm);
+        return 0;
+    }
+
+    /* --facecheck damage|full OUT [FACE]: every watch face (or just FACE) for 450
+     * frames from 0:54 across the minute rollover, through the stripe path, hashing
+     * each frame (txc_frame). The damage run must match the full-repaint run. */
+    if (argc > 3 && strcmp(argv[1], "--facecheck") == 0) {
+        s_txc_full = !strcmp(argv[2], "full");
+        s_txc_out = fopen(argv[3], "w");
+        int only = argc > 4 ? atoi(argv[4]) : -1;
+        s_overlay = 0; s_pip_preview = 1;
+        wos_set_stripes(s_test_stripes[0], s_test_stripes[1], 16, NULL, test_stripe_flush);
+        for (int f = 0; f < 14; f++) {
+            if (only >= 0 && f != only) continue;
+            g_saved_face = f; s_preview_ms = 54000;
+            wos_open_app(0); wos_invalidate();
+            fprintf(s_txc_out, "face %d\n", f);
+            txc_frames(450);
+        }
+        fclose(s_txc_out);
+        printf("facecheck %s: %d frames\n", argv[2], s_txc_fr);
+        return 0;
+    }
+
+    /* --txcheck damage|full OUT [DUMP_FRAME]: transitions, overlays and a face swap
+     * through the stripe path on a virtual clock (see txc_frame). Compare the two
+     * runs' OUT files; DUMP_FRAME saves that frame as a BMP. */
+    if (argc > 3 && strcmp(argv[1], "--txcheck") == 0) {
+        int C = GFX_W / 2;
+        s_txc_full = !strcmp(argv[2], "full");
+        s_txc_out = fopen(argv[3], "w");
+        if (argc > 4) s_txc_dump = atoi(argv[4]);
+        s_overlay = 0; s_pip_preview = 1; s_preview_ms = 1000;
+        g_saved_face = 0;
+        wos_set_stripes(s_test_stripes[0], s_test_stripes[1], 16, NULL, test_stripe_flush);
+        wos_open_app(0); wos_invalidate(); txc_frames(30);
+        wos_open_app(5); txc_frames(20);                 /* app open: horizontal sweep */
+        wos_open_app(0); txc_frames(20);                 /* and back */
+        txc_drag(C, 4, C, 300, 8); txc_frames(25);       /* top overlay, dragged open */
+        wos_close_overlay(); txc_frames(25);             /* auto close */
+        txc_drag(C, GFX_H - 4, C, GFX_H - 100, 6); txc_frames(25);   /* bottom: cancelled drag */
+        txc_drag(GFX_W - 4, C, GFX_W - 300, C, 6); txc_frames(40);   /* app list overlay */
+        txc_drag(C, 380, C, 200, 8); txc_frames(40);     /* scroll it */
+        wos_pointer(C, C, 1); txc_frame(); wos_pointer(C, C, 0); txc_frames(30);   /* tap: open app */
+        wos_open_app(0); txc_frames(25);
+        txc_drag(360, C, 100, C, 6); txc_frames(30);     /* swipe the face (face crossfade) */
+        txc_drag(4, C, 300, C, 6); txc_frames(40);       /* left launcher */
+        wos_open_app(0); txc_frames(25);
+        fclose(s_txc_out);
+        printf("txcheck %s: %d frames\n", argv[2], s_txc_fr);
+        return 0;
+    }
+
+    /* --scancheck N: drive the device stripe path in scan order N (0 rows, 1/2
+     * column bands) through the app list (open, scroll, mid-drag hold, settle) and
+     * the dial, checking each held frame against a clean in-place full render. */
+    if (argc > 2 && strcmp(argv[1], "--scancheck") == 0) {
+        static uint16_t snap[GFX_W * GFX_H];
+        int C = GFX_W / 2, fails = 0, checks = 0;
+        wos_scan_order = atoi(argv[2]);
+        for (int i = 3; i < argc; i++) if (!strcmp(argv[i], "--list-pills")) { extern int applist_pills; applist_pills = 1; }
+        s_overlay = 0;
+        #define SC_STRIPES() wos_set_stripes(s_test_stripes[0], s_test_stripes[1], 16, NULL, test_stripe_flush)
+        #define SC_CHECK(name) do {                                                   \
+            memcpy(snap, s_fb, sizeof snap);                                          \
+            wos_set_stripes(NULL, NULL, 0, NULL, NULL); wos_invalidate(); wos_run_frame(); \
+            int bad = 0;                                                              \
+            for (int i = 0; i < GFX_W * GFX_H; i++) {                                 \
+                float px = i % GFX_W + 0.5f - GFX_W * 0.5f, py = i / GFX_W + 0.5f - GFX_H * 0.5f; \
+                if (px * px + py * py <= GFX_W * GFX_W * 0.25f) bad += snap[i] != s_fb[i]; \
+            }                                                                         \
+            printf("scancheck %d %-14s %s (%d px differ)\n", wos_scan_order, name, bad ? "FAIL" : "ok", bad); \
+            if (bad) { fails++; compose_display(); save_bmp("scancheck_clean.bmp");   \
+                       memcpy(s_fb, snap, sizeof snap); compose_display(); save_bmp("scancheck_bad.bmp"); } \
+            memcpy(s_fb, snap, sizeof snap); checks++; SC_STRIPES();                   \
+        } while (0)
+        SC_STRIPES();
+        wos_invalidate(); wos_run_frame();
+        SC_CHECK("face");
+        wos_pointer(GFX_W - 8, C, 1); Sleep(20); wos_run_frame();
+        for (int s = 1; s <= 6; s++) {
+            wos_pointer((GFX_W - 8) + ((GFX_W - 300) - (GFX_W - 8)) * s / 6, C, 1);
+            Sleep(16); wos_run_frame();
+        }
+        wos_pointer(GFX_W - 300, C, 0);
+        for (int i = 0; i < 40; i++) { Sleep(16); wos_run_frame(); }
+        SC_CHECK("list-open");
+        for (int d = 0; d <= 120; d += 12) { wos_pointer(C, 380 - d, 1); Sleep(16); wos_run_frame(); }
+        for (int i = 0; i < 4; i++) { Sleep(16); wos_run_frame(); }
+        SC_CHECK("list-held");
+        wos_pointer(C, 260, 0);
+        for (int i = 0; i < 90; i++) { Sleep(16); wos_run_frame(); }
+        SC_CHECK("list-settled");
+        printf("scancheck %d: %d/%d checks passed\n", wos_scan_order, checks - fails, checks);
+        return fails != 0;
+    }
+
+    /* --listdrag: open the app list, then drag slowly one row toward the next item and
+     * one row back toward the previous, saving listdrag_<next|prev>_<k>.bmp at evenly
+     * spaced finger offsets so the in-between motion can be inspected frame by frame. */
+    if (argc > 1 && strcmp(argv[1], "--listdrag") == 0) {
+        int C = GFX_W / 2;
+        wos_pointer(GFX_W - 8, C, 1); Sleep(20); wos_run_frame();
+        for (int s = 1; s <= 6; s++) {
+            wos_pointer((GFX_W - 8) + ((GFX_W - 300) - (GFX_W - 8)) * s / 6, C, 1);
+            Sleep(16); wos_run_frame();
+        }
+        wos_pointer(GFX_W - 300, C, 0);
+        for (int i = 0; i < 60; i++) { Sleep(16); wos_run_frame(); }
+        /* park on row 2 so both neighbours exist */
+        for (int d = 0; d <= 280; d += 10) { wos_pointer(C, 400 - d, 1); Sleep(16); wos_run_frame(); }
+        for (int i = 0; i < 10; i++) { Sleep(16); wos_run_frame(); }
+        wos_pointer(C, 120, 0);
+        for (int i = 0; i < 90; i++) { Sleep(16); wos_run_frame(); }
+        static const char *dir[2] = { "next", "prev" };
+        for (int pass = 0; pass < 2; pass++) {
+            extern int applist_pills;
+            int sgn = pass == 0 ? -1 : 1, span = applist_pills ? 104 : 140, shots = 6;
+            for (int d = 0; d <= span; d += 4) {
+                wos_pointer(C, C + sgn * d, 1); Sleep(16); wos_run_frame();
+                if (d % (span / (shots - 1) / 4 * 4) == 0 || d == span) {
+                    char nm[48]; snprintf(nm, sizeof nm, "listdrag_%s_%03d.bmp", dir[pass], d);
+                    compose_display(); save_bmp(nm);
+                }
+            }
+            for (int i = 0; i < 10; i++) { Sleep(16); wos_run_frame(); }
+            wos_pointer(C, C + sgn * span, 0);
+            for (int i = 0; i < 90; i++) { Sleep(16); wos_run_frame(); }
         }
         return 0;
     }

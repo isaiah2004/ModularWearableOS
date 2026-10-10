@@ -1,8 +1,14 @@
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# XMC 16MB flash supports quad I/O: QIO doubles code/rodata fetch bandwidth vs DIO.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # Rated CPU speed gives the software AA renderer enough headroom for 60 Hz.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# Every dirty-rect stripe re-runs the app's draw list + rasterizers + icon code; with a
+# 16KB I-cache that path thrashed (app-list raster 9.6 -> 6.1 ms at 32KB). Costs ~16KB
+# of internal heap (57.8 -> 41.3 KB free at boot).
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 # 15MB app partition (baked Earth sprite + fonts need more than the 1MB default)
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
@@ -43,3 +49,7 @@ CONFIG_FATFS_FS_LOCK=8
 # TLS record buffers belong in PSRAM; reserve internal memory for display DMA.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# OTA: an image that never confirms itself (ota_mark_valid) rolls back on reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# GitHub release downloads redirect across hosts.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y

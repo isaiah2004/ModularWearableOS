@@ -22,6 +22,7 @@
 #include "../font.h"
 #include "../icons.h"
 #include <math.h>
+#include <string.h>
 
 #define PI      3.14159265f
 #define SHOW_SCROLLBAR 1   /* scroll bar on (tear-free now via the atomic present) */
@@ -108,7 +109,12 @@ typedef struct {
 
 static list_frame_geom frame_geom = { .frame = 0xFFFFFFFFu };
 
-static float max_scroll(void) { return (wos_app_count() - 1) * ROW_H; }
+/* PILLS style rows sit on an even, unwarped pitch and track the finger 1:1. */
+extern int applist_pills;
+#define PILL_PITCH GFX_S(53)
+static float row_h(void) { return applist_pills ? PILL_PITCH : ROW_H; }
+
+static float max_scroll(void) { return (wos_app_count() - 1) * row_h(); }
 static int focused_row(void);   /* defined below; used by on_draw for the ring */
 
 static void on_start(void)
@@ -198,6 +204,332 @@ static float warp_cy(float cy)
     return GFX_CY + d * (1.0f - 0.8f * gfx_fast_exp(-u * u));
 }
 
+#if SHOW_SCROLLBAR
+/* knob: dirty just its OLD+NEW circle; the bounding box covers the swept path, so the
+ * old knob is erased -> no trail. */
+static void knob_dirty(void)
+{
+    float mm = max_scroll();
+    float a0 = SCROLL_MID - 0.72f, a1 = SCROLL_MID + 0.72f;
+    float kr = GFX_S(6.0f) + GFX_S(2);         /* knob radius + AA */
+    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+    for (int p = 0; p < 2; p++) {
+        float sv = p ? prev_rscroll : rscroll;
+        float frac = mm > 0 ? sv / mm : 0;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        float th = a0 + frac * (a1 - a0);
+        float kx = GFX_CX + SCROLL_R * gfx_fast_sin(th);
+        float ky = GFX_CY - SCROLL_R * gfx_fast_cos(th);
+        if (kx - kr < minx) minx = kx - kr;
+        if (kx + kr > maxx) maxx = kx + kr;
+        if (ky - kr < miny) miny = ky - kr;
+        if (ky + kr > maxy) maxy = ky + kr;
+    }
+    wos_dirty((int)minx, (int)miny, (int)maxx, (int)maxy);
+}
+#endif
+
+/* ---- PILLS style (applist_pills): every row is a full colour pill carrying its icon
+ * and label, and the whole row scrolls as one unit - no frozen centre band. Rows keep
+ * the focal scale/dim and follow the bezel curve, so the focused row at rest matches
+ * the classic centre pill. ---- */
+int applist_pills = 1;   /* pill rows by default; `lpills 0` for the classic list */
+
+#define PILL_K   (1.16f / 1.14f)   /* pill radius / icon radius: centre row == classic pill */
+#define PILL_PAD 2                 /* AA + rounding margin around a pill's damage box */
+#define PILL_MARGIN GFX_S(5)       /* gap between a pill's left cap and the round glass */
+
+typedef struct {
+    int valid, icon;
+    float cy, pr;
+    float x0;                      /* left edge (= icx - pr) */
+    float icx;                     /* left cap centre, where the icon sits */
+    float tx;                      /* label start */
+    float x1;                      /* right cap centre */
+    float dim;
+    const char *name;
+    uint16_t body, fg;
+} pill_geom;
+
+static struct {
+    uint32_t frame;
+    int base;
+    pill_geom row[LIST_WIN];
+} pill_frame = { .frame = 0xFFFFFFFFu };
+
+static int label_width(int i)
+{
+    static int16_t cache[64];
+    static uint8_t have[64];
+    if (i >= 64) return font_text_width(&font_medium, wos_app_name(i));
+    if (!have[i]) { cache[i] = (int16_t)font_text_width(&font_medium, wos_app_name(i)); have[i] = 1; }
+    return cache[i];
+}
+
+/* Geometry of row i at scroll rs. `elapsed` < 0 means the entrance is over. */
+static int pill_row(int i, float rs, float elapsed, pill_geom *g)
+{
+    g->valid = 0;
+    float cy = GFX_CY + i * PILL_PITCH - rs;
+    float rmax = ICON_R * 1.14f * PILL_K + PILL_PAD;
+    if (cy + rmax < 0 || cy - rmax > GFX_H) return 0;
+    float dy = cy - GFX_CY;
+    float alpha = 1.0f, slide = 0.0f;
+    if (elapsed >= 0.0f && GFX_CY + i * PILL_PITCH - ICON_R < GFX_H) {
+        float u = elapsed - ENTER_BASE - i * ENTER_STAGGER;
+        if (u <= 0.0f) { alpha = 0.0f; slide = ENTER_SLIDE; }
+        else {
+            float t = u / ENTER_DUR;
+            if (t > 1.0f) t = 1.0f;
+            slide = ENTER_SLIDE * (1.0f - ease_out_back(t));
+            alpha = u / ENTER_FADE;
+            if (alpha > 1.0f) alpha = 1.0f;
+        }
+    }
+    float sc = row_scale(dy);
+    float pr = ICON_R * (0.72f + 0.42f * sc) * PILL_K;
+    /* The left cap rides a circle PILL_MARGIN inside the glass, so the whole capsule
+     * stays on screen and slides smoothly along the bezel; the icon sits in that cap
+     * and moves rigidly with its pill and label. */
+    float rr = GFX_W * 0.5f - PILL_MARGIN - pr, inside = rr * rr - dy * dy;
+    float ccx = inside > 0 ? GFX_CX - gfx_fast_sqrt(inside) : GFX_CX;
+    g->valid = 1;
+    g->cy = cy;
+    g->pr = pr;
+    g->icx = ccx + slide;
+    g->x0 = g->icx - pr;
+    g->tx = g->icx + pr * 0.8f + GFX_S(5);
+    g->x1 = g->tx + (float)label_width(i) + GFX_S(8) - pr;
+    if (g->x1 < g->icx) g->x1 = g->icx;
+    g->dim = row_dim(sc) * alpha;
+    g->name = wos_app_name(i);
+    g->icon = wos_app_icon(i);
+    g->body = dim565(wos_app_accent(i), g->dim);
+    g->fg = dim565(GFX_WHITE, g->dim);
+    return 1;
+}
+
+/* Leftmost column of the round panel that is visible anywhere in rows [y0,y1): the
+ * chord at the row nearest the centre, minus a pixel so edge pixels stay covered. */
+static int round_left(int y0, int y1)
+{
+    float R = GFX_W * 0.5f, dy = 0.0f;
+    if (y1 <= GFX_CY) dy = GFX_CY - y1;
+    else if (y0 > GFX_CY) dy = y0 - GFX_CY;
+    float in = R * R - dy * dy;
+    return in > 0.0f ? (int)(GFX_CX - gfx_fast_sqrt(in)) - 1 : GFX_CX;
+}
+
+/* ICON MASKS: a vector icon is ~10 anti-aliased SDF strokes, and while scrolling every
+ * row's icon is re-rasterized every frame (its size follows the focal scale). An icon
+ * only depends on (id, radius), so each one is rendered ONCE per half-pixel radius step
+ * into an 8-bit coverage mask in PSRAM; drawing is then a masked blend. The centre
+ * snaps to the pixel grid (masks are rendered on a pixel corner). */
+#define MASK_MAX   76
+#define MASK_SLOTS 256
+typedef struct { int16_t id, rq; uint8_t side; uint8_t *a; } icon_mask;
+static icon_mask masks[MASK_SLOTS];
+static uint16_t *mask_scratch;              /* GFX_W-stride render target, MASK_MAX rows */
+
+static const icon_mask *mask_get(int id, float r)
+{
+    int rq = (int)(r * 2.0f + 0.5f);
+    float rr = rq * 0.5f;
+    icon_mask *m = &masks[((unsigned)id * 37u + (unsigned)rq) & (MASK_SLOTS - 1)];
+    if (m->a && m->id == id && m->rq == rq) return m;
+    int hb = (int)(rr * 1.25f) + 3, side = 2 * hb;
+    if (side > MASK_MAX) return 0;
+    if (!mask_scratch) mask_scratch = hal_big_alloc((uint32_t)GFX_W * MASK_MAX * 2u);
+    if (!m->a) m->a = hal_big_alloc(MASK_MAX * MASK_MAX);
+    if (!mask_scratch || !m->a) return 0;
+    for (int y = 0; y < side; y++) memset(&mask_scratch[y * GFX_W], 0, (size_t)side * 2);
+    gfx_fb t = { mask_scratch, 0, 0, 0, side, 0, side, 0, 0, 0 };
+    icon_glyph(&t, id, (float)hb, (float)hb, rr, GFX_WHITE);
+    for (int y = 0; y < side; y++)
+        for (int x = 0; x < side; x++) {
+            int g6 = (mask_scratch[y * GFX_W + x] >> 5) & 63;   /* white on black: green = coverage */
+            m->a[y * side + x] = (uint8_t)((g6 * 255 + 31) / 63);
+        }
+    m->id = (int16_t)id; m->rq = (int16_t)rq; m->side = (uint8_t)side;
+    return m;
+}
+
+static int icon_mask_draw(gfx_fb *fb, int id, float cx, float cy, float r, uint16_t col)
+{
+    const icon_mask *m = mask_get(id, r);
+    if (!m) return 0;
+    int hb = m->side / 2;
+    int x0 = (int)floorf(cx + 0.5f) - hb, y0 = (int)floorf(cy + 0.5f) - hb;
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    if (c0 < 0) c0 = 0;
+    if (c1 > GFX_W) c1 = GFX_W;
+    int xa = x0 + fb->ox, xb = xa + m->side;            /* buffer columns */
+    int k0 = xa < c0 ? c0 - xa : 0, k1 = xb > c1 ? m->side - (xb - c1) : m->side;
+    for (int my = 0; my < m->side; my++) {
+        int by = y0 + my + fb->oy - fb->y_base;
+        if ((unsigned)by >= (unsigned)fb->h) continue;
+        uint16_t *row = gfx_row(fb, by) + xa;
+        const uint8_t *a = &m->a[my * m->side];
+        for (int k = k0; k < k1; k++) {
+            if (a[k] == 255) row[k] = col;
+            else if (a[k]) row[k] = gfx_blend565(row[k], col, a[k]);
+        }
+    }
+    return 1;
+}
+
+static void pill_icon(gfx_fb *fb, const pill_geom *g)
+{
+    if (g->icon != ICON_NONE) {
+        if (!fb->rec && icon_mask_draw(fb, g->icon, g->icx, g->cy, g->pr * 0.62f, g->fg)) return;
+        icon_glyph(fb, g->icon, g->icx, g->cy, g->pr * 0.62f, g->fg);
+    } else {
+        char init[2];
+        init[0] = g->name && g->name[0] ? g->name[0] : '?';
+        init[1] = 0;
+        if (init[0] >= 'a' && init[0] <= 'z') init[0] -= 32;
+        font_draw_centered(fb, &font_small, (int)g->icx,
+                           (int)(g->cy + font_small.ascent * 0.34f), init, g->fg);
+    }
+}
+
+/* Does logical box [x0,x1) x [y0,y1) touch what this raster call may write? Icons and
+ * labels cost a full glyph walk per call, and a moving row is crossed by several
+ * stripes/rects that never reach them. */
+static int box_hits(const gfx_fb *fb, float x0, float y0, float x1, float y1)
+{
+    if (fb->rec || fb->ox != 0 || fb->oy != 0) return 1;
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    return x1 > (float)c0 && x0 < (float)c1 &&
+           y1 > (float)fb->y_base && y0 < (float)(fb->y_base + fb->h);
+}
+
+static void draw_pills(gfx_fb *fb, int frow, float elapsed)
+{
+    int n = wos_app_count();
+    int entering = elapsed < ENTER_BASE + LIST_WIN * ENTER_STAGGER + ENTER_DUR + 80.0f;
+    if (pill_frame.frame != wos_frame_id) {
+        pill_frame.frame = wos_frame_id;
+        pill_frame.base = frow - LIST_WIN / 2;
+        for (int s = 0; s < LIST_WIN; s++) {
+            int i = pill_frame.base + s;
+            pill_frame.row[s].valid = 0;
+            if (i >= 0 && i < n) pill_row(i, rscroll, entering ? elapsed : -1.0f, &pill_frame.row[s]);
+        }
+    }
+
+    /* Logical rows held by this stripe. Rows are separated by black gaps, so at most one
+     * pill can fully cover the stripe; there the clear skips the columns of its body
+     * between the cap centres (opaque, it overwrites everything under it). */
+    int ly0 = fb->y_base - fb->oy, ly1 = ly0 + fb->h;
+    int skip0 = 0, skip1 = 0;                  /* logical columns [skip0, skip1) */
+    if (!fb->rec && fb->ox == 0) {
+        for (int s = 0; s < LIST_WIN; s++) {
+            const pill_geom *g = &pill_frame.row[s];
+            if (!g->valid || g->dim <= 0.0f) continue;
+            if ((float)ly0 + 0.5f >= g->cy - (g->pr - 0.5f) &&
+                (float)ly1 - 0.5f <= g->cy + (g->pr - 0.5f)) {
+                skip0 = (int)ceilf(g->icx - 0.5f);
+                skip1 = (int)floorf(g->x1 - 0.5f) + 1;
+                break;
+            }
+        }
+    }
+    if (skip1 > skip0) {
+        int c0 = fb->cx0, c1 = fb->cx1, s0 = fb->cx0, s1 = fb->cx1;
+        if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+        int spans[2][2] = { { c0, skip0 < c1 ? skip0 : c1 }, { skip1 > c0 ? skip1 : c0, c1 } };
+        for (int k = 0; k < 2; k++) {
+            if (spans[k][0] >= spans[k][1]) continue;
+            fb->cx0 = spans[k][0]; fb->cx1 = spans[k][1];
+            gfx_clear(fb, GFX_BLACK);
+        }
+        fb->cx0 = s0; fb->cx1 = s1;
+    } else {
+        gfx_clear(fb, GFX_BLACK);
+    }
+
+    for (int s = 0; s < LIST_WIN; s++) {
+        const pill_geom *g = &pill_frame.row[s];
+        if (!g->valid || g->dim <= 0.0f) continue;
+        if (!fb->rec && (g->cy + g->pr + PILL_PAD < ly0 || g->cy - g->pr - PILL_PAD > ly1)) continue;
+        gfx_fill_pill(fb, g->icx, g->cy, g->x1, g->pr, g->body);
+        float ir = g->pr * 0.62f * 1.25f + 3.0f;     /* glyph extent incl. stroke + AA */
+        if (box_hits(fb, g->icx - ir, g->cy - ir, g->icx + ir, g->cy + ir)) pill_icon(fb, g);
+        float lh = font_medium.line_height + 2.0f;
+        if (box_hits(fb, g->tx - 2.0f, g->cy - lh, g->x1 + g->pr, g->cy + lh))
+            font_draw(fb, &font_medium, (int)g->tx, (int)(g->cy + font_medium.ascent * 0.30f),
+                  g->name, g->fg);
+    }
+
+    /* DIRTY: each row repaints the union of its old and new pill (its colour and size
+     * change with position, so the whole pill is new). Rows are visited top to bottom;
+     * overlapping boxes are split into non-overlapping bands so a fast fling never
+     * rasterizes a band twice (wos keeps at most 16 rects, so past 12 they merge). */
+    if (fb->rec) {
+        if (entering) {
+            wos_dirty(0, 0, GFX_W, GFX_H);
+        } else if (rscroll != prev_rscroll) {
+            int have = 0, emitted = 0, bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+            for (int s = 0; s < LIST_WIN; s++) {
+                int i = pill_frame.base + s;
+                if (i < 0 || i >= n) continue;
+                pill_geom old;
+                const pill_geom *g = &pill_frame.row[s];
+                pill_row(i, prev_rscroll, -1.0f, &old);
+                if (!g->valid && !old.valid) continue;
+                float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+                const pill_geom *both[2] = { g, &old };
+                for (int k = 0; k < 2; k++) {
+                    const pill_geom *q = both[k];
+                    if (!q->valid) continue;
+                    if (q->x0 < minx) minx = q->x0;
+                    if (q->x1 + q->pr > maxx) maxx = q->x1 + q->pr;
+                    if (q->cy - q->pr < miny) miny = q->cy - q->pr;
+                    if (q->cy + q->pr > maxy) maxy = q->cy + q->pr;
+                }
+                int x0 = (int)minx - PILL_PAD, y0 = (int)miny - PILL_PAD;
+                int x1 = (int)maxx + PILL_PAD + 1, y1 = (int)maxy + PILL_PAD + 1;
+                int cl = round_left(y0, y1);    /* outside the round glass is never seen */
+                if (x0 < cl) x0 = cl;
+                if (x1 > GFX_W - cl) x1 = GFX_W - cl;
+                if (x1 <= x0) continue;
+                if (have && y0 < by1 && y1 > by1 && emitted < 12) {
+                    /* Overlaps the pending box: split exactly into pending-above, a shared
+                     * band (x union) and the new box below - no row is rastered twice,
+                     * and a wide row never widens its neighbours' whole height. */
+                    if (y0 > by0) { wos_dirty(bx0, by0, bx1, y0); emitted++; }
+                    wos_dirty(x0 < bx0 ? x0 : bx0, y0, x1 > bx1 ? x1 : bx1, by1); emitted++;
+                    bx0 = x0; by0 = by1; bx1 = x1; by1 = y1;
+                } else if (have && y0 <= by1) {   /* nested, touching or out of rects: merge */
+                    if (x0 < bx0) bx0 = x0;
+                    if (x1 > bx1) bx1 = x1;
+                    if (y1 > by1) by1 = y1;
+                } else {
+                    if (have) { wos_dirty(bx0, by0, bx1, by1); emitted++; }
+                    bx0 = x0; by0 = y0; bx1 = x1; by1 = y1; have = 1;
+                }
+            }
+            if (have) wos_dirty(bx0, by0, bx1, by1);
+#if SHOW_SCROLLBAR
+            knob_dirty();
+#endif
+        }
+    }
+
+#if SHOW_SCROLLBAR
+    float ind_a = elapsed / 300.0f;
+    if (ind_a > 1.0f) ind_a = 1.0f;
+    /* the track and knob live on the right rim; most damage never reaches them */
+    if (box_hits(fb, GFX_CX + SCROLL_R * gfx_fast_sin(SCROLL_MID - 0.72f) - GFX_S(10), 0.0f,
+                 (float)GFX_W, (float)GFX_H))
+        scroll_indicator(fb, ind_a);
+#endif
+}
+
 static void on_draw(gfx_fb *fb)
 {
     static uint32_t s_fid = 0xFFFFFFFFu;
@@ -218,7 +550,6 @@ static void on_draw(gfx_fb *fb)
                                     * (see the draw + dirty below), not from capping scroll. */
     }
 
-    gfx_clear(fb, GFX_BLACK);
     /* Coalesce the left band into ONE dirty rect while scrolling: a THIN,
      * full-height black line down the middle of the band. It overlaps every icon
      * in x and spans all y, so all their per-row damage merges into this single
@@ -227,9 +558,14 @@ static void on_draw(gfx_fb *fb)
      * -> dirty exactly when moving; settled y is stable -> 0-dirty idle. */
     int n = wos_app_count();
     float R = GFX_W * 0.5f;               /* full bezel radius */
-    int frow = (int)(rscroll / ROW_H + 0.5f);   /* visually-centered row (ring) */
+    int frow = (int)(rscroll / row_h() + 0.5f);   /* visually-centered row (ring) */
     if (frow < 0) frow = 0;
     if (frow >= n) frow = n - 1;
+    if (applist_pills) {
+        draw_pills(fb, frow, s_elapsed);
+        if (fb->rec) prev_frow = -1;    /* classic style repaints its pill when switched back */
+        return;
+    }
 
     /* Consider a window of WIN rows around focus and draw only the ones actually
      * on screen (off-screen slots are culled, not drawn). The window is wide
@@ -305,6 +641,27 @@ static void on_draw(gfx_fb *fb)
                          + (float)font_text_width(&font_medium, focus_name) + GFX_S(9);
     }
 
+    /* The pill's flat body [0, pill_x1) x [pill_y0, pill_y1) is opaque and drawn last.
+     * A stripe whose rows lie wholly inside it (the focus-change band) skips clearing
+     * and drawing icons under it — they'd be painted over with the same result. */
+    int pill_y0 = (int)(GFX_CY - pill_r), pill_y1 = pill_y0 + (int)(2.0f * pill_r);
+    int pill_x1 = (int)frame_geom.bodyr;
+    int under_pill = !fb->rec && fb->ox == 0 && fb->oy == 0
+                  && fb->y_base >= pill_y0 && fb->y_base + fb->h <= pill_y1;
+    if (under_pill) {
+        int c0 = fb->cx0, c1 = fb->cx1;
+        if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+        if (c0 < pill_x1) c0 = pill_x1;
+        if (c0 < c1) {
+            int s0 = fb->cx0, s1 = fb->cx1;
+            fb->cx0 = c0; fb->cx1 = c1;
+            gfx_clear(fb, GFX_BLACK);
+            fb->cx0 = s0; fb->cx1 = s1;
+        }
+    } else {
+        gfx_clear(fb, GFX_BLACK);
+    }
+
     /* ---- ICONS: every visible row EXCEPT the focused one, sliding smoothly along the
      * arc. They pass BEHIND the centre pill (drawn on top, below): each slides up to the
      * band edge and tucks UNDER the pill, completing its travel instead of stopping short.
@@ -313,6 +670,7 @@ static void on_draw(gfx_fb *fb)
         const list_row_geom *g = &frame_geom.row[s];
         if (!g->valid) continue;
         const char *nm = g->name;
+        if (under_pill && g->icx + g->r + 2.0f <= (float)pill_x1) continue;
         gfx_fill_circle(fb, g->icx, g->cy, g->r, dim565(g->accent, g->dim));
         int icon = g->icon;
         if (icon != ICON_NONE) {
@@ -333,7 +691,7 @@ static void on_draw(gfx_fb *fb)
      * a clean straight edge — no rounded-corner peek, no gap, no early stop. No triangle.
      * The dirty pass repaints this band only on a focus change. ---- */
     float icx0 = GFX_S(17) + pill_r;                     /* fixed icon anchor (unchanged) */
-    float pill_right;
+    float pill_right = frame_geom.bodyr + pill_r;
     {
         const char *nm = wos_app_name(frow);
         uint16_t body = wos_app_accent(frow);
@@ -357,16 +715,13 @@ static void on_draw(gfx_fb *fb)
     }
 
     /* ---- DIRTY (record pass only) ----
-     * Two independent kinds of damage, kept on SEPARATE frames so neither frame goes over
-     * budget:
+     * Two independent kinds of damage, repainted together:
      *   - ICON boxes: one narrow old->new sweep box per sliding icon, cropped at both band
      *     lines (the frozen pill owns the middle). Cheap, tear-free.
      *   - PILL-SWAP band: on a focus change the label changes -> a wider (one-row) repaint.
-     *     It gets its OWN frame (icons frozen that frame) so the wide band never shares a
-     *     frame with the icon boxes. Icons resume next frame, sweeping from `icon_flush`
-     *     (their last actually-flushed position, NOT prev_rscroll). A safety net still
-     *     refreshes icons on a swap frame if they've fallen >half a row behind (fast scroll),
-     *     so they never freeze outright. */
+     *     This used to get its own frame with the icons frozen, which hitched the scroll at
+     *     every row crossing. Skipping the clear/icons hidden under the opaque pill makes the
+     *     combined frame fit the budget, so icons keep moving through a focus change. */
     if (fb->rec) {
         int focus_changed = (frow != prev_frow);
         int entering = (s_elapsed < ENTER_BASE + LIST_WIN * ENTER_STAGGER + ENTER_DUR + 80.0f);
@@ -378,12 +733,7 @@ static void on_draw(gfx_fb *fb)
             icon_flush = rscroll;
         } else {
             int do_band  = focus_changed;
-            int do_icons = (moved || dragging) && !focus_changed;
-            if (focus_changed) {                    /* safety: don't let icons freeze at speed */
-                float behind = rscroll - icon_flush;
-                if (behind < 0) behind = -behind;
-                if (behind > ROW_H * 0.5f) do_icons = 1;
-            }
+            int do_icons = moved || dragging;
             if (do_icons) {
                 float m = GFX_S(5);      /* margin: catch edges, keep box < 125px wide */
                 for (int i = frow - LIST_WIN / 2; i <= frow + LIST_WIN / 2; i++) {
@@ -447,28 +797,7 @@ static void on_draw(gfx_fb *fb)
                 wos_dirty(0, bandtop, (int)(br + GFX_S(4)), bandbot);
             }
 #if SHOW_SCROLLBAR
-            if (moved || dragging || focus_changed) {
-                /* knob: dirty just its OLD+NEW circle; the bounding box covers the swept path,
-                 * so the old knob is erased -> no trail. */
-                float mm = max_scroll();
-                float a0 = SCROLL_MID - 0.72f, a1 = SCROLL_MID + 0.72f;
-                float kr = GFX_S(6.0f) + GFX_S(2);         /* knob radius + AA */
-                float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
-                for (int p = 0; p < 2; p++) {
-                    float sv = p ? prev_rscroll : rscroll;
-                    float frac = mm > 0 ? sv / mm : 0;
-                    if (frac < 0) frac = 0;
-                    if (frac > 1) frac = 1;
-                    float th = a0 + frac * (a1 - a0);
-                    float kx = GFX_CX + SCROLL_R * gfx_fast_sin(th);
-                    float ky = GFX_CY - SCROLL_R * gfx_fast_cos(th);
-                    if (kx - kr < minx) minx = kx - kr;
-                    if (kx + kr > maxx) maxx = kx + kr;
-                    if (ky - kr < miny) miny = ky - kr;
-                    if (ky + kr > maxy) maxy = ky + kr;
-                }
-                wos_dirty((int)minx, (int)miny, (int)maxx, (int)maxy);
-            }
+            if (moved || dragging || focus_changed) knob_dirty();
 #endif
         }
         prev_frow = frow;
@@ -484,7 +813,7 @@ static void on_draw(gfx_fb *fb)
 
 static int focused_row(void)
 {
-    int i = (int)(scroll / ROW_H + 0.5f);
+    int i = (int)(scroll / row_h() + 0.5f);
     if (i < 0) i = 0;
     if (i >= wos_app_count()) i = wos_app_count() - 1;
     return i;
@@ -496,9 +825,9 @@ static int row_at(int y)
     float best = 1e9f; int hit = -1;
     int n = wos_app_count();
     for (int i = 0; i < n; i++) {
-        float cy = GFX_CY + i * ROW_H - rscroll;
+        float cy = GFX_CY + i * row_h() - rscroll;
         float d = fabsf(cy - y);
-        if (d < best && d < ROW_H * 0.5f) { best = d; hit = i; }
+        if (d < best && d < row_h() * 0.5f) { best = d; hit = i; }
     }
     return hit;
 }
@@ -552,7 +881,7 @@ static int on_event(const wos_event *ev)
             else if (scroll > m) { scroll += (m - scroll) * 0.30f; vel = 0; }
             else if (fabsf(vel) < 40.0f) {
                 /* settle onto the nearest row (focal snap) */
-                float target = focused_row() * ROW_H;
+                float target = focused_row() * row_h();
                 scroll += (target - scroll) * 0.22f;
                 vel = 0;
             }

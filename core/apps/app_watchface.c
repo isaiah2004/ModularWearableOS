@@ -583,7 +583,7 @@ static void draw_veil(gfx_fb *fb, uint8_t alpha)
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
     for (int y = 0; y < fb->h; y++) {
-        uint16_t *row = &fb->px[y * GFX_W];
+        uint16_t *row = gfx_row(fb, y);
         for (int x = c0; x < c1; x++)
             row[x] = gfx_blend565(row[x], GFX_BLACK, alpha);
     }

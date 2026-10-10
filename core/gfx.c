@@ -1,4 +1,5 @@
 #include "gfx.h"
+#include <stdint.h>
 #include <math.h>
 
 /* ---- damage recording (retained-mode diff; see gfx.h) ---- */
@@ -58,6 +59,17 @@ static float fast_sqrt(float x)
 static int ifloor(float x) { int i = (int)x; return i - (x < (float)i); }
 static int iceil(float x)  { int i = (int)x; return i + (x > (float)i); }
 
+/* Clamp a logical row range [*py0,*py1] to the rows this buffer/stripe holds.
+ * Returns 0 when nothing is left: every stripe of every dirty rect re-runs the
+ * whole draw list, so a primitive outside it must cost a test, not a row walk. */
+static int clip_rows(const gfx_fb *fb, int *py0, int *py1)
+{
+    int lo = fb->y_base - fb->oy, hi = lo + fb->h - 1;
+    if (*py0 < lo) *py0 = lo;
+    if (*py1 > hi) *py1 = hi;
+    return *py0 <= *py1;
+}
+
 /* Fast exp — expf is soft too. e^x = 2^(x/ln2) via the classic float bit-hack
  * (Schraudolph): stuff the exponent field directly. ~2% accurate, plenty for
  * the cosmetic Gaussian falloffs (icon fisheye, list focal bell) that call it.
@@ -109,8 +121,20 @@ void gfx_px_blend(gfx_fb *fb, int x, int y, uint16_t color, uint8_t alpha)
       if (c0 < 0) c0 = 0;
       if (c1 > GFX_W) c1 = GFX_W;
       if (x < c0 || x >= c1) return; }
-    uint16_t *p = &fb->px[y * GFX_W + x];
+    uint16_t *p = &gfx_row(fb, y)[x];
     *p = (alpha >= 255) ? color : gfx_blend565(*p, color, alpha);
+}
+
+/* Solid span fill with word stores: the stripe buffers are 4-byte aligned and
+ * dirty rects are even-aligned, so nearly every span is a run of 32-bit writes. */
+static void fill_span(uint16_t *p, int n, uint16_t color)
+{
+    if (n <= 0) return;
+    if ((uintptr_t)p & 2) { *p++ = color; n--; }
+    uint32_t two = ((uint32_t)color << 16) | color;
+    uint32_t *q = (uint32_t *)p;
+    for (int i = 0; i < n / 2; i++) q[i] = two;
+    if (n & 1) p[n - 1] = color;
 }
 
 void gfx_clear(gfx_fb *fb, uint16_t color)
@@ -124,17 +148,15 @@ void gfx_clear(gfx_fb *fb, uint16_t color)
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }        /* sentinel: no x-clip */
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
-    if (fb->ox == 0 && fb->oy == 0 && c0 == 0 && c1 == GFX_W) {
+    if (fb->ox == 0 && fb->oy == 0 && c0 == 0 && c1 == GFX_W && !fb->stride && !fb->x_base) {
         uint32_t two = ((uint32_t)color << 16) | color;
         uint32_t *p = (uint32_t *)fb->px;
         for (int i = 0; i < GFX_W * fb->h / 2; i++)
             p[i] = two;
     } else if (fb->ox == 0 && fb->oy == 0) {
         /* 2D dirty-rect render: clear only the dirty columns of each row */
-        for (int y = 0; y < fb->h; y++) {
-            uint16_t *row = &fb->px[y * GFX_W];
-            for (int x = c0; x < c1; x++) row[x] = color;
-        }
+        for (int y = 0; y < fb->h; y++)
+            fill_span(&gfx_row(fb, y)[c0], c1 - c0, color);
     } else {
         /* translated (mid page-slide): clear only this app's window so a
          * neighbor drawn earlier isn't wiped */
@@ -163,11 +185,8 @@ void gfx_fill_rect(gfx_fb *fb, int x, int y, int w, int h, uint16_t color)
       if (c1 > GFX_W) c1 = GFX_W;
       if (x0 < c0) x0 = c0;
       if (x1 > c1) x1 = c1; }
-    for (int yy = y0; yy < y1; yy++) {
-        uint16_t *row = &fb->px[yy * GFX_W];
-        for (int xx = x0; xx < x1; xx++)
-            row[xx] = color;
-    }
+    for (int yy = y0; yy < y1; yy++)
+        fill_span(&gfx_row(fb, yy)[x0], x1 - x0, color);
 }
 
 /* ---- SDF helpers: coverage = how far inside the shape edge a pixel
@@ -197,9 +216,9 @@ static uint8_t coverage(float signed_dist_inside)
         if (_c1 > GFX_W) _c1 = GFX_W;                                    \
         if (_x0 < _c0) _x0 = _c0;                                        \
         if (_x1 > _c1 - 1) _x1 = _c1 - 1;                                \
-        for (int py = _y0; py <= _y1; py++) {                            \
+        for (int py = _y0; _x0 <= _x1 && py <= _y1; py++) {              \
             float fy = (float)(py - (fb)->oy + (fb)->y_base) + 0.5f;     \
-            uint16_t *_row = &(fb)->px[py * GFX_W];                      \
+            uint16_t *_row = gfx_row((fb), py);                          \
             for (int px_ = _x0; px_ <= _x1; px_++) {                     \
                 float fx = (float)(px_ - (fb)->ox) + 0.5f;               \
                 uint8_t _a;                                              \
@@ -227,10 +246,11 @@ static void fill_circle_raster(gfx_fb *fb, float cx, float cy, float r, uint16_t
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
     int pxlo = c0 - fb->ox, pxhi = c1 - 1 - fb->ox;
+    if (iceil(cx + r_out) < pxlo || ifloor(cx - r_out) > pxhi) return;
     int py0 = ifloor(cy - r_out), py1 = iceil(cy + r_out);
+    if (!clip_rows(fb, &py0, &py1)) return;
     for (int py = py0; py <= py1; py++) {
         int by = py + fb->oy - fb->y_base;
-        if ((unsigned)by >= (unsigned)fb->h) continue;
         float dy = (py + 0.5f) - cy;
         float ao = ro2 - dy * dy;
         if (ao <= 0) continue;
@@ -238,7 +258,7 @@ static void fill_circle_raster(gfx_fb *fb, float cx, float cy, float r, uint16_t
         float ai = ri2 - dy * dy;
         int solidL = 1, solidR = 0;                 /* empty by default */
         if (ai > 0) { float xi = fast_sqrt(ai); solidL = iceil(cx - xi); solidR = ifloor(cx + xi); }
-        uint16_t *row = &fb->px[by * GFX_W];
+        uint16_t *row = gfx_row(fb, by);
         int px0 = ifloor(cx - xo), px1 = iceil(cx + xo);
         if (px0 < pxlo) px0 = pxlo;
         if (px1 > pxhi) px1 = pxhi;
@@ -266,6 +286,69 @@ void gfx_fill_circle(gfx_fb *fb, float cx, float cy, float r, uint16_t color)
         return;
     }
     fill_circle_raster(fb, cx, cy, r, color);
+}
+
+/* One AA cap of a pill: columns [k0,k1] of `row`, distance measured to (ccx, row centre). */
+static void pill_cap(uint16_t *row, int k0, int k1, float ccx, float dy2, float r, float ri2,
+                     uint16_t color)
+{
+    for (int px = k0; px <= k1; px++) {
+        float dx = (px + 0.5f) - ccx;
+        float d2 = dx * dx + dy2;
+        uint8_t a = d2 < ri2 ? 255 : coverage(r - fast_sqrt(d2));
+        if (a == 255) row[px] = color;
+        else if (a) row[px] = gfx_blend565(row[px], color, a);
+    }
+}
+
+void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t color)
+{
+    if (xb < xa) xb = xa;
+    if (fb->rec) {
+        unsigned hh = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_u(9u, color), xa), cy), xb), r);
+        gfx_rec_cmd(fb, ifloor(xa - r - 1), ifloor(cy - r - 1), iceil(xb + r + 1) + 1, iceil(cy + r + 1) + 1, hh);
+        return;
+    }
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    if (c0 < 0) c0 = 0;
+    if (c1 > GFX_W) c1 = GFX_W;
+    int pxlo = c0 - fb->ox, pxhi = c1 - 1 - fb->ox;     /* logical column clip */
+    int lcap = ifloor(xa - r - 1.0f), rcap = iceil(xb + r + 1.0f);
+    if (rcap < pxlo || lcap > pxhi) return;
+    /* body = pixels whose centre lies in [xa, xb]: vertical coverage only */
+    int ba = iceil(xa - 0.5f), bb = ifloor(xb - 0.5f);
+    int py0 = ifloor(cy - r - 1.0f), py1 = iceil(cy + r + 1.0f);
+    if (!clip_rows(fb, &py0, &py1)) return;
+    float ri = r - 1.0f, ri2 = ri > 0 ? ri * ri : 0.0f;
+    int l0 = lcap < pxlo ? pxlo : lcap, l1 = ba - 1 > pxhi ? pxhi : ba - 1;
+    int b0 = ba < pxlo ? pxlo : ba, b1 = bb > pxhi ? pxhi : bb;
+    int k0 = bb + 1 < pxlo ? pxlo : bb + 1, k1 = rcap > pxhi ? pxhi : rcap;
+    for (int py = py0; py <= py1; py++) {
+        uint16_t *row = gfx_row(fb, py + fb->oy - fb->y_base) + fb->ox;
+        float dy = (py + 0.5f) - cy, ady = dy < 0 ? -dy : dy;
+        uint8_t ay = coverage(r - ady);
+        if (!ay) continue;
+        float dy2 = dy * dy;
+        if (ay == 255 && dy2 < ri2) {
+            /* opaque row: the caps' solid cores join the body into ONE span (one sqrt
+             * per row); only the few rim pixels outside it take per-pixel coverage */
+            float h = fast_sqrt(ri2 - dy2) - 0.01f;
+            int s0 = iceil(xa - h - 0.5f), s1 = ifloor(xb + h - 0.5f);
+            if (s0 < pxlo) s0 = pxlo;
+            if (s1 > pxhi) s1 = pxhi;
+            pill_cap(row, l0, s0 - 1 < l1 ? s0 - 1 : l1, xa, dy2, r, ri2, color);
+            if (s0 <= s1) fill_span(&row[s0], s1 - s0 + 1, color);
+            pill_cap(row, s1 + 1 > k0 ? s1 + 1 : k0, k1, xb, dy2, r, ri2, color);
+            continue;
+        }
+        pill_cap(row, l0, l1, xa, dy2, r, ri2, color);
+        if (b0 <= b1) {
+            if (ay == 255) fill_span(&row[b0], b1 - b0 + 1, color);
+            else for (int px = b0; px <= b1; px++) row[px] = gfx_blend565(row[px], color, ay);
+        }
+        pill_cap(row, k0, k1, xb, dy2, r, ri2, color);
+    }
 }
 
 /* Tapered thick line (clock hand): a swept disc from (ax,ay) half-width ha to
@@ -302,7 +385,7 @@ void gfx_taper(gfx_fb *fb, float ax, float ay, float bx, float by,
         int byi = py + fb->oy - fb->y_base;
         if ((unsigned)byi >= (unsigned)fb->h) continue;
         float fy = py + 0.5f;
-        uint16_t *row = &fb->px[byi * GFX_W];
+        uint16_t *row = gfx_row(fb, byi);
         for (int px = px0; px <= px1; px++) {
             unsigned bxi = (unsigned)(px + fb->ox);
             if (bxi < (unsigned)c0 || bxi >= (unsigned)c1) continue;
@@ -350,22 +433,23 @@ void gfx_ring(gfx_fb *fb, float cx, float cy, float r_mid, float thickness, uint
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
     int pxlo = c0 - fb->ox, pxhi = c1 - 1 - fb->ox;
+    if (iceil(cx + r_out) < pxlo || ifloor(cx - r_out) > pxhi) return;
 
-    int py0 = (int)floorf(cy - r_out), py1 = (int)ceilf(cy + r_out);
+    int py0 = ifloor(cy - r_out), py1 = iceil(cy + r_out);
+    if (!clip_rows(fb, &py0, &py1)) return;
     for (int py = py0; py <= py1; py++) {
         int by = py + fb->oy - fb->y_base;
-        if ((unsigned)by >= (unsigned)fb->h) continue;
         float dy = (py + 0.5f) - cy;
         float ao = r_out2 - dy * dy;
         if (ao <= 0) continue;
         float xo = fast_sqrt(ao);
         int hole = (dy * dy < r_in2);
         float xi = hole ? fast_sqrt(r_in2 - dy * dy) : 0.0f;
-        uint16_t *row = &fb->px[by * GFX_W];
+        uint16_t *row = gfx_row(fb, by);
         for (int seg = 0; seg < (hole ? 2 : 1); seg++) {
             float lx = !hole ? cx - xo : (seg == 0 ? cx - xo : cx + xi);
             float rx = !hole ? cx + xo : (seg == 0 ? cx - xi : cx + xo);
-            int px0 = (int)floorf(lx), px1 = (int)ceilf(rx);
+            int px0 = ifloor(lx), px1 = iceil(rx);
             if (px0 < pxlo) px0 = pxlo;
             if (px1 > pxhi) px1 = pxhi;
             for (int px = px0; px <= px1; px++) {
@@ -459,24 +543,25 @@ void gfx_arc(gfx_fb *fb, float cx, float cy, float r_mid, float thickness,
     if (cc0 < 0) cc0 = 0;
     if (cc1 > GFX_W) cc1 = GFX_W;
     int pxlo = cc0 - fb->ox, pxhi = cc1 - 1 - fb->ox;
-    int py0 = (int)floorf(cy - cmax * r_mid - pad);
-    int py1 = (int)ceilf(cy - cmin * r_mid + pad);
+    if (iceil(wx1) < pxlo || ifloor(wx0) > pxhi) return;
+    int py0 = ifloor(cy - cmax * r_mid - pad);
+    int py1 = iceil(cy - cmin * r_mid + pad);
+    if (!clip_rows(fb, &py0, &py1)) return;
     for (int py = py0; py <= py1; py++) {
         int by_ = py + fb->oy - fb->y_base;
-        if ((unsigned)by_ >= (unsigned)fb->h) continue;
         float dy = (py + 0.5f) - cy;
         float ao = r_out2 - dy * dy;
         if (ao <= 0) continue;
         float xo = fast_sqrt(ao);
         int hole = (dy * dy < r_in2);
         float xi = hole ? fast_sqrt(r_in2 - dy * dy) : 0.0f;
-        uint16_t *row = &fb->px[by_ * GFX_W];
+        uint16_t *row = gfx_row(fb, by_);
         for (int seg = 0; seg < (hole ? 2 : 1); seg++) {
             float lx = !hole ? cx - xo : (seg == 0 ? cx - xo : cx + xi);
             float rx = !hole ? cx + xo : (seg == 0 ? cx - xi : cx + xo);
             if (lx < wx0) lx = wx0;
             if (rx > wx1) rx = wx1;
-            int px0 = (int)floorf(lx), px1 = (int)ceilf(rx);
+            int px0 = ifloor(lx), px1 = iceil(rx);
             if (px0 < pxlo) px0 = pxlo;
             if (px1 > pxhi) px1 = pxhi;
             for (int px = px0; px <= px1; px++) {
@@ -584,7 +669,7 @@ void gfx_line(gfx_fb *fb, float x0, float y0, float x1, float y1,
     float vx = x1 - x0, vy = y1 - y0;
     float vlen2 = vx * vx + vy * vy;
     if (vlen2 < 1e-6f) { fill_circle_raster(fb, x0, y0, half, color); return; }
-    float inv = 1.0f / vlen2, rmax = half + 1.0f, rmax2 = rmax * rmax;
+    float rmax = half + 1.0f, rmax2 = rmax * rmax;
     /* 2D dirty-rect x-window (buffer columns; sentinel cx1<=cx0 => full width) */
     int c0 = fb->cx0, c1 = fb->cx1;
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
@@ -592,11 +677,15 @@ void gfx_line(gfx_fb *fb, float x0, float y0, float x1, float y1,
     if (c1 > GFX_W) c1 = GFX_W;
     int bx0 = ifloor((x0 < x1 ? x0 : x1) - rmax), bx1 = iceil((x0 > x1 ? x0 : x1) + rmax);
     int py0 = ifloor((y0 < y1 ? y0 : y1) - rmax), py1 = iceil((y0 > y1 ? y0 : y1) + rmax);
+    if (bx1 + fb->ox < c0 || bx0 + fb->ox >= c1) return;
+    if (!clip_rows(fb, &py0, &py1)) return;
+    if (bx0 < c0 - fb->ox) bx0 = c0 - fb->ox;
+    if (bx1 > c1 - 1 - fb->ox) bx1 = c1 - 1 - fb->ox;
+    float inv = 1.0f / vlen2;
     for (int py = py0; py <= py1; py++) {
         int by = py + fb->oy - fb->y_base;
-        if ((unsigned)by >= (unsigned)fb->h) continue;
         float fy = py + 0.5f;
-        uint16_t *row = &fb->px[by * GFX_W];
+        uint16_t *row = gfx_row(fb, by);
         for (int px = bx0; px <= bx1; px++) {
             unsigned bxi = (unsigned)(px + fb->ox);
             if (bxi < (unsigned)c0 || bxi >= (unsigned)c1) continue;

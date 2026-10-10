@@ -1,0 +1,7 @@
+# 1.43C (ESP32-S3-PICO-1-N8R8): 8 MB flash. Same layout as the original 1.43C
+# firmware: 7 MB app (current image ~6.65 MB) + ~1 MB storage. Settings in NVS.
+# Name, Type, SubType, Offset, Size
+nvs, data, nvs, 0x9000, 0x6000
+phy_init, data, phy, 0xf000, 0x1000
+factory, app, factory, 0x10000, 0x700000
+storage, data, spiffs, 0x710000, 0xf0000

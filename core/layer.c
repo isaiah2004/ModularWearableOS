@@ -84,7 +84,7 @@ void layer_blit(gfx_fb *dst, int tag)
         int right = (tx + w) > c1 ? c1 : (tx + w);
         int ww = right - left;
         if (ww > 0)
-            memcpy(&dst->px[dy * GFX_W + left], &src[y * GFX_W + sx + (left - tx)],
+            memcpy(&gfx_row(dst, dy)[left], &src[y * GFX_W + sx + (left - tx)],
                    (size_t)ww * sizeof(uint16_t));
     }
 }

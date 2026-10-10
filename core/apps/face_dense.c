@@ -88,11 +88,12 @@ static void draw_earth(gfx_fb *fb, int ecx, int ecy, int fa, int fb2, uint8_t al
         int y = py + fb->y_base;
         int ey = y - y0;
         if ((unsigned)ey >= (unsigned)s) continue;
-        uint16_t *dst = &fb->px[py * GFX_W];
+        uint16_t *dst = gfx_row(fb, py);
         const uint16_t *ra = &A[ey * s], *rb = &B[ey * s];
         int lo = x0 < c0 ? c0 : x0;
         int hi = (x0 + s) > c1 ? c1 : (x0 + s);
         if (hi > GFX_W) hi = GFX_W;
+        if (hi <= lo) return;                     /* clip window misses the sprite */
         if (mode == 0)
             memcpy(&dst[lo], &ra[lo - x0], (size_t)(hi - lo) * 2);
         else if (mode == 1)
@@ -146,7 +147,10 @@ void face_dense_draw(gfx_fb *fb, const hal_datetime *t)
         /* Linear cross-fade = constant motion velocity (no pulsing). Any easing
          * varies velocity within each keyframe interval and reads as pulsing. */
         float frac = pos - (float)s_fa;
-        s_alpha = (uint8_t)(frac * 255.0f);
+        /* 16 blend steps per keyframe (~22 updates/s at 1.4 keyframes/s): a 78k px
+         * two-frame blend costs ~20 ms, so blending anew every frame held the face at
+         * ~34 fps. Steps of 17/255 are below what the slow glow shows. */
+        s_alpha = (uint8_t)((int)(frac * 16.0f) * 17);
         /* Above ~75% brightness the panel steepens/switches its own gamma and the
          * cross-fade mid-point dips; snap to the nearest keyframe there so there
          * is no mid-fade to distort (trades smoothness for a stepped globe). */

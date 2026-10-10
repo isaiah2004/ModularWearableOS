@@ -58,12 +58,31 @@ void wos_register_overlay(int edge, const wos_app *screen, int flags);
  * the next band's render. The platform supplies:
  *   wait_free() — block until a stripe buffer is free to overwrite (its prior
  *                 DMA has completed); called once before each band is drawn.
- *   flush(buf, y0, rows) — start the async transfer of a freshly drawn band.
+ *   flush(buf, stride, x0, y0, w, rows) — start the async transfer of the freshly
+ *                 drawn sub-rect [x0,x0+w) x [y0,y0+rows); buf points at its first
+ *                 pixel and consecutive rows are `stride` pixels apart.
  * If never called, wos_run_frame() falls back to a single full-frame draw into
  * the wos_init() framebuffer (the simulator path). */
 void wos_set_stripes(uint16_t *buf_a, uint16_t *buf_b, int stripe_h,
                      void (*wait_free)(void),
-                     void (*flush)(uint16_t *buf, int x0, int y0, int w, int rows));
+                     void (*flush)(uint16_t *buf, int stride, int x0, int y0, int w, int rows));
+
+/* Order dirty pixels reach the panel in (device stripe path only):
+ *   0 = row stripes, top->bottom (stripe_h rows x rect width)
+ *   1 = column bands, right->left (full rect height x as many columns as fit)
+ *   2 = column bands, left->right
+ * The panel is mounted rotated, so its scan lines are UI columns; column bands
+ * write in the same direction the scan sweeps instead of across it. */
+extern int wos_scan_order;
+
+/* Experimental frame-rate cap: 1 = pace the whole UI at 48fps instead of 60.
+ * The host main loop reads it (device: firmware frame deadline). Persisted. */
+extern int wos_fps_cap48;
+
+/* Fast display: wire format for every flush. 0 = full RGB565, 1 = 256 colours
+ * (RGB332, ordered dither), 2 = 256 greys. 8 bits per pixel halves the bytes per
+ * frame on the panel bus. Device only (the host switches the panel); persisted. */
+extern int wos_fast_display;
 
 /* Optional vsync gate. If set, the OS calls it once per frame that has pixels
  * to draw, right before flushing, so the platform can block until the panel's

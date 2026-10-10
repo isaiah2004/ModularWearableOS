@@ -23,6 +23,7 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/gpio.h"
 /* NimBLE passive-observer stack (host + controller) */
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -39,6 +40,7 @@
 #include "pins.h"
 #include "board.h"
 #include "board_protocol.h"
+#include "ota.h"
 
 void display_set_brightness(uint8_t level); /* main.c, DCS 0x51 */
 
@@ -156,6 +158,9 @@ void hal_esp32_sample_power(void)
     if(s_power_seen && now_ms-s_power_ms>3000) { s_battery_stable=0; s_high_stable=0; }
     int samples[8], count=0;
     int usb=usb_serial_jtag_is_connected(); /* SOF from a host, not charge current. */
+#ifdef PIN_CHG_STAT
+    if(!gpio_get_level(PIN_CHG_STAT)) usb=1; /* 1.43C: GPIO4 is VBAT/2; STAT low = charging */
+#endif
     for (int i=0;s_adc && i<8;i++) {
         int raw=0,mv=0;
         if (adc_oneshot_read(s_adc,BAT_ADC_CHANNEL,&raw)!=ESP_OK) continue;
@@ -1137,6 +1142,7 @@ static void web_start(void)
     if (s_httpd) return;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.recv_wait_timeout = 12;              /* cover POST is ~160KB; allow slow chunks */
+    cfg.max_uri_handlers = 12;               /* 6 here + 3 OTA (ota.c) */
     if (httpd_start(&s_httpd, &cfg) != ESP_OK) { s_httpd = NULL; return; }
     httpd_uri_t r  = { .uri = "/",      .method = HTTP_GET,  .handler = web_root };
     httpd_uri_t w  = { .uri = "/wifi",  .method = HTTP_POST, .handler = web_wifi };
@@ -1150,7 +1156,8 @@ static void web_start(void)
     httpd_register_uri_handler(s_httpd, &m);
     httpd_register_uri_handler(s_httpd, &cm);
     httpd_register_uri_handler(s_httpd, &nt);
-    printf("WEB: server up (/wifi /cover /media /cmd /notify)\n");
+    ota_register_web(s_httpd);
+    printf("WEB: server up (/wifi /cover /media /cmd /notify /update)\n");
 }
 
 /* SNTP: once online, sync the clock from the internet (auto date/time over Wi-Fi). */
@@ -1421,6 +1428,16 @@ void hal_esp32_init_periph(void)
     };
     if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_cali) != ESP_OK)
         s_cali = NULL;
+#ifdef PIN_CHG_STAT
+    gpio_config_t chg = { .pin_bit_mask = 1ULL << PIN_CHG_STAT, .mode = GPIO_MODE_INPUT,
+                          .pull_up_en = GPIO_PULLUP_ENABLE };
+    ESP_ERROR_CHECK(gpio_config(&chg));
+#endif
+#ifdef PIN_LED
+    gpio_config_t led = { .pin_bit_mask = 1ULL << PIN_LED, .mode = GPIO_MODE_OUTPUT };
+    ESP_ERROR_CHECK(gpio_config(&led));
+    gpio_set_level(PIN_LED, 1); /* active low: off */
+#endif
 
 }
 

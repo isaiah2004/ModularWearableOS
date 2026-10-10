@@ -41,7 +41,21 @@ typedef struct {
                        thin change repaints a thin column, not a full row-band.
                        0..GFX_W means "no clip" (whole width). */
     gfx_rec *rec;   /* non-NULL => record commands instead of rasterizing */
+    /* Column-band buffers (device scan-order flush): the buffer holds only buffer
+     * columns [x_base, x_base+stride) of each row, packed `stride` apart. Both 0
+     * (the default for every positional initializer) = full GFX_W-wide rows. All
+     * column clipping stays in screen columns (cx0/cx1), so only row addressing
+     * changes - always go through gfx_row(). */
+    int stride, x_base;
 } gfx_fb;
+
+/* Pointer such that gfx_row(fb, r)[bx] is buffer row r, buffer column bx (screen
+ * column + ox). With a column band this points before the band's first pixel
+ * (bx < x_base is never written: every writer clips to cx0/cx1 inside the band). */
+static inline uint16_t *gfx_row(const gfx_fb *fb, int r)
+{
+    return fb->px + (r * (fb->stride ? fb->stride : GFX_W) - fb->x_base);
+}
 
 /* Record a primitive's screen bbox + a hash of its visual parameters. Returns
  * 1 if the fb is in record mode (caller must then return without drawing),
@@ -83,6 +97,10 @@ void gfx_px_blend(gfx_fb *fb, int x, int y, uint16_t color, uint8_t alpha);
 /* Anti-aliased primitives. Coordinates are float so hands/ticks can sit
  * at exact angles; angles are radians, 0 = 12 o'clock, clockwise. */
 void gfx_fill_circle(gfx_fb *fb, float cx, float cy, float r, uint16_t color);
+/* Horizontal capsule of radius r: round caps centred (xa, cy) and (xb, cy), fully
+ * anti-aliased. Solid spans are word-filled; only the cap rims and the two
+ * fractional edge rows pay per-pixel coverage math. */
+void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t color);
 void gfx_ring(gfx_fb *fb, float cx, float cy, float r_mid, float thickness, uint16_t color);
 void gfx_arc(gfx_fb *fb, float cx, float cy, float r_mid, float thickness,
              float a0, float a1, uint16_t color);

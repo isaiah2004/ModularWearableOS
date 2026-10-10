@@ -5,6 +5,9 @@
 /firmware/managed_components/
 /firmware/sdkconfig
 /firmware/sdkconfig.old
+/firmware/build_c143/
+/firmware/sdkconfig.c143
+/firmware/sdkconfig.c143.old
 __pycache__/
 *.pyc
 /shot_*.bmp

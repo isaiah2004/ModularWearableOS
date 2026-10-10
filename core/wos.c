@@ -11,6 +11,17 @@ int wos_debug_hud = 0;   /* on-screen fps pill: OFF by default (its per-frame re
                           * the static-screen power saving); toggle with the `hud` serial command */
 static float s_hud_fps;
 
+/* Debug "redraw boxes": outline every rectangle actually sent to the panel this frame
+ * (green; red = the frame went out as one atomic band). Last frame's outlines are
+ * erased by also repainting their 2px edges, unoutlined, wherever this frame's rects
+ * don't already cover them - so a static screen ends up clean. Costs extra flushes,
+ * and the extra rects keep frames off the atomic path while it's on. */
+int wos_debug_rects = 0;
+int wos_fast_display = 0;   /* 8-bit panel wire format (see wos.h) */
+int wos_fps_cap48 = 0;   /* host paces frames at 48fps instead of 60 (see wos.h) */
+#define DBG_EDGE 2
+static int s_dbg_prev[28][4], s_dbg_prev_n;
+
 #define SLOP          (GFX_W / 24)
 #define EDGE_MARGIN   (GFX_W / 8)      /* a drag starting this close to an
                                           edge is an overlay-open gesture */
@@ -38,7 +49,8 @@ uint32_t wos_frame_id;
 static uint16_t *s_stripe[2];
 static int s_stripe_h;
 static void (*s_stripe_wait)(void);
-static void (*s_stripe_flush)(uint16_t *, int, int, int, int);   /* buf,x0,y0,w,rows */
+static void (*s_stripe_flush)(uint16_t *, int, int, int, int, int);   /* buf,stride,x0,y0,w,rows */
+int wos_scan_order;   /* 0 = row stripes: column bands (1/2) measured faster but tore worse on the panel */
 static void (*s_vsync)(void);   /* wait for panel TE before flushing (optional) */
 /* Frame hooks for atomic present: begin(atomic) is called before the raster
  * pass (host switches stripe flushes to accumulate into a back-buffer when
@@ -120,6 +132,14 @@ static char     s_callout[24];          /* transient power/action toast */
 static uint32_t s_callout_until;
 #define TX_FADE 34
 #define TX_STEP_PROG 0.16f              /* prog/frame for the non-drag settle (~6 frames) */
+/* Transition damage. Each frame only the strip the fade front swept since the
+ * last presented frame changes (|dp| + TX_FADE px), so the transition repaints
+ * that band instead of the whole screen. The FROM/TO snapshots also record their
+ * draw commands, so when the fade ends the real screen diffs against the
+ * snapshot it lands on (plus the unswept tail) instead of a forced full repaint. */
+static int  s_tx_p_prev, s_tx_p_cur;    /* sweep position last presented / this frame */
+static gfx_rec *s_rec_snap[2];          /* recordings of the FROM (0) / TO (1) snapshots */
+static int  s_tx_tail[4], s_tx_tail_ok; /* commit frame: the strip still showing the fade */
 static int  wos_crossfade_begin(int axis, int dir, int to_active, int to_app, int drag);
 
 /* ---- geometry helpers ---- */
@@ -231,7 +251,7 @@ void wos_open_app(int i)
 
 void wos_set_stripes(uint16_t *buf_a, uint16_t *buf_b, int stripe_h,
                      void (*wait_free)(void),
-                     void (*flush)(uint16_t *, int, int, int, int))
+                     void (*flush)(uint16_t *, int, int, int, int, int))
 {
     s_stripe[0] = buf_a;
     s_stripe[1] = buf_b;
@@ -482,29 +502,69 @@ static void wos_draw_all(gfx_fb *fb)
     }
 }
 
-/* Render the CURRENT screen state (app + overlay, no HUD) into a full-frame PSRAM buffer. */
-static void render_state_to(uint16_t *buf)
+/* Render the CURRENT screen state (app + overlay, no HUD) into a full-frame PSRAM buffer,
+ * and record its draw commands into snapshot `snap` (same frame id, so the recording
+ * matches the pixels) to serve as the damage baseline when the transition ends. */
+static void render_state_to(uint16_t *buf, int snap)
 {
     gfx_fb fb;
     fb.px = buf; fb.ox = fb.oy = 0; fb.y_base = 0; fb.h = GFX_H;
-    fb.cx0 = 0; fb.cx1 = GFX_W; fb.rec = 0;
+    fb.cx0 = 0; fb.cx1 = GFX_W; fb.rec = 0; fb.stride = fb.x_base = 0;
     int hud = wos_debug_hud; wos_debug_hud = 0;
     int tx = s_tx; s_tx = 0;               /* draw the real screen, not the transition */
     wos_frame_id++;                        /* force apps that cache per-frame to recompute (A vs B) */
     wos_draw_all(&fb);
+    if (!s_rec_snap[snap]) s_rec_snap[snap] = hal_big_alloc(sizeof(gfx_rec));
+    if (s_rec_snap[snap]) {
+        int ex_n = s_ex_n;
+        gfx_fb r = fb;
+        r.px = 0; r.rec = s_rec_snap[snap];
+        r.rec->n = 0; r.rec->overflow = 0;
+        wos_draw_all(&r);
+        s_ex_n = ex_n;                     /* snapshot dirty declarations are not this frame's */
+    }
     s_tx = tx; wos_debug_hud = hud;
 }
 
-/* Composite the crossfade: solid A/B fields memcpy'd, only the ~TX_FADE front blended. Records a
- * full-screen dirty each step so the whole frame recomposites (device-safe atomic present). */
-static void draw_wos_transition(gfx_fb *fb)
+/* Sweep position (px along the axis) for progress `prog`. */
+static int tx_pos(float prog)
 {
     float span = (float)(s_tx_axis ? GFX_H : GFX_W);
-    int p = (int)((s_tx_dir > 0) ? s_tx_prog * span : span * (1.0f - s_tx_prog));
+    return (int)((s_tx_dir > 0) ? prog * span : span * (1.0f - prog));
+}
+/* Strip [lo,hi) along the axis whose pixels differ between sweep positions a and b. */
+static void tx_band(int a, int b, int *lo, int *hi)
+{
+    int span = s_tx_axis ? GFX_H : GFX_W;
+    int pa = a < b ? a : b, pb = a < b ? b : a;
+    *lo = s_tx_dir > 0 ? pa : pa - TX_FADE;
+    *hi = s_tx_dir > 0 ? pb + TX_FADE : pb;
+    if (*lo < 0) *lo = 0;
+    if (*hi > span) *hi = span;
+    *lo &= ~1; *hi = (*hi + 1) & ~1; if (*hi > span) *hi = span;
+}
+static void tx_band_rect(int a, int b, int r[4])
+{
+    int lo, hi;
+    tx_band(a, b, &lo, &hi);
+    if (s_tx_axis == 0) { r[0] = lo; r[1] = 0; r[2] = hi; r[3] = GFX_H; }
+    else                { r[0] = 0; r[1] = lo; r[2] = GFX_W; r[3] = hi; }
+}
+
+/* Composite the crossfade: solid A/B fields memcpy'd, only the ~TX_FADE front blended. The
+ * recorded command is full-screen, but wos_run_frame repaints just the swept band (tx_band). */
+static void draw_wos_transition(gfx_fb *fb)
+{
+    int p = tx_pos(s_tx_prog);
+    if (fb->rec) s_tx_p_cur = p;
     if (gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H,
                     gfx_hash_u(0x7c0ffeeu, (unsigned)(p + s_tx_axis * 100000))))
         return;
     if (!s_txa || !s_txb) return;
+    int c0 = fb->cx0, c1 = fb->cx1;                    /* only the columns this buffer holds */
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    if (c0 < 0) c0 = 0;
+    if (c1 > GFX_W) c1 = GFX_W;
     if (s_tx_axis == 0) {                              /* horizontal sweep */
         int f0, f1;
         if (s_tx_dir > 0) { f0 = p; f1 = p + TX_FADE; }
@@ -522,12 +582,13 @@ static void draw_wos_transition(gfx_fb *fb)
             wt[c - f0] = (uint8_t)(al * 255.0f);
         }
         uint16_t *lb = (s_tx_dir > 0) ? s_txb : s_txa, *rb = (s_tx_dir > 0) ? s_txa : s_txb;
+        int l1 = f0 < c1 ? f0 : c1, b0 = f0 > c0 ? f0 : c0, b1 = f1 < c1 ? f1 : c1, r0 = f1 > c0 ? f1 : c0;
         for (int y = 0; y < fb->h; y++) {
             int ly = y + fb->y_base;
-            uint16_t *ar = &s_txa[ly * GFX_W], *br = &s_txb[ly * GFX_W], *dr = &fb->px[y * GFX_W];
-            if (f0 > 0)     memcpy(dr, &lb[ly * GFX_W], (size_t)f0 * 2);
-            for (int c = f0; c < f1; c++) dr[c] = gfx_blend565(ar[c], br[c], wt[c - f0]);
-            if (f1 < GFX_W) memcpy(dr + f1, &rb[ly * GFX_W + f1], (size_t)(GFX_W - f1) * 2);
+            uint16_t *ar = &s_txa[ly * GFX_W], *br = &s_txb[ly * GFX_W], *dr = gfx_row(fb, y);
+            if (l1 > c0) memcpy(dr + c0, &lb[ly * GFX_W + c0], (size_t)(l1 - c0) * 2);
+            for (int c = b0; c < b1; c++) dr[c] = gfx_blend565(ar[c], br[c], wt[c - f0]);
+            if (c1 > r0) memcpy(dr + r0, &rb[ly * GFX_W + r0], (size_t)(c1 - r0) * 2);
         }
     } else {                                           /* vertical sweep */
         int g0, g1;
@@ -536,9 +597,9 @@ static void draw_wos_transition(gfx_fb *fb)
         uint16_t *tb = (s_tx_dir > 0) ? s_txb : s_txa, *bb = (s_tx_dir > 0) ? s_txa : s_txb;
         for (int y = 0; y < fb->h; y++) {
             int ly = y + fb->y_base;
-            uint16_t *dr = &fb->px[y * GFX_W];
-            if (ly < g0)       memcpy(dr, &tb[ly * GFX_W], (size_t)GFX_W * 2);
-            else if (ly >= g1) memcpy(dr, &bb[ly * GFX_W], (size_t)GFX_W * 2);
+            uint16_t *dr = gfx_row(fb, y);
+            if (ly < g0)       memcpy(dr + c0, &tb[ly * GFX_W + c0], (size_t)(c1 - c0) * 2);
+            else if (ly >= g1) memcpy(dr + c0, &bb[ly * GFX_W + c0], (size_t)(c1 - c0) * 2);
             else {
                 float al = (s_tx_dir > 0) ? (float)(p + TX_FADE - ly) / (float)TX_FADE
                                           : (float)(ly - p + TX_FADE) / (float)TX_FADE;
@@ -546,7 +607,7 @@ static void draw_wos_transition(gfx_fb *fb)
                 if (al > 1) al = 1;
                 uint8_t w = (uint8_t)(al * 255.0f);
                 uint16_t *ar = &s_txa[ly * GFX_W], *br = &s_txb[ly * GFX_W];
-                for (int c = 0; c < GFX_W; c++) dr[c] = gfx_blend565(ar[c], br[c], w);
+                for (int c = c0; c < c1; c++) dr[c] = gfx_blend565(ar[c], br[c], w);
             }
         }
     }
@@ -574,16 +635,16 @@ static int wos_crossfade_begin(int axis, int dir, int to_active, int to_app, int
         else if (to_active >= 0 && s_ov[to_active]->on_start) s_ov[to_active]->on_start();
         tx_apply_to(); s_force_full = 1; return 0;
     }
-    render_state_to(s_txa);                            /* FROM = current state */
+    render_state_to(s_txa, 0);                         /* FROM = current state */
     int sv_active = s_active, sv_cur = s_cur; float sv_off = s_off;
     if (to_app >= 0) { s_cur = to_app; if (s_apps[to_app]->on_start) s_apps[to_app]->on_start(); s_active = -1; }
     else { s_active = to_active; if (to_active >= 0 && s_ov[to_active]->on_start) s_ov[to_active]->on_start(); }
     s_off = 0;
-    render_state_to(s_txb);                            /* TO */
+    render_state_to(s_txb, 1);                         /* TO */
     s_active = sv_active; s_cur = sv_cur; s_off = sv_off;   /* revert; committed by tx_apply_to() */
     s_tx_axis = axis; s_tx_dir = dir;
     s_tx_prog = 0.0f; s_tx_tgt = 1.0f; s_tx_drag = drag;
-    s_tx = 1; s_force_full = 1;
+    s_tx = 1; s_tx_p_prev = tx_pos(0.0f);   /* screen == FROM: only swept bands repaint */
     return 1;
 }
 
@@ -604,12 +665,12 @@ void wos_app_crossfade(int axis, int dir, void (*apply)(void))
     if (!s_txa) s_txa = hal_big_alloc((uint32_t)GFX_W * GFX_H * 2);
     if (!s_txb) s_txb = hal_big_alloc((uint32_t)GFX_W * GFX_H * 2);
     if (!s_txa || !s_txb) { if (apply) apply(); s_force_full = 1; return; }
-    render_state_to(s_txa);
+    render_state_to(s_txa, 0);
     if (apply) apply();
-    render_state_to(s_txb);
+    render_state_to(s_txb, 1);
     s_tx_axis = axis; s_tx_dir = dir; s_tx_to_active = -1; s_tx_to_app = -2;
     s_tx_prog = 0.0f; s_tx_tgt = 1.0f; s_tx_drag = 0;
-    s_tx = 1; s_force_full = 1;
+    s_tx = 1; s_tx_p_prev = tx_pos(0.0f);
 }
 
 /* Diff this frame's recorder against last frame's, by index. Any command whose
@@ -636,32 +697,49 @@ static void rect_union(int *a, const int *b)
     if (b[3] > a[3]) a[3] = b[3];
 }
 
+static int cmd_same(const gfx_cmd *a, const gfx_cmd *b)
+{
+    return a->hash == b->hash && a->x0 == b->x0 && a->y0 == b->y0 &&
+           a->x1 == b->x1 && a->y1 == b->y1;
+}
+
+/* Merge one command box into the dirty set. 0 = ok, -1 = too fragmented. */
+static int damage_add(int rects[][4], int *nr, const gfx_cmd *c)
+{
+    if (c->x1 <= c->x0 || c->y1 <= c->y0) return 0;
+    int box[4] = { c->x0, c->y0, c->x1, c->y1 };
+    for (int r = 0; r < *nr; r++)
+        if (rect_near(rects[r], box, WOS_MERGE_GAP)) { rect_union(rects[r], box); return 0; }
+    if (*nr >= WOS_MAXRECTS) return -1;
+    rects[*nr][0] = box[0]; rects[*nr][1] = box[1];
+    rects[*nr][2] = box[2]; rects[*nr][3] = box[3]; (*nr)++;
+    return 0;
+}
+
 static int compute_damage(gfx_rec *cur, gfx_rec *prev, int rects[][4])
 {
-    if (cur->overflow || cur->n != prev->n)
+    if (cur->overflow || prev->overflow)
         return -1;
     int nr = 0;
-    for (int i = 0; i < cur->n; i++) {
-        gfx_cmd *a = &cur->c[i], *b = &prev->c[i];
-        if (a->hash == b->hash && a->x0 == b->x0 && a->y0 == b->y0 &&
-            a->x1 == b->x1 && a->y1 == b->y1)
-            continue;
-        int boxes[2][4] = { { b->x0, b->y0, b->x1, b->y1 },   /* erase old */
-                            { a->x0, a->y0, a->x1, a->y1 } };  /* draw new */
-        for (int k = 0; k < 2; k++) {
-            int *box = boxes[k];
-            if (box[2] <= box[0] || box[3] <= box[1]) continue;
-            int merged = 0;
-            for (int r = 0; r < nr; r++)
-                if (rect_near(rects[r], box, WOS_MERGE_GAP)) {
-                    rect_union(rects[r], box); merged = 1; break;
-                }
-            if (!merged) {
-                if (nr >= WOS_MAXRECTS) return -1;   /* too fragmented -> full */
-                rects[nr][0] = box[0]; rects[nr][1] = box[1];
-                rects[nr][2] = box[2]; rects[nr][3] = box[3]; nr++;
-            }
+    if (cur->n == prev->n) {
+        for (int i = 0; i < cur->n; i++) {
+            gfx_cmd *a = &cur->c[i], *b = &prev->c[i];
+            if (cmd_same(a, b)) continue;
+            if (damage_add(rects, &nr, b) || damage_add(rects, &nr, a))   /* erase old, draw new */
+                return -1;
         }
+    } else {
+        /* A command appeared or vanished (text changed length, a sweep split...).
+         * Commands paint in order, so a pixel covered only by an identical common
+         * prefix and suffix is unchanged: repaint just the differing middle, old
+         * boxes and new, instead of the whole screen. */
+        int n = cur->n < prev->n ? cur->n : prev->n, pre = 0, suf = 0;
+        while (pre < n && cmd_same(&cur->c[pre], &prev->c[pre])) pre++;
+        while (suf < n - pre && cmd_same(&cur->c[cur->n - 1 - suf], &prev->c[prev->n - 1 - suf])) suf++;
+        for (int i = pre; i < prev->n - suf; i++)
+            if (damage_add(rects, &nr, &prev->c[i])) return -1;
+        for (int i = pre; i < cur->n - suf; i++)
+            if (damage_add(rects, &nr, &cur->c[i])) return -1;
     }
     if (nr == 0) return 0;
     /* a union may now touch another rect — coalesce to a fixed point */
@@ -702,7 +780,77 @@ static int compute_damage(gfx_rec *cur, gfx_rec *prev, int rects[][4])
  * *slot) and flushes only the [rx0,rx1) sub-rectangle; in the simulator it
  * renders in place. wos_draw_all draws the whole screen, but gfx_clear and the
  * layer blit honour fb.cx0/cx1 so only this column span is actually produced. */
-static void render_rect(int rx0, int ry0, int rx1, int ry1, int *slot)
+/* Debug: paint the DBG_EDGE-wide border of rect [rx0,rx1)x[ry0,ry1) into the rows of
+ * this stripe (buffer row 0 = logical y fb->y_base). */
+static void dbg_outline(gfx_fb *fb, int rx0, int ry0, int rx1, int ry1, uint16_t col)
+{
+    int c0 = fb->cx0 > rx0 ? fb->cx0 : rx0, c1 = fb->cx1 < rx1 ? fb->cx1 : rx1;   /* band clip */
+    for (int r = 0; r < fb->h; r++) {
+        int y = fb->y_base + r;
+        uint16_t *row = gfx_row(fb, r);
+        if (y < ry0 + DBG_EDGE || y >= ry1 - DBG_EDGE) {
+            for (int x = c0; x < c1; x++) row[x] = col;
+        } else {
+            for (int x = c0; x < c1; x++)
+                if (x < rx0 + DBG_EDGE || x >= rx1 - DBG_EDGE) row[x] = col;
+        }
+    }
+}
+
+/* Column band [bx0,bx1) x [ry0,ry1) of dirty rect `r` (device only): the whole
+ * height in one buffer, packed bx1-bx0 pixels per row. */
+static void render_band(int bx0, int bx1, int ry0, int ry1, const int r[4], int *slot,
+                        uint16_t outline)
+{
+    gfx_fb fb;
+    fb.ox = fb.oy = 0;
+    fb.y_base = ry0;
+    fb.h = ry1 - ry0;
+    fb.cx0 = bx0;
+    fb.cx1 = bx1;
+    fb.rec = 0;
+    fb.stride = bx1 - bx0;
+    fb.x_base = bx0;
+    if (s_stripe_wait) s_stripe_wait();
+    fb.px = s_stripe[*slot];
+    uint32_t raster_start = hal_micros();
+    wos_draw_all(&fb);
+    if (outline) dbg_outline(&fb, r[0], r[1], r[2], r[3], outline);
+    wos_dbg_raster_us += hal_micros() - raster_start;
+    s_stripe_flush(fb.px, fb.stride, bx0, ry0, bx1 - bx0, fb.h);
+    *slot ^= 1;
+}
+
+/* Scan-ordered raster: cut every rect into column bands as wide as a stripe
+ * buffer allows for its height, then emit bands from all rects by x so the panel
+ * receives the frame in the direction its scan sweeps (dir -1 = right->left). */
+static void render_bands(int (*rects)[4], int nrects, int npaint, uint16_t dbg_col,
+                         int dir, int *slot)
+{
+    static int cur[WOS_MAXRECTS * 5], bw[WOS_MAXRECTS * 5];   /* off the main task's stack */
+    int cap = s_stripe_h * GFX_W;
+    for (int i = 0; i < nrects; i++) {
+        int h = rects[i][3] - rects[i][1];
+        bw[i] = h > 0 ? (cap / h) & ~1 : 0;
+        if (bw[i] < 2) bw[i] = 2;
+        cur[i] = dir < 0 ? rects[i][2] : rects[i][0];
+    }
+    for (;;) {
+        int best = -1;
+        for (int i = 0; i < nrects; i++) {
+            if (rects[i][3] <= rects[i][1] || rects[i][2] <= rects[i][0]) continue;
+            if (dir < 0 ? cur[i] <= rects[i][0] : cur[i] >= rects[i][2]) continue;
+            if (best < 0 || (dir < 0 ? cur[i] > cur[best] : cur[i] < cur[best])) best = i;
+        }
+        if (best < 0) break;
+        int *r = rects[best], b0, b1;
+        if (dir < 0) { b1 = cur[best]; b0 = b1 - bw[best]; if (b0 < r[0]) b0 = r[0]; cur[best] = b0; }
+        else         { b0 = cur[best]; b1 = b0 + bw[best]; if (b1 > r[2]) b1 = r[2]; cur[best] = b1; }
+        render_band(b0, b1, r[1], r[3], r, slot, best < npaint ? dbg_col : 0);
+    }
+}
+
+static void render_rect(int rx0, int ry0, int rx1, int ry1, int *slot, uint16_t outline)
 {
     if (rx1 <= rx0 || ry1 <= ry0) return;
     int chunk = s_stripe_h > 0 ? s_stripe_h : (ry1 - ry0);
@@ -716,17 +864,20 @@ static void render_rect(int rx0, int ry0, int rx1, int ry1, int *slot)
         fb.cx0 = rx0;
         fb.cx1 = rx1;
         fb.rec = 0;   /* rasterize, don't record */
+        fb.stride = fb.x_base = 0;
         if (s_stripe_h > 0) {
             if (s_stripe_wait) s_stripe_wait();      /* buffer free to reuse */
             fb.px = s_stripe[*slot];
             uint32_t raster_start=hal_micros();
             wos_draw_all(&fb);
+            if (outline) dbg_outline(&fb, rx0, ry0, rx1, ry1, outline);
             wos_dbg_raster_us+=hal_micros()-raster_start;
-            s_stripe_flush(fb.px, rx0, y0, rx1 - rx0, rows);   /* DMA sub-rect */
+            s_stripe_flush(fb.px + rx0, GFX_W, rx0, y0, rx1 - rx0, rows);   /* DMA sub-rect */
             *slot ^= 1;
         } else {
             fb.px = &s_fb.px[y0 * GFX_W];            /* sim: render in place */
             wos_draw_all(&fb);
+            if (outline) dbg_outline(&fb, rx0, ry0, rx1, ry1, outline);
         }
     }
 }
@@ -742,9 +893,18 @@ int wos_run_frame(void)
         if (s_tx_prog < s_tx_tgt)      { s_tx_prog += TX_STEP_PROG; if (s_tx_prog > s_tx_tgt) s_tx_prog = s_tx_tgt; }
         else if (s_tx_prog > s_tx_tgt) { s_tx_prog -= TX_STEP_PROG; if (s_tx_prog < s_tx_tgt) s_tx_prog = s_tx_tgt; }
         if (s_tx_prog == s_tx_tgt) {
-            if (s_tx_tgt >= 0.5f && s_tx_to_app != -2) tx_apply_to();   /* committed (not app-internal) */
+            int to_b = s_tx_tgt >= 0.5f;
+            if (to_b && s_tx_to_app != -2) tx_apply_to();   /* committed (not app-internal) */
             s_tx = 0;
-            s_force_full = 1;
+            /* The panel shows the fade at s_tx_p_prev. Repaint the strip from there to the
+             * end, and diff the live screen against the snapshot it lands on. */
+            gfx_rec *snap = s_rec_snap[to_b];
+            if (snap && !snap->overflow) {
+                memcpy(s_rec_prev, snap, sizeof *snap);
+                tx_band_rect(s_tx_p_prev, tx_pos(s_tx_tgt), s_tx_tail);
+                s_tx_tail_ok = 1;
+            } else
+                s_force_full = 1;
         }
     }
 
@@ -799,6 +959,7 @@ int wos_run_frame(void)
     rfb.y_base = 0;
     rfb.h = GFX_H;
     rfb.cx0 = 0; rfb.cx1 = GFX_W;
+    rfb.stride = rfb.x_base = 0;
     rfb.rec = s_rec_cur;
     s_ex_n = 0;                /* apps re-declare explicit dirty rects each frame */
     uint32_t record_start=hal_micros();
@@ -807,7 +968,8 @@ int wos_run_frame(void)
 
     /* Decide what to repaint. Overlays animate over the whole screen, and the
      * first frame after boot / an app switch can't trust the panel -> full. */
-    int rects[WOS_MAXRECTS][4], nrects;
+    static int rects[WOS_MAXRECTS * 5][4];   /* room for the debug outline erasers; static: 2 KB */
+    int nrects;
     /* A settled, stationary overlay (e.g. the control centre sitting open) is a
      * static screen — damage-track it like any face so it hits 60fps. Only a
      * MOVING overlay (sliding open/closed or dragged) repaints the whole screen.
@@ -822,8 +984,23 @@ int wos_run_frame(void)
     int force_full = s_force_full;
     if (force_full)
         nrects = -1;
-    else
+    else if (s_tx) {                     /* transition: just the band the front swept */
+        tx_band_rect(s_tx_p_prev, s_tx_p_cur, rects[0]);
+        nrects = rects[0][2] > rects[0][0] && rects[0][3] > rects[0][1];
+    } else {
         nrects = compute_damage(s_rec_cur, s_rec_prev, rects);
+        if (s_tx_tail_ok && nrects >= 0) {       /* transition just ended: add its tail */
+            int merged = 0;
+            for (int i = 0; i < nrects && !merged; i++)
+                if (rect_near(rects[i], s_tx_tail, WOS_MERGE_GAP)) { rect_union(rects[i], s_tx_tail); merged = 1; }
+            if (!merged && s_tx_tail[2] > s_tx_tail[0] && s_tx_tail[3] > s_tx_tail[1]) {
+                if (nrects < WOS_MAXRECTS) { for (int k = 0; k < 4; k++) rects[nrects][k] = s_tx_tail[k]; nrects++; }
+                else nrects = -1;
+            }
+        }
+    }
+    s_tx_tail_ok = 0;
+    if (s_tx) s_tx_p_prev = s_tx_p_cur;
     if (!ov_moving)
         s_force_full = 0;
     if (nrects < 0) {
@@ -868,6 +1045,31 @@ int wos_run_frame(void)
         }
     }
 
+    /* Debug redraw boxes: rects [0, npaint) get outlined; erasers for last frame's
+     * outline edges are appended after them (skipped where a painted rect covers). */
+    int npaint = nrects;
+    if (wos_debug_rects || s_dbg_prev_n) {
+        int cap = (int)(sizeof rects / sizeof rects[0]);
+        for (int i = 0; i < s_dbg_prev_n; i++) {
+            int x0 = s_dbg_prev[i][0], y0 = s_dbg_prev[i][1], x1 = s_dbg_prev[i][2], y1 = s_dbg_prev[i][3];
+            int e[4][4] = { { x0, y0, x1, y0 + DBG_EDGE }, { x0, y1 - DBG_EDGE, x1, y1 },
+                            { x0, y0, x0 + DBG_EDGE, y1 }, { x1 - DBG_EDGE, y0, x1, y1 } };
+            for (int k = 0; k < 4 && nrects < cap; k++) {
+                int covered = 0;
+                for (int j = 0; j < npaint && !covered; j++)
+                    covered = rects[j][0] <= e[k][0] && rects[j][1] <= e[k][1] &&
+                              rects[j][2] >= e[k][2] && rects[j][3] >= e[k][3];
+                if (covered || e[k][2] <= e[k][0] || e[k][3] <= e[k][1]) continue;
+                rects[nrects][0] = e[k][0]; rects[nrects][1] = e[k][1];
+                rects[nrects][2] = e[k][2]; rects[nrects][3] = e[k][3]; nrects++;
+            }
+        }
+        s_dbg_prev_n = 0;
+        if (wos_debug_rects)
+            for (int i = 0; i < npaint && s_dbg_prev_n < 28; i++, s_dbg_prev_n++)
+                for (int k = 0; k < 4; k++) s_dbg_prev[s_dbg_prev_n][k] = rects[i][k];
+    }
+
     /* Export the frame's dirty rects for the sim debug overlay. */
     extern int wos_dbg_rect[16][4], wos_dbg_nr;
     wos_dbg_nr = nrects;
@@ -896,6 +1098,7 @@ int wos_run_frame(void)
      * screen. Compose it off-screen and present as one coherent image instead.
      * The band may be narrow (the list rail), so pass its bounds through. */
     int atomic = nrects == 1 && (rects[0][3] - rects[0][1]) >= GFX_H / 2;
+    uint16_t dbg_col = !wos_debug_rects ? 0 : atomic ? GFX_RED : GFX_GREEN;
     if (s_frame_begin && nrects>0)
         s_frame_begin(atomic, rects[0][0], rects[0][1], rects[0][2], rects[0][3]);
 
@@ -917,8 +1120,12 @@ int wos_run_frame(void)
     /* Pass 2 — rasterize + flush only the dirty rectangles. */
     uint32_t _r0 = hal_micros();
     int slot = 0;
-    for (int i = 0; i < nrects; i++)
-        render_rect(rects[i][0], rects[i][1], rects[i][2], rects[i][3], &slot);
+    if (wos_scan_order && s_stripe_h > 0)
+        render_bands(rects, nrects, npaint, dbg_col, wos_scan_order == 1 ? -1 : 1, &slot);
+    else
+        for (int i = 0; i < nrects; i++)
+            render_rect(rects[i][0], rects[i][1], rects[i][2], rects[i][3], &slot,
+                        i < npaint ? dbg_col : 0);
     s_last_render_us = hal_micros() - _r0;
 
     uint32_t present_start=hal_micros();
