@@ -100,12 +100,34 @@ int main(void)
         for (int i = 0; i < 16; i++) sum += t8[i] >> 5;
         assert(sum >= 16 * 20 * 7 / 31 - 1 && sum <= 16 * 20 * 7 / 31 + 2);   /* ~4.5 avg red */
         assert(t8[0] != t8[5] || t8[1] != t8[2]);    /* not a flat colour */
+        /* every RGB332 level (as GFX_RGB 565) converts to exactly that level at all
+         * 16 dither positions: Flat60 palette colours never speckle */
+        {
+            static const int L8[8] = {0, 36, 73, 109, 146, 182, 219, 255}, B8[4] = {0, 85, 170, 255};
+            for (int r = 0; r < 8; r++) for (int g = 0; g < 8; g++) for (int b = 0; b < 4; b++) {
+                uint16_t c = (uint16_t)(((L8[r] & 0xF8) << 8) | ((L8[g] & 0xFC) << 3) | (B8[b] >> 3));
+                uint16_t w16[16]; uint8_t o8[16];
+                for (int i = 0; i < 16; i++) w16[i] = (uint16_t)((c << 8) | (c >> 8));
+                board_pixels_to8(o8, w16, 4, 4, 0, 0, 1);
+                for (int i = 0; i < 16; i++) assert(o8[i] == (uint8_t)(r << 5 | g << 2 | b));
+            }
+        }
+        /* mode 3 (no dither) truncates to RGB332 and is exact for RGB332 levels */
+        {
+            uint16_t c = 0xF81F, wv = (uint16_t)((c << 8) | (c >> 8)); uint8_t o;
+            board_pixels_to8(&o, &wv, 1, 1, 0, 0, 3);
+            assert(o == 0xE3);                          /* magenta */
+            c = (uint16_t)(((146 & 0xF8) << 8) | ((73 & 0xFC) << 3) | (255 >> 3));   /* F60_PURPLE */
+            wv = (uint16_t)((c << 8) | (c >> 8));
+            board_pixels_to8(&o, &wv, 1, 1, 0, 0, 3);
+            assert(o == (4 << 5 | 2 << 2 | 3));
+        }
         /* fused pack+narrow == pack_swap then to8, for both modes, odd window offsets
          * and widths (unrolled body + tail), native and wire-order sources */
         uint16_t src[7 * 9], wire[7 * 9], packed[5 * 6];
         uint8_t a8[5 * 6], b8[5 * 6];
         for (int i = 0; i < 7 * 9; i++) { src[i] = (uint16_t)(i * 2654435761u >> 7); wire[i] = (uint16_t)((src[i] << 8) | (src[i] >> 8)); }
-        for (int mode = 1; mode <= 2; mode++)
+        for (int mode = 1; mode <= 3; mode++)
             for (int sw = 0; sw <= 1; sw++)
                 for (int w = 1; w <= 6; w++) {
                     board_pixels_pack_swap(src + 10, 7, packed, w, 5, 1);

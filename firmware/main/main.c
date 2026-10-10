@@ -30,6 +30,7 @@
 #include "esp_log.h"
 
 #include "../../core/wos.h"
+#include "../../core/flat60.h"
 #include "../../core/apps/apps.h"
 #include "../../core/settings.h"
 #include "../../core/notif.h"
@@ -79,7 +80,8 @@ static void frame_tick(void *arg)
     xSemaphoreGive(s_frame_tick);
 }
 static SemaphoreHandle_t s_buf_free;      /* counts free stripe buffers */
-typedef struct { uint16_t *buf; int x0, y0, w, rows; int atomic; int stride; } flush_job;
+typedef struct { uint16_t *buf; int x0, y0, w, rows; int atomic; int stride; int flat; } flush_job;
+static volatile int s_flat;               /* current frame is Flat60 content (wos_frame_flat) */
 static QueueHandle_t s_flush_q;           /* render core (0) -> flush core (1) */
 
 /* Compose large redraws in PSRAM before a burst transfer. The B board has no
@@ -366,7 +368,7 @@ static void flush_task(void *arg)
         stage_start = esp_timer_get_time();
         if (s_wire_fmt)                         /* fast display: pack straight to 8 bits */
             board_pixels_pack_to8(b, j.stride, (uint8_t *)out, j.w, j.rows, j.x0 + PANEL_GAP_X, j.y0,
-                                  s_wire_fmt, j.atomic != 2);
+                                  s_wire_fmt == 1 && j.flat ? 3 : s_wire_fmt, j.atomic != 2);
         else
             board_pixels_pack_swap(b, j.stride, out, j.w, j.rows, j.atomic != 2);
         display_perf_add_stage(DISPLAY_PERF_ROTATE, esp_timer_get_time()-stage_start);
@@ -690,6 +692,20 @@ static void dbg_exec(char *s)
     else if (!strcmp(s, "ota sd"))  printf("OTA: %s\n", esp_err_to_name(ota_from_sd()));
     else if (!strncmp(s, "ota ", 4)) printf("OTA: %s\n", esp_err_to_name(ota_from_url(s + 4)));
     else if (!strcmp(s, "rects"))  { extern int wos_debug_rects; wos_debug_rects = !wos_debug_rects; settings_save(); printf("RECTS %d (saved)\n", wos_debug_rects); }
+    else if (!strcmp(s, "convbench")) {      /* wire conversion cost per pixel (flush core path, run here) */
+        uint16_t *src = s_stripe[0]; uint8_t *dst = (uint8_t *)s_rotated; int n = GFX_W * STRIPE_ROWS;
+        for (int i = 0; i < n; i++) src[i] = (uint16_t)(i * 40503u);
+        for (int mode = 0; mode <= 3; mode++) for (int sw = 1; sw >= 0; sw--) {
+            int64_t t0 = esp_timer_get_time();
+            for (int r = 0; r < 20; r++) {
+                if (mode == 0) board_pixels_pack_swap(src, GFX_W, (uint16_t *)dst, GFX_W, STRIPE_ROWS, sw);
+                else board_pixels_pack_to8(src, GFX_W, dst, GFX_W, STRIPE_ROWS, 0, 0, mode, sw);
+            }
+            int64_t us = esp_timer_get_time() - t0;
+            printf("CONV mode=%d swap=%d ns_per_px=%.1f\n", mode, sw, us * 1000.0 / (20.0 * n));
+        }
+        wos_invalidate();
+    }
     else if (!strcmp(s, "gfxbench")) {       /* per-primitive ns/px on the render core */
         gfx_bench_run(s_stripe[0], STRIPE_ROWS, bench_yield);
         wos_invalidate();
@@ -701,6 +717,7 @@ static void dbg_exec(char *s)
             printf(" [%d,%d,%d,%d]", wos_dbg_rect[i][0], wos_dbg_rect[i][1], wos_dbg_rect[i][2], wos_dbg_rect[i][3]);
         printf("\n");
     }
+    else if (sscanf(s, "ui %d", &a) == 1) { wos_ui_style = a != 0; ui_style_apply(); settings_save(); wos_invalidate(); printf("UI %d (saved)\n", wos_ui_style); }
     else if (sscanf(s, "fastdisp %d", &a) == 1 && a >= 0 && a <= 2) { wos_fast_display = a; settings_save(); printf("FASTDISP %d (saved)\n", a); }
     else if (sscanf(s, "fps48 %d", &a) == 1) { wos_fps_cap48 = a != 0; settings_save(); printf("FPS48 %d (saved)\n", wos_fps_cap48); }
     else if (!strcmp(s, "hud"))    { extern int wos_debug_hud; wos_debug_hud = !wos_debug_hud; settings_save(); printf("HUD %d (saved)\n", wos_debug_hud); }
@@ -925,7 +942,7 @@ static void stripe_wait(void)
  * stripe's render. */
 static void stripe_flush(uint16_t *buf, int stride, int x0, int y0, int w, int rows)
 {
-    flush_job j = { buf, x0, y0, w, rows, s_atomic, stride };
+    flush_job j = { buf, x0, y0, w, rows, s_atomic, stride, s_flat };
     xQueueSend(s_flush_q, &j, portMAX_DELAY);
     display_perf_queue_depth(uxQueueMessagesWaiting(s_flush_q));
 }
@@ -934,6 +951,7 @@ static void stripe_flush(uint16_t *buf, int stride, int x0, int y0, int w, int r
 static void frame_begin(int atomic, int x0, int y0, int x1, int y1)
 {
     s_atomic = atomic && s_backbuf != NULL;
+    s_flat = wos_frame_flat();
     s_bx0 = x0; s_by0 = y0; s_bx1 = x1; s_by1 = y1;
 }
 
@@ -965,7 +983,7 @@ static void frame_end(int atomic)
             /* rotate (1.43C: pack) straight out of PSRAM: a band row is one cache
              * line, so no repack copy (credit taken only to pace the queue) */
             xSemaphoreTake(s_buf_free, portMAX_DELAY);
-            flush_job job = { &s_backbuf[(size_t)s_by0 * GFX_W + bx], bx, s_by0, cw, h, 2, GFX_W };
+            flush_job job = { &s_backbuf[(size_t)s_by0 * GFX_W + bx], bx, s_by0, cw, h, 2, GFX_W, s_flat };
             xQueueSend(s_flush_q, &job, portMAX_DELAY);
         }
     } else
@@ -975,7 +993,7 @@ static void frame_end(int atomic)
         /* Unrotated panel: the flush packs this window straight out of PSRAM
          * into its DMA buffer, so no bounce copy (credit only paces the queue). */
         xSemaphoreTake(s_buf_free, portMAX_DELAY);
-        flush_job job = { &s_backbuf[(size_t)y * GFX_W + x0], x0, y, w, rows, 2, GFX_W };
+        flush_job job = { &s_backbuf[(size_t)y * GFX_W + x0], x0, y, w, rows, 2, GFX_W, s_flat };
         xQueueSend(s_flush_q, &job, portMAX_DELAY);
 #else
         int slot = ((y - s_by0) / STRIPE_ROWS) & 1;
@@ -983,7 +1001,7 @@ static void frame_end(int atomic)
         for (int r = 0; r < rows; r++)                      /* pack the band's cols */
             memcpy(&s_stripe[slot][r * w],
                    &s_backbuf[(size_t)(y + r) * GFX_W + x0], (size_t)w * 2);
-        flush_job job = { s_stripe[slot], x0, y, w, rows, 2, w };
+        flush_job job = { s_stripe[slot], x0, y, w, rows, 2, w, s_flat };
         xQueueSend(s_flush_q, &job, portMAX_DELAY);
 #endif
     }
@@ -1085,6 +1103,7 @@ void app_main(void)
     wos_register_overlay(WOS_EDGE_RIGHT,  &app_applist,       0);
     wos_register_overlay(WOS_EDGE_TOP,    &app_notifications, 0);
     wos_register_overlay(WOS_EDGE_BOTTOM, &app_control,       0);
+    ui_style_apply();      /* Flat60 swaps in its own overlays */
 
     /* Test harness: USB-serial command interface (see dbg_exec). Route stdio
      * through the driver so ESP_LOG (PROF) and the command reader share it. */

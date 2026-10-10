@@ -17,6 +17,11 @@ static float s_hud_fps;
  * don't already cover them - so a static screen ends up clean. Costs extra flushes,
  * and the extra rects keep frames off the atomic path while it's on. */
 int wos_debug_rects = 0;
+static int s_stream_hint;   /* this frame asked for streamed (non-atomic) present */
+void wos_stream_hint(void) { s_stream_hint = 1; }
+static int s_flat_hint;     /* this frame is Flat60 palette content */
+void wos_flat_hint(void) { s_flat_hint = 1; }
+int  wos_frame_flat(void) { return s_flat_hint; }
 int wos_fast_display = 0;   /* 8-bit panel wire format (see wos.h) */
 int wos_fps_cap48 = 0;   /* host paces frames at 48fps instead of 60 (see wos.h) */
 #define DBG_EDGE 2
@@ -962,6 +967,8 @@ int wos_run_frame(void)
     rfb.stride = rfb.x_base = 0;
     rfb.rec = s_rec_cur;
     s_ex_n = 0;                /* apps re-declare explicit dirty rects each frame */
+    s_stream_hint = 0;
+    s_flat_hint = 0;
     uint32_t record_start=hal_micros();
     wos_draw_all(&rfb);
     wos_dbg_record_us=hal_micros()-record_start;
@@ -1097,7 +1104,7 @@ int wos_run_frame(void)
      * app-list rail) renders too slowly to stay ahead of the scan -> tears mid
      * screen. Compose it off-screen and present as one coherent image instead.
      * The band may be narrow (the list rail), so pass its bounds through. */
-    int atomic = nrects == 1 && (rects[0][3] - rects[0][1]) >= GFX_H / 2;
+    int atomic = !s_stream_hint && nrects == 1 && (rects[0][3] - rects[0][1]) >= GFX_H / 2;
     uint16_t dbg_col = !wos_debug_rects ? 0 : atomic ? GFX_RED : GFX_GREEN;
     if (s_frame_begin && nrects>0)
         s_frame_begin(atomic, rects[0][0], rects[0][1], rects[0][2], rects[0][3]);

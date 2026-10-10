@@ -12,6 +12,7 @@
  * while the RTC remains powered; the display timezone is retained in NVS. */
 #include "apps.h"
 #include "../font.h"
+#include "../flat60.h"
 #include "../icons.h"
 #include "../settings.h"
 #include "../wake_service.h"
@@ -326,6 +327,7 @@ static void draw_wake(gfx_fb *fb)
 #define DEV_ROW2_Y GFX_S(108)
 #define DEV_ROW3_Y GFX_S(138)
 #define DEV_ROW4_Y GFX_S(168)
+#define DEV_ROW5_Y GFX_S(198)
 #define DEV_HIT    GFX_S(15)       /* rows sit 30 apart: half-pitch tap zones */
 static void draw_dev(gfx_fb *fb)
 {
@@ -343,7 +345,7 @@ static void draw_dev(gfx_fb *fb)
     pill(fb,px,DEV_ROW4_Y,pw,ph,wos_fast_display ? GFX_GREEN : GFX_DGREY);
     font_draw_centered(fb,&font_small,(int)px,(int)(DEV_ROW4_Y+font_small.ascent*0.34f),fv,
                        wos_fast_display ? GFX_BLACK : GFX_WHITE);
-    font_draw_centered(fb,&font_small,GFX_CX,GFX_S(196),"Boxes: green stripes, red atomic",GFX_GREY);
+    toggle_row_font(fb,DEV_ROW5_Y,"Flat60 UI",wos_ui_style,&font_small);
 }
 static void on_draw(gfx_fb *fb)
 {
@@ -482,6 +484,7 @@ static int on_event(const wos_event *ev)
             else if(ev->y>DEV_ROW2_Y-DEV_HIT && ev->y<DEV_ROW2_Y+DEV_HIT){wos_debug_rects=!wos_debug_rects;settings_save();}
             else if(ev->y>DEV_ROW3_Y-DEV_HIT && ev->y<DEV_ROW3_Y+DEV_HIT){wos_fps_cap48=!wos_fps_cap48;settings_save();}
             else if(ev->y>DEV_ROW4_Y-DEV_HIT && ev->y<DEV_ROW4_Y+DEV_HIT){wos_fast_display=(wos_fast_display+1)%3;settings_save();}
+            else if(ev->y>DEV_ROW5_Y-DEV_HIT && ev->y<DEV_ROW5_Y+DEV_HIT){wos_ui_style=!wos_ui_style;ui_style_apply();settings_save();}
             return 1;
         }
         return 0;

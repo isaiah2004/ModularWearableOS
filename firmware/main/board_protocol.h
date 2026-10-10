@@ -18,7 +18,8 @@ void board_pixels_pack_swap(const uint16_t *src, int stride, uint16_t *dst,
                             int width, int height, int swap);
 /* Fast display: convert width x height wire-order (big-endian) RGB565 pixels to the
  * panel's 8-bit wire formats, in place-safe (dst may alias src). mode 1 = RGB332
- * with a 4x4 ordered dither, 2 = 256-level luma. The dither is anchored to panel
+ * with a 4x4 ordered dither, 2 = 256-level luma, 3 = RGB332 by plain truncation
+ * (no dither: exact for RGB332-level colours, ~5 ops/px; Flat60 frames). The dither is anchored to panel
  * coordinates (px0,py0 = the window origin) so static pixels never shimmer when a
  * region is repainted through a different stripe. */
 void board_pixels_to8(uint8_t *dst, const uint16_t *src, int width, int height,

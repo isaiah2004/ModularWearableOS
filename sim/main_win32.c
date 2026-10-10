@@ -10,6 +10,7 @@
 #include <assert.h>
 #include "../core/hal.h"
 #include "../core/wos.h"
+#include "../core/flat60.h"
 #include "../core/notif.h"
 #include "../core/settings.h"
 #include "../core/font.h"
@@ -771,6 +772,9 @@ int main(int argc, char **argv)
       for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--list-pills")) applist_pills = 1; }
     wos_register_overlay(WOS_EDGE_TOP,    &app_notifications, 0);
     wos_register_overlay(WOS_EDGE_BOTTOM, &app_control,       0);
+    ui_style_apply();      /* Flat60 swaps in its own overlays */
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--flat60")) { wos_ui_style = 1; ui_style_apply(); }
 
     if(argc>1 && !strcmp(argv[1],"--brightness-checks")) {
         g_brightness=122;
@@ -1370,6 +1374,21 @@ int main(int argc, char **argv)
         }
         fclose(s_txc_out);
         printf("facecheck %s: %d frames\n", argv[2], s_txc_fr);
+        return 0;
+    }
+
+    /* --stackshot: open the Flat60 app list, save it settled and mid-scroll. */
+    if (argc > 1 && strcmp(argv[1], "--stackshot") == 0) {
+        int C = GFX_W / 2;
+        s_overlay = 0; s_pip_preview = 1; s_preview_ms = 1000; s_txc_out = fopen("NUL", "w");
+        wos_ui_style = 1; ui_style_apply();
+        wos_open_app(0); wos_invalidate(); txc_frames(10);
+        txc_drag(GFX_W - 4, C, GFX_W - 300, C, 6); txc_frames(40);
+        compose_display(); save_bmp("stack_settled.bmp");
+        for (int s = 0; s <= 5; s++) { wos_pointer(C, 380 - s * 25, 1); txc_frame(); }
+        compose_display(); save_bmp("stack_moving.bmp");
+        wos_pointer(C, 255, 0); txc_frames(60);
+        compose_display(); save_bmp("stack_settled2.bmp");
         return 0;
     }
 

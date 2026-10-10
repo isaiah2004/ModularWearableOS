@@ -11,6 +11,7 @@ extern int wos_debug_hud;        /* wos.c */
 extern int wos_debug_rects;      /* wos.c */
 extern int wos_fps_cap48;        /* wos.c */
 extern int wos_fast_display;     /* wos.c */
+extern int wos_ui_style;         /* flat60.c */
 
 int g_brightness = 200;
 int g_volume = 160;
@@ -49,6 +50,7 @@ void settings_load(void)
         wos_fps_cap48       = (b.hud >> 2) & 1;    /* bit 2: 48fps cap */
         wos_fast_display    = (b.hud >> 3) & 3;    /* bits 3-4: fast display */
         if (wos_fast_display > 2) wos_fast_display = 0;
+        wos_ui_style        = (b.hud >> 5) & 1;    /* bit 5: Flat60 interface */
         g_saved_face        = b.face;
         g_volume            = b.volume;
         g_tz_offset_min     = b.tz_min;
@@ -66,7 +68,7 @@ void settings_save(void)
 {
     cfg_blob b = {
         CFG_MAGIC, g_brightness, g_setting_24h, g_setting_tilt_wake,
-        (wos_debug_hud ? 1 : 0) | (wos_debug_rects ? 2 : 0) | (wos_fps_cap48 ? 4 : 0) | (wos_fast_display << 3), g_saved_face, g_tz_offset_min, g_volume,
+        (wos_debug_hud ? 1 : 0) | (wos_debug_rects ? 2 : 0) | (wos_fps_cap48 ? 4 : 0) | (wos_fast_display << 3) | (wos_ui_style << 5), g_saved_face, g_tz_offset_min, g_volume,
         (int32_t)g_time_last_set, g_muted
     };
     hal_store_save("cfg", &b, sizeof b);

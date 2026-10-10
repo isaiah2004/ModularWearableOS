@@ -92,14 +92,21 @@ static int s_to8_ready;
 
 static void to8_init(void)
 {
+    /* Ordered dither with thresholds confined to 0.15..0.85 of a step: a colour
+     * within 0.15 of an RGB332 level (every Flat60 palette colour) maps to that
+     * level cleanly, with no speckle; true in-between shades (AA edges, gradients)
+     * still dither and average to the right level. */
     for (int t = 0; t < 16; t++) {
-        int d = s_bayer4[t] * 2 + 1;                 /* threshold (1..31)/32 of one step */
+        float th = 0.15f + 0.7f * (float)(s_bayer4[t] * 2 + 1) / 32.0f;
         for (int v = 0; v < 32; v++) {
-            s_lut_r[t][v] = (uint8_t)(((v * 7 * 32 + d * 31) / (31 * 32)) << 5);
-            s_lut_b[t][v] = (uint8_t)((v * 3 * 32 + d * 31) / (31 * 32));
+            int r3 = (int)(v * 7 / 31.0f + th), b2 = (int)(v * 3 / 31.0f + th);
+            s_lut_r[t][v] = (uint8_t)((r3 > 7 ? 7 : r3) << 5);
+            s_lut_b[t][v] = (uint8_t)(b2 > 3 ? 3 : b2);
         }
-        for (int v = 0; v < 64; v++)
-            s_lut_g[t][v] = (uint8_t)(((v * 7 * 32 + d * 63) / (63 * 32)) << 2);
+        for (int v = 0; v < 64; v++) {
+            int g3 = (int)(v * 7 / 63.0f + th);
+            s_lut_g[t][v] = (uint8_t)((g3 > 7 ? 7 : g3) << 2);
+        }
     }
     /* Y = .30R + .59G + .11B scaled so white -> 255; the two halves of the 565 word
      * contribute independently, so two 256-entry tables cover all 65536 colours. */
@@ -116,6 +123,11 @@ void board_pixels_to8(uint8_t *dst, const uint16_t *src, int width, int height,
     if (!s_to8_ready) to8_init();
     const uint8_t *s = (const uint8_t *)src;          /* wire order: hi byte first */
     for (int y = 0; y < height; y++) {
+        if (mode == 3) {
+            for (int x = 0; x < width; x++, s += 2)
+                *dst++ = (uint8_t)((s[0] & 0xE0) | ((s[0] & 0x07) << 2) | ((s[1] >> 3) & 0x03));
+            continue;
+        }
         if (mode == 2) {
             for (int x = 0; x < width; x++, s += 2) {
                 int v = s_luma_hi[s[0]] + s_luma_lo[s[1]];
@@ -131,22 +143,53 @@ void board_pixels_to8(uint8_t *dst, const uint16_t *src, int width, int height,
     }
 }
 
+/* Per-pixel cost here is instruction-bound (~25 cycles for a naive loop with a
+ * per-pixel byte-order test). The no-dither path converts two pixels per
+ * register; every path keeps the byte-order test out of its inner loop. */
+#define RGB332_T(v) ((uint32_t)((((v) >> 8) & 0xE0) | (((v) >> 6) & 0x1C) | (((v) >> 3) & 0x03)))
+#define LOAD(p, i)  (swap ? (p)[i] : __builtin_bswap16((p)[i]))
+
 void board_pixels_pack_to8(const uint16_t *src, int stride, uint8_t *dst, int width,
                            int height, int px0, int py0, int mode, int swap)
 {
     if (!s_to8_ready) to8_init();
     for (int y = 0; y < height; y++, src += stride) {
-        const uint16_t *s = src;
+        const uint16_t *__restrict s = src;
+        uint8_t *__restrict d = dst;
+        dst += width;
+        int x = 0;
         if (mode == 2) {
-            for (int x = 0; x < width; x++) {
-                uint16_t v = swap ? s[x] : (uint16_t)((s[x] << 8) | (s[x] >> 8));
+            for (; x < width; x++) {
+                uint16_t v = LOAD(s, x);
                 int l = s_luma_hi[v >> 8] + s_luma_lo[v & 0xFF];
-                *dst++ = (uint8_t)(l > 255 ? 255 : l);
+                d[x] = (uint8_t)(l > 255 ? 255 : l);
             }
             continue;
         }
-        /* The dither threshold only depends on (x+px0)&3: bind the four lanes'
-         * tables once per row and unroll by four, no per-pixel index math. */
+        if (mode == 3) {                       /* RGB332 truncation: R[15:13] G[10:8] B[4:3] */
+            /* Two pixels per register: the same three mask/shift steps extract
+             * both bytes (to bits 0-7 and 16-23), then one 16-bit store. Separate
+             * loops per source byte order keep the swap test out of the loop. */
+            if (x < width && ((uintptr_t)(d + x) & 1)) { d[x] = (uint8_t)RGB332_T(LOAD(s, x)); x++; }
+            uint16_t *__restrict d2 = (uint16_t *)(d + x);
+            if (swap) {                        /* native RGB565 */
+                for (; x + 2 <= width; x += 2) {
+                    uint32_t w = (uint32_t)s[x] | (uint32_t)s[x + 1] << 16;
+                    uint32_t c = ((w >> 8) & 0x00E000E0u) | ((w >> 6) & 0x001C001Cu) | ((w >> 3) & 0x00030003u);
+                    *d2++ = (uint16_t)((c & 0xFFu) | ((c >> 8) & 0xFF00u));
+                }
+            } else {                           /* wire order: hi byte in bits 0-7 */
+                for (; x + 2 <= width; x += 2) {
+                    uint32_t w = (uint32_t)s[x] | (uint32_t)s[x + 1] << 16;
+                    uint32_t c = (w & 0x00E000E0u) | ((w << 2) & 0x001C001Cu) | ((w >> 11) & 0x00030003u);
+                    *d2++ = (uint16_t)((c & 0xFFu) | ((c >> 8) & 0xFF00u));
+                }
+            }
+            for (; x < width; x++) d[x] = (uint8_t)RGB332_T(LOAD(s, x));
+            continue;
+        }
+        /* Dithered RGB332: the threshold only depends on (x+px0)&3, so the lane
+         * tables are bound once per row. */
         const uint8_t *row = &s_bayer4[((py0 + y) & 3) << 2];
         const uint8_t *R[4], *G[4], *B[4];
         for (int k = 0; k < 4; k++) {
@@ -154,21 +197,26 @@ void board_pixels_pack_to8(const uint16_t *src, int stride, uint8_t *dst, int wi
             R[k] = s_lut_r[t]; G[k] = s_lut_g[t]; B[k] = s_lut_b[t];
         }
 #define TO8(k, v) (R[k][(v) >> 11] | G[k][((v) >> 5) & 63] | B[k][(v) & 31])
-        int x = 0;
+        /* Unrolled by four with byte stores and one loop per byte order (measured
+         * faster here than assembling 32-bit words: the lookups dominate). */
         if (swap) {
-            for (; x + 4 <= width; x += 4, s += 4) {
-                uint16_t a = s[0], b = s[1], c = s[2], d = s[3];
-                dst[0] = TO8(0, a); dst[1] = TO8(1, b); dst[2] = TO8(2, c); dst[3] = TO8(3, d);
-                dst += 4;
+            for (; x + 4 <= width; x += 4) {
+                uint16_t a = s[x], b = s[x + 1], c = s[x + 2], e = s[x + 3];
+                d[x] = TO8(0, a); d[x + 1] = TO8(1, b); d[x + 2] = TO8(2, c); d[x + 3] = TO8(3, e);
+            }
+        } else {
+            for (; x + 4 <= width; x += 4) {
+                uint16_t a = __builtin_bswap16(s[x]), b = __builtin_bswap16(s[x + 1]);
+                uint16_t c = __builtin_bswap16(s[x + 2]), e = __builtin_bswap16(s[x + 3]);
+                d[x] = TO8(0, a); d[x + 1] = TO8(1, b); d[x + 2] = TO8(2, c); d[x + 3] = TO8(3, e);
             }
         }
-        for (; x < width; x++, s++) {
-            uint16_t v = swap ? *s : (uint16_t)((*s << 8) | (*s >> 8));
-            *dst++ = TO8(x & 3, v);
-        }
+        for (; x < width; x++) { uint16_t v = LOAD(s, x); d[x] = TO8(x & 3, v); }
 #undef TO8
     }
 }
+#undef LOAD
+#undef RGB332_T
 
 void board_native_to_ui(int *x, int *y)
 {

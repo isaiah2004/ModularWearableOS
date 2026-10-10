@@ -55,6 +55,7 @@ void face_pixel_draw(gfx_fb *fb, const hal_datetime *t);
 /* edge-menu overlays */
 extern const wos_app app_launcher;      /* LEFT   */
 extern const wos_app app_applist;       /* RIGHT  */
+extern const wos_app app_stack;         /* RIGHT, Flat60 style */
 extern const wos_app app_notifications; /* TOP    */
 extern const wos_app app_control;       /* BOTTOM */
 

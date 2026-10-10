@@ -84,6 +84,19 @@ extern int wos_fps_cap48;
  * frame on the panel bus. Device only (the host switches the panel); persisted. */
 extern int wos_fast_display;
 
+/* Call while drawing (record pass) when this frame is cheap to render (sprite
+ * blits): the engine then streams its stripes to the panel as they render,
+ * overlapping render and transfer, instead of composing a tall band in the PSRAM
+ * back-buffer first and sending it afterwards. Applies to the current frame. */
+void wos_stream_hint(void);
+
+/* Call while drawing (record pass) when this frame is Flat60 content: every fill
+ * is an RGB332-exact palette colour, so the 8-bit wire conversion can skip
+ * dithering (faster, and edges stay crisp). wos_frame_flat() reports it to the
+ * host for the frame being presented. */
+void wos_flat_hint(void);
+int  wos_frame_flat(void);
+
 /* Optional vsync gate. If set, the OS calls it once per frame that has pixels
  * to draw, right before flushing, so the platform can block until the panel's
  * TE (tearing-effect / vblank) pulse. This paces rendering to the panel's real
