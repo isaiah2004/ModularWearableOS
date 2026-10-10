@@ -258,21 +258,21 @@ static void fill_circle_raster(gfx_fb *fb, float cx, float cy, float r, uint16_t
         float ai = ri2 - dy * dy;
         int solidL = 1, solidR = 0;                 /* empty by default */
         if (ai > 0) { float xi = fast_sqrt(ai); solidL = iceil(cx - xi); solidR = ifloor(cx + xi); }
-        uint16_t *row = gfx_row(fb, by);
+        uint16_t *row = gfx_row(fb, by) + fb->ox;   /* indexed by logical px; px is
+                                                    * clipped to [pxlo,pxhi], all on-buffer */
         int px0 = ifloor(cx - xo), px1 = iceil(cx + xo);
         if (px0 < pxlo) px0 = pxlo;
         if (px1 > pxhi) px1 = pxhi;
+        /* interior [s0,s1] is one solid span (no sqrt, no per-pixel branch);
+         * only the AA rim pixels either side take a coverage sample */
+        int s0 = solidL > px0 ? solidL : px0, s1 = solidR < px1 ? solidR : px1;
+        if (s0 > s1) { s0 = px1 + 1; s1 = px1; }   /* no solid part: all rim */
         for (int px = px0; px <= px1; px++) {
-            unsigned bx = (unsigned)(px + fb->ox);
-            if (bx >= GFX_W) continue;
-            if (px >= solidL && px <= solidR) {     /* interior: no sqrt */
-                row[bx] = color;
-            } else {                                 /* AA rim only */
-                float dx = (px + 0.5f) - cx;
-                uint8_t a = coverage(r - fast_sqrt(dx * dx + dy * dy));
-                if (a == 255) row[bx] = color;
-                else if (a) row[bx] = gfx_blend565(row[bx], color, a);
-            }
+            if (px == s0) { fill_span(&row[s0], s1 - s0 + 1, color); px = s1; continue; }
+            float dx = (px + 0.5f) - cx;
+            uint8_t a = coverage(r - fast_sqrt(dx * dx + dy * dy));
+            if (a == 255) row[px] = color;
+            else if (a) row[px] = gfx_blend565(row[px], color, a);
         }
     }
 }
@@ -682,11 +682,25 @@ void gfx_line(gfx_fb *fb, float x0, float y0, float x1, float y1,
     if (bx0 < c0 - fb->ox) bx0 = c0 - fb->ox;
     if (bx1 > c1 - 1 - fb->ox) bx1 = c1 - 1 - fb->ox;
     float inv = 1.0f / vlen2;
+    /* Any pixel with coverage lies within rmax of the segment, so within rmax of
+     * its infinite line: on row fy that is |x - xc| <= rmax*len/|vy|. Visiting just
+     * that strip (+1 px of float margin) turns the O(bbox) scan of a diagonal
+     * hand into O(length); pixels outside it were all rejected by d2 >= rmax2. */
+    float avy = vy < 0 ? -vy : vy;
+    int banded = avy > 1e-3f;
+    float hw = banded ? rmax * sqrtf(vlen2) / avy : 0.0f, slope = banded ? vx / vy : 0.0f;
     for (int py = py0; py <= py1; py++) {
         int by = py + fb->oy - fb->y_base;
         float fy = py + 0.5f;
         uint16_t *row = gfx_row(fb, by);
-        for (int px = bx0; px <= bx1; px++) {
+        int lo = bx0, hi = bx1;
+        if (banded) {
+            float xc = x0 + (fy - y0) * slope;
+            int a0 = ifloor(xc - hw - 0.5f) - 1, a1 = iceil(xc + hw - 0.5f) + 1;
+            if (a0 > lo) lo = a0;
+            if (a1 < hi) hi = a1;
+        }
+        for (int px = lo; px <= hi; px++) {
             unsigned bxi = (unsigned)(px + fb->ox);
             if (bxi < (unsigned)c0 || bxi >= (unsigned)c1) continue;
             float fx = px + 0.5f;

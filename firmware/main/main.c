@@ -41,6 +41,7 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "display_perf.h"
+#include "gfx_bench.h"
 #include "lcd_probe.h"
 #include "display_bench.h"
 #include "ota.h"
@@ -661,6 +662,7 @@ static void perf_command(const char *s)
     else printf("perf display info|probe|status|export|fill N sram|generator|psram|rect W H N [source]|app NAME SEC|sweep\n");
 }
 
+static void bench_yield(void) { vTaskDelay(1); }
 static void dbg_exec(char *s)
 {
     int a, b, c, d, e, f;
@@ -688,6 +690,10 @@ static void dbg_exec(char *s)
     else if (!strcmp(s, "ota sd"))  printf("OTA: %s\n", esp_err_to_name(ota_from_sd()));
     else if (!strncmp(s, "ota ", 4)) printf("OTA: %s\n", esp_err_to_name(ota_from_url(s + 4)));
     else if (!strcmp(s, "rects"))  { extern int wos_debug_rects; wos_debug_rects = !wos_debug_rects; settings_save(); printf("RECTS %d (saved)\n", wos_debug_rects); }
+    else if (!strcmp(s, "gfxbench")) {       /* per-primitive ns/px on the render core */
+        gfx_bench_run(s_stripe[0], STRIPE_ROWS, bench_yield);
+        wos_invalidate();
+    }
     else if (!strcmp(s, "dirty")) {          /* last frame's dirty rects (damage debugging) */
         extern int wos_dbg_rect[16][4], wos_dbg_nr; extern uint32_t wos_dbg_dirty_pixels;
         printf("DIRTY n=%d px=%u", wos_dbg_nr, (unsigned)wos_dbg_dirty_pixels);
