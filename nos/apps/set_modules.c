@@ -50,7 +50,7 @@ typedef struct {
     uint32_t ext;          /* EXT_* bit for strap modules, 0 = on the board */
     const char *body;      /* absent state: what it adds (the module's app says the same) */
     const char *foot;      /* absent footer: the module's user name */
-    const char *wire;      /* bring-up: the part and exactly where it is expected */
+    const char *wire;      /* bring-up: exactly where the part is expected (pins; the chip is on the bus line) */
 } mod_info;
 
 static const mod_info MI[M_COUNT] = {
@@ -62,23 +62,23 @@ static const mod_info MI[M_COUNT] = {
     { "Wi-Fi", "ESP32-S3  2.4 GHZ", "WI-FI", DOT_ICON_WIFI, 0, "", "", "" },
     { "Bluetooth", "ESP32-S3  NUS", "BLUETOOTH", DOT_ICON_BT, 0, "", "", "" },
     { "Haptics", "GPIO16  PWM", "HAPTICS", DOT_ICON_BELL, EXT_HAPTIC, "Add haptics to feel alerts",
-      "HAPTICS MODULE", "PWM DRIVER  GPIO 16" },
+      "HAPTICS MODULE", "PWM  GPIO 16" },
     { "Microphone", "I2S IN  INMP441", "MICROPHONE", DOT_ICON_MIC, EXT_MIC, "Add the mic strap to record voice memos",
-      "MIC MODULE", "INMP441  BCLK 1 WS 2 SD 3" },
+      "MIC MODULE", "BCLK 1  WS 2  SD 3" },
     { "Speaker", "I2S OUT  MAX98357A", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, "Add the speaker for sounds and alarms",
-      "SPEAKER MODULE", "MAX98357A  BCLK 1 LRC 2 DIN 5 SD 6" },
+      "SPEAKER MODULE", "BCLK 1  LRC 2  DIN 5  SD 6" },
     { "GPS", "UART1  M10", "GPS", DOT_ICON_SAT, EXT_GPS, "Add the GPS for speed and tracks",
-      "GPS MODULE", "M10  UART1  RX 7 TX 17" },
+      "GPS MODULE", "UART1  RX 7  TX 17" },
     { "Cellular", "UART0  EG800AK", "CELLULAR", DOT_ICON_SIGNAL, EXT_LTE, "Add the LTE strap to text without your phone",
-      "LTE MODULE", "EG800AK  RX 44 TX 43 PWRKEY 18" },
+      "LTE MODULE", "RX 44  TX 43  PWRKEY GPIO 18" },
     { "Environment", "I2C 0x76  BME280", "ENVIRONMENT", DOT_ICON_THERMO, EXT_ENV, "Add the climate sensor for pressure",
-      "CLIMATE MODULE", "BME280  0x76/77  SDA 47 SCL 48" },
+      "CLIMATE MODULE", "0x76/77  SDA 47  SCL 48" },
     { "Light", "I2C 0x39  APDS-9960", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, "Add the light sensor for auto brightness",
-      "LIGHT MODULE", "APDS-9960  0x39  SDA 47 SCL 48" },
+      "LIGHT SENSOR MODULE", "0x39  SDA 47  SCL 48" },
     { "Compass", "I2C 0x0D  QMC5883L", "COMPASS", DOT_ICON_COMPASS, EXT_MAG, "Add the compass to see your heading",
-      "COMPASS MODULE", "QMC5883L  0x0D  SDA 47 SCL 48" },
+      "COMPASS MODULE", "0x0D  SDA 47  SCL 48" },
     { "Heart rate", "I2C 0x57  MAX30102", "HEART RATE", DOT_ICON_HEART, EXT_HR, "Add the strap to measure BPM and SpO2",
-      "HR MODULE", "MAX30102  0x57  SDA 47 SCL 48" },
+      "HR SENSOR MODULE", "0x57  SDA 47  SCL 48" },
 };
 
 static const char *const k_hap_names[] = { "Tick", "Click", "Double", "Heavy", "Buzz", "Alarm", "Heartbeat" };
@@ -324,7 +324,7 @@ static const lentry LE[] = {
 #define MU 30
 #define MTOP 96
 static int lunits(int k) { return k == LK_SUM ? 6 : k == LK_HDR ? 2 : k == LK_BTN ? 4 : 3; }
-#define DIAG_W 300
+#define DIAG_W 260
 
 static struct {
     ui_list L;
@@ -567,6 +567,7 @@ static struct {
     int alarm_on;
     /* opened from Settings: a user page (row title, no bus or wiring lines) */
     int from_set;
+    int hrs, hrs_prev; float hrs_t, hr_contact_t;   /* HR: 0 measuring, 1 no contact, 2 a reading */
 } D;
 
 static void open_detail(int m, int from_settings)
@@ -687,7 +688,7 @@ static void detail_values(int init)
             if (V.lte.op[0]) snprintf(b, sizeof b, "%s  %.18s", r, V.lte.op);
             else snprintf(b, sizeof b, "%s", r);
             if (strcmp(b, D.unit)) dline(1, b, 0);        /* never repeat the state above */
-        } else if (!D.from_set) dline(0, "PWRKEY ON IO18", 0);   /* bring-up only */
+        } else if (!D.from_set) dline(0, "PWRKEY GPIO 18", 0);   /* bring-up only */
         break;
     }
     case M_ENV:
@@ -719,10 +720,8 @@ static void detail_values(int init)
         } else { snprintf(h, sizeof h, UI_NONE); snprintf(D.unit, sizeof D.unit, "WAITING"); D.ustate = 1; }
         break;
     case M_HR:
-        if (V.hr_ok && V.hr.bpm) snprintf(h, sizeof h, "%d", V.hr.bpm); else snprintf(h, sizeof h, UI_NONE);
-        snprintf(D.unit, sizeof D.unit, "BPM");
-        if (V.hr_ok && V.hr.spo2) { snprintf(b, sizeof b, "SPO2 %d%%", V.hr.spo2); dline(0, b, 0); }
-        if (V.hr_ok && V.hr.on_wrist && !V.hr.bpm) { snprintf(D.unit, sizeof D.unit, "MEASURING"); D.ustate = 1; }   /* the Heart app's word */
+        if (D.hrs == 2) snprintf(h, sizeof h, "%d", V.hr.bpm); else snprintf(h, sizeof h, UI_NONE);
+        if (D.hrs == 2 && V.hr.spo2) { snprintf(b, sizeof b, "SPO2 %d%%", V.hr.spo2); dline(0, b, 0); }
         break;
     default: break;
     }
@@ -748,6 +747,7 @@ static void detail_enter(void)
     D.flash_row = -1; D.flash_rt = -100;
     memset(D.tgt_hit, 0, sizeof D.tgt_hit); D.tgt_done = 0; D.fdown = 0;
     D.alarm_on = 0;
+    D.hrs = D.hrs_prev = 0; D.hrs_t = -100; D.hr_contact_t = nos_t;   /* MEASURING from entry, as the Heart app */
     if (D.m == M_TOUCH) V.touched = 0;           /* the tap that opened the page is not data */
     detail_sensors(1);
     int n = D.m == M_HAPTIC ? N_HAP : SFX_COUNT;
@@ -788,6 +788,11 @@ static void detail_tick(float dt)
         nos_feedback(FB_SUCCESS);
         nos_toast("CALIBRATED");
         detail_values(0);
+    }
+    if (D.m == M_HR) {                       /* the one HR state, decided here, read by text and draw */
+        if (V.hr_ok && V.hr.on_wrist) D.hr_contact_t = nos_t;
+        int st = V.hr_ok && V.hr.on_wrist && V.hr.bpm ? 2 : nos_t - D.hr_contact_t >= 1.0f ? 1 : 0;
+        if (st != D.hrs) { D.hrs_prev = D.hrs; D.hrs = st; D.hrs_t = nos_t; detail_values(0); }
     }
     if (D.m == M_LTE && D.lte_req && ((V.lte_ok && V.lte.powered) == (D.lte_req > 0) || nos_t - D.lte_req_t > 20.0f))
         D.lte_req = 0;
@@ -976,22 +981,31 @@ static void detail_draw(gfx_fb *fb)
     }
     case M_HR: {
         hero(fb, 104);
-        unit_line(fb, 204);
-        if (V.hr_ok && V.hr.on_wrist) {
+        /* the state slot cross-fades over 8 levels; trace and hint follow the same step */
+        float p = floorf(m_clamp((nos_t - D.hrs_t) / 0.2f, 0, 1) * 8.0f + 0.5f) / 8.0f;
+        for (int pass = 0; pass < 2; pass++) {
+            int st = pass ? D.hrs : D.hrs_prev;
+            float k = pass ? p : 1.0f - p;
+            if (k <= 0) continue;
+            if (st == 2) ui_label(fb, UI_CX, 204, "BPM", ui_dim(C_SEC, k), UI_CENTER);
+            else ui_state(fb, UI_CX, 204, st ? "NO CONTACT" : "MEASURING", ui_dim(C_SEC, k));
+        }
+        float kt = (D.hrs != 1 ? p : 0) + (D.hrs_prev != 1 ? 1.0f - p : 0);   /* the trace: not with no contact */
+        float kh = 1.0f - kt;
+        if (kt > 0) {
             const float x0 = UI_CX - 23.5f * 6.0f;
             for (int i = 0; i < 48; i++) {
                 float v = V.hr.wave[i] / 255.0f;
                 float y = 300 - v * 64;
                 y = floorf(y * 2 + 0.5f) * 0.5f;
-                dot_disc(fb, x0 + i * 6.0f, y, i == 47 ? 8.0f : 4.0f, i == 47 ? C_RED : ui_mix(C_LINE2, C_WHITE, (i + 8) / 56.0f));
+                dot_disc(fb, x0 + i * 6.0f, y, i == 47 ? 8.0f : 4.0f,
+                         ui_dim(i == 47 ? C_RED : ui_mix(C_LINE2, C_WHITE, (i + 8) / 56.0f), kt));
             }
-            ui_segments(fb, 163, 336, 140, 10, 5, V.hr.quality * 5.0f, C_WHITE, C_LINE);
-            ui_label(fb, UI_CX, 368, "SIGNAL", C_DIS, UI_CENTER);
-            lines(fb, 396);
-        } else {
-            ui_state(fb, UI_CX, 276, V.hr_ok ? "NO CONTACT" : "STARTING", C_SEC);
-            ui_label(fb, UI_CX, 316, "WEAR IT SNUG, SENSOR ON SKIN", C_DIS, UI_CENTER);
+            ui_segments(fb, 163, 336, 140, 10, 5, V.hr.quality * 5.0f, ui_dim(C_WHITE, kt), ui_dim(C_LINE, kt));
+            ui_label(fb, UI_CX, 368, "SIGNAL", ui_dim(C_DIS, kt), UI_CENTER);
+            if (kt >= 1) lines(fb, 396);
         }
+        if (kh > 0) ui_label(fb, UI_CX, 296, "WEAR IT SNUG, SENSOR ON SKIN", ui_dim(C_DIS, kh), UI_CENTER);
         break;
     }
     default: break;
