@@ -94,15 +94,28 @@ static void fmt_ms(char *b, int n, uint32_t ms, int neg)
 #define VOL_SHOW  1.8f
 #define WG_CY_SHARED 212.0f   /* the widget's play disc (see wg_music below) */
 #define WG_R_SHARED  60.0f
+#define WG_TITLE_Y   344      /* the widget's title and artist baselines */
+#define WG_ARTIST_Y  380
+#define FROM_WG_S    0.30f    /* widget -> app: the disc and the words travel together */
+#define TRK_OUT_S    0.10f    /* next track: the old words step down over 3 frames ... */
+/* ... then the new ones step up over 4 frames */
+#define HOLD_S       (2.5f / NOS_FPS)   /* a quick tap shows its pressed fill >= 3 frames */
 
 enum { B_NONE = 0, B_PREV, B_PLAY, B_NEXT };
 
 static struct {
-    float t_enter;
+    float t_enter, t_open;
     float build, txt;
     int   pressed;
+    int   held;              /* last pressed control, shown until t_down + HOLD_S */
+    float t_down;
     unsigned track_h;
-    float t_track;           /* last track change: text fades in */
+    float t_track;           /* last track change: old words out, then the new in */
+    char  cur_track[64], cur_artist[48];
+    char  old_track[64], old_artist[48];
+    int   old_w, old_off;    /* the outgoing title's width and marquee offset */
+    float txt_old;           /* outgoing words' ink 0..1 (0 = gone) */
+    float ink;               /* the times' ink: the build only (a track change keeps them) */
     /* marquee */
     int   mq_w;              /* title width, px */
     int   mq_off;            /* px scrolled */
@@ -133,13 +146,19 @@ static void music_enter(void)
 {
     player_poll();
     /* the build starts at 40% of the opening iris (UI standard) */
-    M.t_enter = nos_t + 0.4f * 0.42f;
+    M.t_enter = nos_enter_t();
+    M.t_open = nos_t;
     M.from_wg = s_from_widget;
     s_from_widget = 0;
     M.build = M.txt = 0;
-    M.pressed = B_NONE;
+    M.txt_old = 0;
+    M.pressed = M.held = B_NONE;
+    M.t_down = -10;
     M.track_h = str_hash(P.track);
     M.t_track = -10;
+    snprintf(M.cur_track, sizeof M.cur_track, "%s", P.track);
+    snprintf(M.cur_artist, sizeof M.cur_artist, "%s", P.artist);
+    M.old_track[0] = M.old_artist[0] = 0;
     M.mq_off = 0; M.mq_hold = MQ_HOLD;
     M.mq_w = ui_text_width(UI_F_TITLE, P.track, 0);
     memset(M.eq, 0, sizeof M.eq);
@@ -190,14 +209,27 @@ static void music_tick(float dt)
     /* a new track is detected before the fade is computed, so it is never drawn at full ink */
     unsigned h = str_hash(P.track);
     if (h != M.track_h) {
+        /* keep the outgoing words (and where the marquee had them) for their step-down */
+        if (nos_t - M.t_track >= TRK_OUT_S) {             /* not mid-change already */
+            memcpy(M.old_track, M.cur_track, sizeof M.old_track);
+            memcpy(M.old_artist, M.cur_artist, sizeof M.old_artist);
+            M.old_w = M.mq_w; M.old_off = M.mq_off;
+        }
         M.track_h = h;
         M.t_track = nos_t;
         M.mq_w = ui_text_width(UI_F_TITLE, P.track, 0);
         M.mq_off = 0; M.mq_hold = MQ_HOLD;
     }
-    /* words arrive with the build at full ink; a new track crossfades in 4 steps */
-    float tf = nos_t >= M.t_enter ? 1.0f : 0.0f;
-    float tt = (nos_t - M.t_track) / 0.2f;
+    snprintf(M.cur_track, sizeof M.cur_track, "%s", P.track);
+    snprintf(M.cur_artist, sizeof M.cur_artist, "%s", P.artist);
+    /* words arrive with the build at full ink (from the widget they are already there);
+     * a new track: the old words step down over 3 frames, then the new step up over 4 */
+    const float F1 = 1.0f / NOS_FPS;
+    float tf = nos_t >= M.t_enter || M.from_wg ? 1.0f : 0.0f;
+    M.ink = nos_t >= M.t_enter ? 1.0f : 0.0f;
+    float since = nos_t - M.t_track;
+    M.txt_old = since < TRK_OUT_S - 0.5f * F1 && M.old_track[0] ? q(1.0f - (since + F1) / (TRK_OUT_S + F1), 4) : 0;
+    float tt = since < TRK_OUT_S - 0.5f * F1 ? 0 : (since - TRK_OUT_S + F1) / (4.0f * F1);   /* 1/4 .. 4/4 */
     M.txt = q(tf < tt ? tf : tt, 4);
 
     /* marquee: whole pixels per frame so the scroll is perfectly even */
@@ -241,22 +273,23 @@ static void draw_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, f
     }
 }
 
-/* Title clipped to [MQ_X0, MQ_X1) with stepped fades at the edges it scrolls under. */
-static void marquee(gfx_fb *fb, const char *s, int y, uint16_t col)
+/* Title clipped to [MQ_X0, MQ_X1) with stepped fades at the edges it scrolls under.
+ * w = its width, off = px scrolled. */
+static void marquee(gfx_fb *fb, const char *s, int y, uint16_t col, int w, int off)
 {
     const font_t *f = UI_F_TITLE;
-    int w = M.mq_w, win = MQ_X1 - MQ_X0;
+    int win = MQ_X1 - MQ_X0;
     int top = y - f->ascent - 3, bot = y + (f->line_height - f->ascent) + 3;
     if (w <= win) { ui_text(fb, f, UI_CX, y, s, col, UI_CENTER, 0); return; }
     if (fb->rec) {
-        unsigned h = gfx_hash_u(gfx_hash_u(gfx_hash_u(str_hash(s), (unsigned)M.mq_off), col), 0x3A11u);
+        unsigned h = gfx_hash_u(gfx_hash_u(gfx_hash_u(gfx_hash_u(str_hash(s), (unsigned)off), col), 0x3A11u), (unsigned)y);
         gfx_rec_cmd(fb, MQ_X0, top, MQ_X1, bot, h);
         return;
     }
     /* bands: [edge 14 px at 1/3][next 14 px at 2/3][middle full] on each side; the
      * left fade only while text is scrolling under it */
     const int B = 14;
-    int lf = M.mq_off > 0;
+    int lf = off > 0;
     struct { int x0, x1; float k; } band[5] = {
         { MQ_X0,         MQ_X0 + B,     lf ? 0.25f : 1.0f },
         { MQ_X0 + B,     MQ_X0 + 2 * B, lf ? 0.6f : 1.0f },
@@ -264,7 +297,7 @@ static void marquee(gfx_fb *fb, const char *s, int y, uint16_t col)
         { MQ_X1 - 2 * B, MQ_X1 - B,     0.6f },
         { MQ_X1 - B,     MQ_X1,         0.25f },
     };
-    int x = MQ_X0 - M.mq_off;
+    int x = MQ_X0 - off;
     for (int i = 0; i < 5; i++) {
         gfx_fb sub;
         if (!nos_subview(fb, &sub, band[i].x0, top, band[i].x1, bot, 0, 0)) continue;
@@ -305,6 +338,8 @@ static void draw_empty(gfx_fb *fb, float build, int connected)
         ui_absent(fb, DOT_ICON_MUSIC, "Nothing playing", "Play music on your phone", NULL, build);
 }
 
+static int shown_pressed(int b) { return M.pressed == b || (M.held == b && nos_t - M.t_down < HOLD_S); }
+
 static void music_draw(gfx_fb *fb)
 {
     ui_title(fb, "MUSIC", 0);
@@ -327,22 +362,28 @@ static void music_draw(gfx_fb *fb)
     dot_columns(fb, UI_CX - EQ_COLS * EQ_PITCH * 0.5f, EQ_Y, EQ_COLS, EQ_ROWS, EQ_PITCH, 7.0f, ev,
                 P.playing ? C_PRI : C_DIS, 0);
 
+    /* from the widget the play disc and the words travel together from the widget's
+     * places into these (the words pass under the disc) */
+    float wk = 1.0f;
+    if (M.from_wg) wk = bezier_ease(&EASE_STANDARD, q((nos_t - M.t_open) / FROM_WG_S, 32));
+    int ty = (int)lroundf(m_lerp((float)WG_TITLE_Y, (float)TITLE_Y, wk));
+    int ay = (int)lroundf(m_lerp((float)WG_ARTIST_Y, (float)ARTIST_Y, wk));
     uint16_t c1 = ui_dim(C_WHITE, M.txt), c2 = ui_dim(C_SEC, M.txt);
-    marquee(fb, P.track, TITLE_Y, c1);
-    if (P.artist[0]) ui_text_fit(fb, UI_F_BODY, UI_CX, ARTIST_Y, P.artist, c2, UI_CENTER, MQ_X1 - MQ_X0);
+    if (M.txt_old > 0) {
+        marquee(fb, M.old_track, ty, ui_dim(C_WHITE, M.txt_old), M.old_w, M.old_off);
+        if (M.old_artist[0]) ui_text_fit(fb, UI_F_BODY, UI_CX, ay, M.old_artist, ui_dim(C_SEC, M.txt_old), UI_CENTER, MQ_X1 - MQ_X0);
+    } else if (M.txt > 0) {
+        marquee(fb, P.track, ty, c1, M.mq_w, M.mq_off);
+        if (P.artist[0]) ui_text_fit(fb, UI_F_BODY, UI_CX, ay, P.artist, c2, UI_CENTER, MQ_X1 - MQ_X0);
+    }
 
     /* controls are there at full size; their icons build from the centre */
     float ib = q((nos_t - M.t_enter) / UI_ENTRY_S, 32);
-    side_button(fb, UI_CX - SIDE_DX, SIDE_R, DOT_ICON_PREV, M.pressed == B_PREV, M.nudge < 0 ? -1 : 0, ib);
-    side_button(fb, UI_CX + SIDE_DX, SIDE_R, DOT_ICON_NEXT, M.pressed == B_NEXT, M.nudge > 0 ? 1 : 0, ib);
+    side_button(fb, UI_CX - SIDE_DX, SIDE_R, DOT_ICON_PREV, shown_pressed(B_PREV), M.nudge < 0 ? -1 : 0, ib);
+    side_button(fb, UI_CX + SIDE_DX, SIDE_R, DOT_ICON_NEXT, shown_pressed(B_NEXT), M.nudge > 0 ? 1 : 0, ib);
     /* from the widget the play disc slides from the widget's place and size into its own */
-    float cy = CTRL_Y, pr = PLAY_R;
-    if (M.from_wg) {
-        float e = bezier_ease(&EASE_STANDARD, q((nos_t - (M.t_enter - 0.168f)) / 0.30f, 32));
-        cy = m_lerp(WG_CY_SHARED, CTRL_Y, e);
-        pr = m_lerp(WG_R_SHARED, PLAY_R, e);
-    }
-    ui_circle(fb, UI_CX, cy, pr, M.pressed == B_PLAY ? C_SEC : C_WHITE);
+    float cy = m_lerp(WG_CY_SHARED, CTRL_Y, wk), pr = m_lerp(WG_R_SHARED, PLAY_R, wk);
+    ui_circle(fb, UI_CX, cy, pr, shown_pressed(B_PLAY) ? C_SEC : C_WHITE);
     int icon = P.playing ? DOT_ICON_PAUSE : DOT_ICON_PLAY;
     float ip = q((nos_t - M.t_icon) / 0.15f, 16);
     float pitch = 4.4f * (pr / PLAY_R);
@@ -355,12 +396,12 @@ static void music_draw(gfx_fb *fb)
     if (vk > 0.01f) { draw_volume(fb, vk); return; }
     char e[16], r[16];
     fmt_ms(e, sizeof e, P.pos_ms, 0);
-    ui_text(fb, UI_F_LABEL, UI_CX - 14, TIME_Y, e, c1, UI_RIGHT, 1);
-    dot_disc(fb, UI_CX, TIME_Y - 6, 4, ui_dim(C_DIS, M.txt));
+    ui_text(fb, UI_F_LABEL, UI_CX - 14, TIME_Y, e, ui_dim(C_WHITE, M.ink), UI_RIGHT, 1);
+    dot_disc(fb, UI_CX, TIME_Y - 6, 4, ui_dim(C_DIS, M.ink));
     if (P.dur_ms) {
         fmt_ms(r, sizeof r, P.dur_ms - P.pos_ms, 1);
-        ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, r, ui_dim(C_DIS, M.txt), UI_LEFT, 1);
-    } else ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, UI_NONE ":" UI_NONE, ui_dim(C_DIS, M.txt), UI_LEFT, 1);
+        ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, r, ui_dim(C_DIS, M.ink), UI_LEFT, 1);
+    } else ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, UI_NONE ":" UI_NONE, ui_dim(C_DIS, M.ink), UI_LEFT, 1);
 }
 
 /* --------------------------------------------------------------- input */
@@ -392,7 +433,8 @@ static int music_input(const nos_input *in)
 {
     switch (in->type) {
     case IN_DOWN:
-        M.pressed = P.have ? ctrl_at(in->x, in->y) : B_NONE;
+        M.pressed = M.held = P.have ? ctrl_at(in->x, in->y) : B_NONE;
+        M.t_down = nos_t;
         return 1;
     case IN_TAP: {
         int b = P.have ? ctrl_at(in->x, in->y) : B_NONE;
@@ -403,7 +445,7 @@ static int music_input(const nos_input *in)
         return 1;
     }
     case IN_DRAG_START:
-        M.pressed = B_NONE;
+        M.pressed = M.held = B_NONE;
         if (in->axis != AXIS_Y || !P.have) return 0;
         M.dragging = 1;
         M.drag_vol0 = M.vol;
@@ -451,10 +493,33 @@ static struct {
     float t_shown;
     float build;
     int   pos;
-    float t_press;
+    int   down;              /* a finger rests on the play disc */
+    float t_down;            /* since when */
+    float t_tap;             /* last play/pause tap (the fill holds 3 frames) */
+    float t_open;            /* opened the app (its disc and words move with it) */
     int   icon_playing;
     float t_icon;
-} G = { .t_shown = -10, .t_press = -10, .t_icon = -10 };
+} G = { .t_shown = -10, .t_down = -10, .t_tap = -10, .t_open = -10, .t_icon = -10 };
+
+/* 0 at rest; 0..1 while the app opens from this widget (the app's clock for the move) */
+static float wg_open_e(void)
+{
+    float t = nos_t - G.t_open;
+    if (t < 0 || t > FROM_WG_S + 0.5f) return 0;
+    return bezier_ease(&EASE_STANDARD, q(t / FROM_WG_S, 32));
+}
+
+static int wg_on_disc(int x, int y)
+{
+    float dx = x - UI_CX, dy = y - WG_CY;
+    return dx * dx + dy * dy <= (WG_R + 16) * (WG_R + 16);
+}
+/* Pressed after 2 frames of a resting finger (a flick across the page never flashes
+ * it), and for at least 3 frames on a quick tap. */
+static int wg_pressed(void)
+{
+    return (G.down && nos_t - G.t_down >= 1.5f / NOS_FPS) || nos_t - G.t_tap < 2.5f / NOS_FPS;
+}
 
 static void wg_tick(float dt, int visible)
 {
@@ -467,7 +532,7 @@ static void wg_tick(float dt, int visible)
     if (P.playing != G.icon_playing) { G.icon_playing = P.playing; G.t_icon = nos_t; }
 }
 
-static void wg_shown(void) { G.t_shown = nos_t; }
+static void wg_shown(void) { G.t_shown = nos_t; G.t_open = -10; }
 
 static void wg_draw(gfx_fb *fb)
 {
@@ -482,30 +547,48 @@ static void wg_draw(gfx_fb *fb)
         float a = 6.2831853f * (float)G.pos / WG_RING_N;
         dot_disc(fb, UI_CX + WG_RING_R * gfx_fast_sin(a), WG_CY - WG_RING_R * gfx_fast_cos(a), 9.0f, C_WHITE);
     }
-    int pressed = nos_t - G.t_press < 0.12f;
-    ui_circle(fb, UI_CX, WG_CY, WG_R, pressed ? C_SEC : C_WHITE);
+    /* opening the app: the disc and the words travel into the app's places here too, so
+     * both sides of the iris edge show the same motion (no ghost of the old layout) */
+    float e = wg_open_e();
+    if (e > 0) {
+        int ty = (int)lroundf(m_lerp((float)WG_TITLE_Y, (float)TITLE_Y, e));
+        int ay = (int)lroundf(m_lerp((float)WG_ARTIST_Y, (float)ARTIST_Y, e));
+        marquee(fb, P.track, ty, C_WHITE, ui_text_width(UI_F_TITLE, P.track, 0), 0);
+        if (P.artist[0]) ui_text_fit(fb, UI_F_BODY, UI_CX, ay, P.artist, C_SEC, UI_CENTER, MQ_X1 - MQ_X0);
+    } else {
+        int x0, x1;
+        ui_row_span(340, 44, &x0, &x1);
+        ui_text_fit(fb, UI_F_TITLE, UI_CX, WG_TITLE_Y, P.track, C_WHITE, UI_CENTER, x1 - x0);
+        ui_row_span(380, 56, &x0, &x1);
+        if (P.artist[0]) ui_text_fit(fb, UI_F_BODY, UI_CX, WG_ARTIST_Y, P.artist, C_SEC, UI_CENTER, x1 - x0);
+    }
+    float dcy = m_lerp(WG_CY, CTRL_Y, e), dr = m_lerp(WG_R, PLAY_R, e);
+    ui_circle(fb, UI_CX, dcy, dr, wg_pressed() ? C_SEC : C_WHITE);
     int icon = P.playing ? DOT_ICON_PAUSE : DOT_ICON_PLAY;
-    float pitch = 4.8f;
+    float pitch = 4.4f * (dr / PLAY_R);            /* the app's glyph scale */
     float ox = icon == DOT_ICON_PLAY ? -pitch * 0.9f : 0;
-    dot_icon_anim(fb, icon, UI_CX + ox, WG_CY, pitch, pitch * 0.8f, C_BG, q((nos_t - G.t_icon) / 0.15f, 16), DOT_REVEAL_CENTER);
-    int x0, x1;
-    ui_row_span(340, 44, &x0, &x1);
-    ui_text_fit(fb, UI_F_TITLE, UI_CX, 344, P.track, C_WHITE, UI_CENTER, x1 - x0);
-    ui_row_span(380, 56, &x0, &x1);
-    if (P.artist[0]) ui_text_fit(fb, UI_F_BODY, UI_CX, 380, P.artist, C_SEC, UI_CENTER, x1 - x0);
+    dot_icon_anim(fb, icon, UI_CX + ox, dcy, pitch, pitch * 0.8f, C_BG, q((nos_t - G.t_icon) / 0.15f, 16), DOT_REVEAL_CENTER);
+}
+
+static void wg_press(int x, int y, int down)
+{
+    if (down && P.have && wg_on_disc(x, y)) { G.down = 1; G.t_down = nos_t; }
+    else G.down = 0;
 }
 
 static void wg_tap(int x, int y)
 {
-    float dx = x - UI_CX, dy = y - WG_CY;
-    if (P.have && dx * dx + dy * dy <= (WG_R + 16) * (WG_R + 16)) {
-        G.t_press = nos_t;
+    if (P.have && wg_on_disc(x, y)) {
+        G.t_tap = nos_t;
+        G.down = 0;
         player_toggle();
         nos_feedback(FB_TAP);
         return;
     }
+    G.down = 0; G.t_tap = -10;                      /* nothing stays pressed behind the app */
+    G.t_open = nos_t;
     s_from_widget = 1;
     nos_open(&scr_music, UI_CX, (int)WG_CY);       /* the iris grows from the play disc */
 }
 
-const nos_widget wg_music = { "MUSIC", wg_tick, wg_draw, wg_tap, wg_shown };
+const nos_widget wg_music = { "MUSIC", wg_tick, wg_draw, wg_tap, wg_shown, wg_press };

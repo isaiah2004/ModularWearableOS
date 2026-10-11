@@ -164,4 +164,12 @@ const svc_sys_t *svc_sys(void);
 
 /* Ring screens the services push (defined by apps): */
 extern const struct nos_screen scr_alarm_ring, scr_timer_ring, scr_call, scr_find_watch;
+
+/* Voice memo recording, which keeps running when the Recorder is left (con_memo.c).
+ * The system REC chip shows while svc_memo_active(). */
+int      svc_memo_active(void);
+uint32_t svc_memo_elapsed_ms(void);
+int      svc_memo_number(void);          /* the "Memo n" it will be saved as */
+int      svc_memo_stop(void);            /* stop and save; 1 if it was recording */
+void     svc_memo_tick(float dt);        /* svc_tick runs it every frame */
 #endif

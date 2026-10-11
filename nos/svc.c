@@ -1175,7 +1175,7 @@ void svc_init(void)
 void svc_tick(float dt)
 {
     svc_track_tick(dt);              /* GPS track recording runs with Navigate closed */
-    (void)dt;
+    svc_memo_tick(dt);               /* and voice memos with the Recorder closed */
     uint32_t now = hal_millis();
     phone_tick(now);
     companion_tick();

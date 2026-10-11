@@ -8,8 +8,12 @@
  *   MEMOS     saved recordings (on the device: /sdcard/watch/memos/ WAV files; in the
  *             simulator an in-memory list) with playback and a progress dot bar.
  *   NOISE     live sound level as a big dot-matrix dB number, a 5 dB-per-dot meter
- *             that turns amber past 85 dB, and a hearing-risk label.
- * Module-absent states for the mic (record, noise) and the speaker (playback). */
+ *             whose dots past 85 dB are red (the overflow), and a state label.
+ * Module-absent states for the mic (record, noise) and the speaker (playback).
+ *
+ * The memo service (svc_memo_*): a recording belongs to the HAL recorder, not to this
+ * screen, so leaving Recorder keeps it going (like the track service) and the system
+ * REC chip reads it from here. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -44,6 +48,8 @@ static void absent(gfx_fb *fb, const char *title, const char *what, float build)
     ui_title(fb, title, 0);
     ui_absent(fb, DOT_ICON_MIC, "Not connected", what, "MIC MODULE", build);
 }
+
+#define HOLD_S    (2.5f / NOS_FPS)   /* a quick tap shows its pressed fill >= 3 frames */
 
 /* =========================================================== memo store ===== */
 #define MEMO_MAX 24
@@ -115,7 +121,6 @@ static void memo_load(void)
 #define REC_CY     356.0f
 #define REC_R      42.0f
 #define TIME_Y     212.0f
-#define DOTS_Y     446
 
 static struct {
     float t_enter, build, txt;
@@ -135,6 +140,7 @@ static struct {
     /* recording */
     int   rec;
     int   pressed;
+    float t_down;                /* record button press start */
     uint32_t rec_ms;
     float t_rec;                 /* start/stop moment (morph) */
     char  ts[12], ts_prev[12];
@@ -150,7 +156,9 @@ static struct {
     uint32_t play_ms;
     int   real_play;             /* the HAL is actually playing it */
     int   rec_lock;              /* a sideways drag while recording: rubber band only */
-} R = { .playing = -1 };
+    int   row_held;              /* memo row whose fill holds after a quick tap */
+    float row_t;
+} R = { .playing = -1, .row_held = -1 };
 
 static int on_page(int p) { return fabsf(R.px.x - p * PAGE_W) < PAGE_W; }
 
@@ -166,14 +174,16 @@ static void play_stop(void)
 #define MCARD_X0 53                 /* fixed card: 360 px wide, r 40 */
 #define MCARD_W  360
 
-/* "6 S" under a minute, else "2:07" (never confusable with a clock time) */
+/* "6 s" under a minute, else "2:07" (never confusable with a clock time). Units keep
+ * their case (ui_label_unit): the caller draws it with ui_text + label tracking. */
 static void fmt_len(char *b, int n, uint32_t ms)
 {
     uint32_t s = (ms + 500) / 1000;
-    if (s < 60) snprintf(b, (size_t)n, "%u S", (unsigned)s);
+    if (s < 60) snprintf(b, (size_t)n, "%u s", (unsigned)s);
     else if (s < 3600) snprintf(b, (size_t)n, "%u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
     else snprintf(b, (size_t)n, "%u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
 }
+#define LABEL_TRACK 2               /* ui_label's tracking: these lines match the caps labels */
 
 static void memo_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
 {
@@ -182,6 +192,7 @@ static void memo_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade
     float st = q((nos_t - R.t_enter - 0.034f * (i < 6 ? i : 6)) / 0.15f, 4);
     float k = fade * st;
     if (k <= 0) return;
+    pressed = pressed || (R.row_held == i && nos_t - R.row_t < HOLD_S);
     ui_rrect(fb, (float)MCARD_X0, (float)(y + 4), (float)MCARD_W, (float)(h - 8), 40,
              ui_dim(pressed ? C_LINE2 : C_SURF2, k));
     int playing = R.playing == i;
@@ -200,7 +211,7 @@ static void memo_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade
         float p = m_clamp((float)R.play_ms / (float)m->dur_ms, 0, 1);
         dot_bar(fb, (float)tx + 3, (float)(y + 63), 12, 11.0f, 6.0f, q(p, 12) * 12.0f, C_WHITE, C_LINE2);
         fmt_len(len, sizeof len, R.play_ms);
-        ui_label(fb, tr, y + 69, len, ui_dim(C_SEC, k), UI_RIGHT);
+        ui_text(fb, UI_F_LABEL, tr, y + 69, len, ui_dim(C_SEC, k), UI_RIGHT, LABEL_TRACK);
     } else {
         /* length, then the time if it was today, else the day */
         char w[12];
@@ -210,13 +221,14 @@ static void memo_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade
         else snprintf(w, sizeof w, "%d %s", m->d, ui_month3(m->mo));
         fmt_len(len, sizeof len, m->dur_ms);
         snprintf(b, sizeof b, "%s \xB7 %s", len, w);
-        ui_text_fit(fb, UI_F_LABEL, tx, y + 69, b, ui_dim(C_DIS, k), UI_LEFT, tr - tx);
+        ui_text(fb, UI_F_LABEL, tx, y + 69, b, ui_dim(C_DIS, k), UI_LEFT, LABEL_TRACK);
     }
 }
 
 static void memo_tap(int i)
 {
     if (!s_memos || i < 0 || i >= s_nmemo) return;
+    R.row_held = i; R.row_t = R.list.press_t;        /* the fill stays >= 3 frames */
     if (R.playing == i) { play_stop(); return; }
     play_stop();
     if (!R.spk) { nos_feedback(FB_ERROR); nos_toast("No speaker module"); return; }
@@ -230,16 +242,80 @@ static void memo_tap(int i)
     R.play_ms = 0;
 }
 
+/* ------------------------------------------------------- memo service */
+static int      s_rec_open;     /* a recording this app started has not been saved yet */
+static uint32_t s_saved_ms;     /* length of the last saved memo */
+
+/* The HAL recorder has stopped (by us or by itself): add the memo, return its number. */
+static int rec_finish(void)
+{
+    uint32_t ms = hal_rec_ms();
+    s_rec_open = 0;
+    s_saved_ms = ms;
+#ifdef ESP_PLATFORM
+    memo_load();                     /* the file is on the card now */
+#else
+    {
+        hal_datetime dt;
+        hal_get_datetime(&dt);
+        char path[64];
+        snprintf(path, sizeof path, MEMO_DIR "/M_%02d%02d_%02d%02d%02d.wav", dt.month, dt.day, dt.hour, dt.minute, dt.second);
+        memo_add(path, ms, dt.month, dt.day, dt.hour, dt.minute);
+    }
+#endif
+    if (R.list_inited) ui_list_set_n(&R.list, s_nmemo);
+    return s_seq;
+}
+
+/* A save the user can't see in Recorder: say it on whatever is showing. */
+static void saved_toast(int n)
+{
+    char b[40], len[16];
+    uint32_t s = (s_saved_ms + 500) / 1000;
+    snprintf(len, sizeof len, "%u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+    snprintf(b, sizeof b, "Saved memo %d \xB7 %s", n, len);
+    nos_toast(b);
+}
+
+int svc_memo_active(void) { return s_rec_open && hal_rec_active(); }
+uint32_t svc_memo_elapsed_ms(void) { return svc_memo_active() ? hal_rec_ms() : 0; }
+int svc_memo_number(void) { return s_seq + 1; }          /* "Memo n" it will be saved as */
+
+/* Stop and save a background recording (the REC chip); returns the memo number, 0 if
+ * nothing was recording. */
+int svc_memo_stop(void)
+{
+    if (!s_rec_open) return 0;
+    hal_rec_stop();
+    int n = rec_finish();
+    nos_feedback(FB_SUCCESS);
+    saved_toast(n);
+    return n;
+}
+
+/* Per frame (svc_tick): a background recording that ends by itself (card full) is
+ * saved and announced. Recorder handles its own while it is on top. */
+void svc_memo_tick(float dt)
+{
+    (void)dt;
+    if (s_rec_open && !hal_rec_active() && nos_top() != &scr_memo) saved_toast(rec_finish());
+}
+
 /* --------------------------------------------------------------- enter */
 static void memo_enter(void)
 {
-    R.t_enter = nos_t + 0.4f * 0.42f;      /* build from 40% of the opening iris */
-    R.build = R.txt = 0;
-    msp_init(&R.px, 0, SPRING_PAGE);
-    R.page = 0;
+    /* revealed by back (a call or an alarm went away): no rebuild, same page */
+    int back = nos_revealed();
+    R.t_enter = back ? nos_t - 10.0f : nos_enter_t();   /* build from 40% of the opening iris */
+    R.build = R.txt = back ? 1.0f : 0.0f;
+    if (!back) { msp_init(&R.px, 0, SPRING_PAGE); R.page = 0; }
     R.dragging = 0;
     R.pressed = 0;
-    R.rec = hal_rec_active();
+    R.t_down = -10;
+    R.row_held = -1;
+    if (s_rec_open && !hal_rec_active()) rec_finish();   /* ended by itself while away */
+    R.rec = svc_memo_active();             /* ... or still running: pick it up */
+    R.rec_ms = R.rec ? hal_rec_ms() : 0;
     R.t_rec = -10;
     R.t_saved = -10;
     R.rec_failed = 0;
@@ -259,24 +335,11 @@ static void rec_stop(void)
 {
     if (!R.rec) return;
     hal_rec_stop();
-    uint32_t ms = hal_rec_ms();
-    if (!ms) ms = R.rec_ms;
     R.rec = 0;
     R.t_rec = nos_t;
-    R.saved_ms = ms;
+    if (s_rec_open) rec_finish();
+    R.saved_ms = s_saved_ms ? s_saved_ms : R.rec_ms;
     R.t_saved = nos_t;
-#ifdef ESP_PLATFORM
-    memo_load();                     /* the file is on the card now */
-#else
-    {
-        hal_datetime dt;
-        hal_get_datetime(&dt);
-        char path[64];
-        snprintf(path, sizeof path, MEMO_DIR "/M_%02d%02d_%02d%02d%02d.wav", dt.month, dt.day, dt.hour, dt.minute, dt.second);
-        memo_add(path, ms, dt.month, dt.day, dt.hour, dt.minute);
-    }
-#endif
-    ui_list_set_n(&R.list, s_nmemo);
     nos_feedback(FB_SUCCESS);
 }
 
@@ -299,6 +362,7 @@ static void rec_start(void)
     }
     R.rec_failed = 0;
     R.rec = 1;
+    s_rec_open = 1;
     R.rec_ms = 0;
     R.t_rec = nos_t;
     R.t_saved = -10;
@@ -307,7 +371,9 @@ static void rec_start(void)
 
 static void memo_leave(void)
 {
-    rec_stop();
+    /* a recording keeps going in the background (the REC chip shows it); say so once */
+    if (R.rec && svc_memo_active()) nos_toast("Still recording");
+    R.rec = 0;
     play_stop();
 }
 
@@ -373,14 +439,15 @@ static void memo_tick(float dt)
 
     /* recording clock */
     if (R.rec) {
-        if (!hal_rec_active()) rec_stop();          /* card full / error */
+        if (!hal_rec_active()) rec_stop();          /* card full / error: saved like a stop */
         else {
             R.rec_ms = hal_rec_ms();
             nos_keep_awake();
         }
     }
     char t[12];
-    ui_fmt_dur(t, sizeof t, R.rec ? R.rec_ms : (nos_t - R.t_saved < 1.6f ? R.saved_ms : 0), 0);
+    if (R.rec || nos_t - R.t_saved < 1.6f) ui_fmt_dur(t, sizeof t, R.rec ? R.rec_ms : R.saved_ms, 0);
+    else snprintf(t, sizeof t, UI_NONE ":" UI_NONE);   /* at rest: no 00:00 */
     if (strcmp(t, R.ts)) {
         if (R.ts[0] && strlen(t) == strlen(R.ts)) { memcpy(R.ts_prev, R.ts, sizeof R.ts); R.t_ts = nos_t; }
         else R.ts_prev[0] = 0;
@@ -440,7 +507,7 @@ static void draw_recorder(gfx_fb *fb)
     wave_draw(fb, UI_CX - WAVE_COLS * WAVE_PITCH * 0.5f, WAVE_CY, R.rec ? C_WHITE : C_DIS, C_LINE2, R.build);
 
     /* elapsed time: ghosted until recording */
-    dot_style st = { DOT_FONT_TALL, 6.0f, 4.8f, R.rec ? C_WHITE : (nos_t - R.t_saved < 1.6f && !R.rec_failed ? C_PRI : C_LINE2), 0, 1, 1 };
+    dot_style st = { DOT_FONT_TALL, 6.0f, 4.8f, R.rec ? C_WHITE : (nos_t - R.t_saved < 1.6f && !R.rec_failed ? C_PRI : C_DIS), 0, 1, 1 };
     if (R.ts_prev[0] && R.ts_morph < 1) dot_text_morph(fb, &st, UI_CX, TIME_Y, R.ts_prev, R.ts, 1, R.ts_morph);
     else dot_text_anim(fb, &st, UI_CX, TIME_Y, R.ts, 1, q((nos_t - R.t_enter - 0.05f) / 0.3f, 32), DOT_REVEAL_RANDOM, 7);
 
@@ -454,12 +521,13 @@ static void draw_recorder(gfx_fb *fb)
 
     /* record button: white ring, red dot <-> rounded square (EASE_MECH, 200 ms) */
     const float b = 1.0f;
-    ui_circle(fb, UI_CX, REC_CY, REC_R, R.pressed ? C_LINE2 : C_SURF2);
+    int pr = R.pressed || nos_t - R.t_down < HOLD_S;
+    ui_circle(fb, UI_CX, REC_CY, REC_R, pr ? C_LINE2 : C_SURF2);
     ui_circle_line(fb, UI_CX, REC_CY, REC_R, 3, C_LINE2);
     float m = bezier_ease(&EASE_MECH, q((nos_t - R.t_rec) / 0.2f, 16));
     float k = R.rec ? m : 1.0f - m;                    /* 1 = square */
     float side = m_lerp(52.0f, 34.0f, k) * b, rad = m_lerp(26.0f, 8.0f, k) * b;
-    uint16_t red = R.pressed ? C_RED_D : C_RED;
+    uint16_t red = pr ? C_RED_D : C_RED;
     ui_rrect(fb, UI_CX - side / 2, REC_CY - side / 2, side, side, rad, red);
 }
 
@@ -503,7 +571,7 @@ static void draw_noise(gfx_fb *fb)
     else if (v < 70) { lab = "MODERATE";     line = "Normal conversation"; }
     else if (v < 85) { lab = "LOUD";         line = "Busy street traffic"; }
     else             { lab = "HEARING RISK"; line = "Limit your exposure"; }
-    if (risk) ui_state(fb, UI_CX, 318, lab, C_RED);
+    if (risk) ui_state(fb, UI_CX, 318, lab, ui_dim(C_PRI, R.txt));   /* red stays on the meter */
     else ui_label(fb, UI_CX, 318, lab, ui_dim(C_PRI, R.txt), UI_CENTER);
     body_line(fb, 356, line, ui_dim(C_SEC, R.txt));
 }
@@ -538,10 +606,13 @@ static int memo_input(const nos_input *in)
     case IN_DOWN:
         if (R.px.moving) { R.px.v = 0; R.px.target = R.px.x; }     /* catch the pager */
         R.pressed = settled && R.page == 0 && R.mic && in_rec_button(in->x, in->y);
+        if (R.pressed) R.t_down = nos_t;
         if (settled && R.page == 1 && s_nmemo) ui_list_input(&R.list, in);
         return 1;
     case IN_DRAG_START:
         R.pressed = 0;
+        R.t_down = -10;
+        R.row_held = -1;
         if (in->axis == AXIS_X) {
             if (R.page == 1) ui_list_input(&R.list, in);            /* cancels its press */
             if (R.rec) { R.rec_lock = 1; R.grab_x = R.px.x; nos_feedback(FB_LIMIT); }   /* stay, but show it */

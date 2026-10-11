@@ -16,6 +16,8 @@
 #include <math.h>
 
 #define TORCH_RED   0x7800          /* #780000: deep warm red, kind to dark-adapted eyes */
+#define TORCH_FIELD 0x9800          /* #9A0000: the field under the gauge in red mode */
+#define TORCH_UNLIT 0x2800          /* #2A0000: unlit gauge dots in red mode */
 #define DISSOLVE_S  0.15f
 #define HINT_S      2.6f
 #define GAUGE_N     10
@@ -142,9 +144,11 @@ static void torch_draw(gfx_fb *fb)
     uint16_t ink = T.mode ? 0x3000 : 0xA514;        /* #300000 / #A0A0A0 */
     if (T.gauge > 0) {
         float lv = T.level[T.mode];
-        /* red mode: black lit dots on a darker-red track, black figures */
+        /* red mode: the gauge sits on a brighter red field (#9A0000) with black lit dots,
+         * #2A0000 unlit ones and black figures, so it reads without lighting the room */
+        if (T.mode) ui_rrect(fb, UI_CX - 115, 336, 230, 78, 39, ui_mix(bg, TORCH_FIELD, T.gauge));
         uint16_t on = ui_mix(bg, T.mode ? C_BG : C_LINE2, T.gauge);
-        uint16_t off = ui_mix(bg, T.mode ? 0x3800 : 0xD69A, T.gauge);
+        uint16_t off = ui_mix(bg, T.mode ? TORCH_UNLIT : 0xD69A, T.gauge);
         const float pitch = 16, d = 9;
         float x0 = UI_CX - pitch * (GAUGE_N - 1) * 0.5f;
         dot_bar(fb, x0, 392, GAUGE_N, pitch, d, lv * GAUGE_N + 0.001f, on, off);

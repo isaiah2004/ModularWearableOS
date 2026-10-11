@@ -22,6 +22,10 @@
 
 static float q(float x, float n) { return floorf(m_clamp(x, 0, 1) * n + 0.5f) / n; }
 
+/* §8: a quick tap shows its pressed fill for at least 3 frames; a tap that pushes a
+ * screen waits for them, then the fill stays lit while the screen slides away. */
+#define HOLD_S (2.5f / NOS_FPS)
+
 /* ----------------------------------------------------------- shared data */
 #define SMS_MAX 16
 static hal_sms *s_sms;                 /* PSRAM, SMS_MAX entries (internal DRAM is full) */
@@ -82,12 +86,17 @@ static struct {
     int   want_on;            /* the user asked for the radio */
     int   st;                 /* LS_* */
     int   pressed;
+    int   held;               /* last pressed button, lit until t_down + HOLD_S */
+    float t_down;
+    int   pend_sms;           /* the SMS tap waits for its pressed frames */
     int   sweep;              /* searching animation step */
     int   sweep_frame;
     int   unread;
     mtween fill;              /* power button white fill 0..1 */
     int   fill_on;
 } L;
+
+static const nos_screen scr_cell_sms;
 
 static int lte_state(void)
 {
@@ -103,9 +112,11 @@ static int lte_state(void)
 static void cell_enter(void)
 {
     /* back from the inbox: no rebuild; opened by the iris: build from 40% of it */
-    L.t_enter = nos_revealed() ? nos_t - 10.0f : nos_t + 0.4f * 0.42f;
+    L.t_enter = nos_revealed() ? nos_t - 10.0f : nos_enter_t();
     L.build = L.txt = 0;
-    L.pressed = CB_NONE;
+    L.pressed = L.held = CB_NONE;
+    L.t_down = -10;
+    L.pend_sms = 0;
     L.want_on = nos_prefs.lte;
     if (L.want_on) hal_lte_enable(1);
     L.present = hal_lte_get(&L.l);
@@ -133,6 +144,11 @@ static void cell_tick(float dt)
         mtw_start(&L.fill, mtw_value(&L.fill), (float)on, 0.18f, &EASE_MECH);
     }
     if (L.st == LS_STARTING || L.st == LS_SEARCHING) nos_keep_awake();
+    if (L.pend_sms && nos_t - L.t_down >= HOLD_S && !nos_transitioning()) {
+        L.pend_sms = 0;
+        L.t_down = nos_t + 1.0f;            /* lit while the inbox slides in */
+        nos_push(&scr_cell_sms, TX_PUSH);
+    }
 }
 
 static void draw_bars(gfx_fb *fb, float build)
@@ -175,6 +191,8 @@ static void power_glyph(gfx_fb *fb, float cx, float cy, uint16_t ink, float p)
     for (int k = 0; k < 3; k++) if (p * 3 > k) dot_disc(fb, cx, cy - 14 + k * 5.0f, 3.6f, ink);
 }
 
+static int shown_pressed(int b) { return L.pressed == b || (L.held == b && nos_t - L.t_down < HOLD_S); }
+
 static void cell_draw(gfx_fb *fb)
 {
     ui_title(fb, "CELLULAR", 0);
@@ -189,15 +207,17 @@ static void cell_draw(gfx_fb *fb)
     char b[40];
     switch (L.st) {
     case LS_LIVE:
-        snprintf(b, sizeof b, "%d DBM", L.l.rssi_dbm);
-        ui_label(fb, UI_CX, 238, L.l.rssi_dbm ? b : "-- DBM", c2, UI_CENTER);
-        body_line(fb, 284, L.l.op[0] ? L.l.op : "Unknown network", c1);
+        /* units keep their case: -81 dBm */
+        snprintf(b, sizeof b, "%d", L.l.rssi_dbm);
+        ui_label_unit(fb, UI_CX, 236, L.l.rssi_dbm ? b : UI_NONE, "dBm", c2, UI_CENTER);
+        body_line(fb, 276, L.l.op[0] ? L.l.op : "Unknown network", c1);
+        /* 18 px of air above the RADIO disc */
         snprintf(b, sizeof b, "%s / %s", L.l.tech[0] ? L.l.tech : "LTE", L.l.registered == 2 ? "ROAMING" : "HOME");
-        ui_label(fb, UI_CX, 312, b, c3, UI_CENTER);
+        ui_label(fb, UI_CX, 304, b, c3, UI_CENTER);
         break;
     case LS_OFF:
         ui_state(fb, UI_CX, 238, "OFF", c2);
-        body_line(fb, 290, "Tap RADIO to turn on", c1);
+        ui_label(fb, UI_CX, 284, "TAP RADIO TO TURN ON", c2, UI_CENTER);   /* hints are caps labels */
         break;
     case LS_STARTING:
         ui_state(fb, UI_CX, 238, "STARTING", c2);
@@ -221,12 +241,12 @@ static void cell_draw(gfx_fb *fb)
     int on = L.want_on || L.l.powered;
     {   /* power: a white disc grows from the centre as the radio turns on */
         float f = q(mtw_value(&L.fill), 16);
-        int pr = L.pressed == CB_POWER;
+        int pr = shown_pressed(CB_POWER);
         cell_button(fb, UI_CX - BTN_DX, DOT_ICON_NONE, 0, pr, 0, BTN_R, ib);
         if (BTN_R * f > 1) ui_circle(fb, UI_CX - BTN_DX, BTN_Y, BTN_R * f, pr ? C_SEC : C_WHITE);
         power_glyph(fb, UI_CX - BTN_DX, BTN_Y, f > 0.6f ? C_BG : C_PRI, ib);
     }
-    cell_button(fb, UI_CX + BTN_DX, DOT_ICON_MSG, 0, L.pressed == CB_SMS, 0, BTN_R, ib);
+    cell_button(fb, UI_CX + BTN_DX, DOT_ICON_MSG, 0, shown_pressed(CB_SMS) || L.pend_sms, 0, BTN_R, ib);
     if (L.unread > 0 && ib >= 1) {
         float bx = UI_CX + BTN_DX + 31, by = BTN_Y - 31;
         ui_circle(fb, bx, by, 14, C_WHITE);
@@ -246,14 +266,13 @@ static int cell_btn_at(int x, int y)
     return CB_NONE;
 }
 
-static const nos_screen scr_cell_sms;
-
 static int cell_input(const nos_input *in)
 {
     if (L.st == LS_ABSENT) return 0;
     switch (in->type) {
     case IN_DOWN:
-        L.pressed = cell_btn_at(in->x, in->y);
+        L.pressed = L.held = cell_btn_at(in->x, in->y);
+        L.t_down = nos_t;
         return 1;
     case IN_TAP: {
         int b = cell_btn_at(in->x, in->y);
@@ -267,12 +286,14 @@ static int cell_input(const nos_input *in)
             nos_feedback(on ? FB_TOGGLE_ON : FB_TOGGLE_OFF);
         } else if (b == CB_SMS) {
             nos_feedback(FB_TAP);
-            nos_push(&scr_cell_sms, TX_PUSH);
+            L.pend_sms = 1;                     /* pushed once the press has shown */
         }
         return 1;
     }
-    case IN_UP:
     case IN_DRAG_START:
+        L.held = CB_NONE;
+        /* fallthrough */
+    case IN_UP:
         L.pressed = CB_NONE;
         return 0;
     default:
@@ -292,7 +313,10 @@ static struct {
     float t_enter;
     float txt;
     int   inited;
-} I;
+    int   pend;              /* tapped row, pushed once its press has shown */
+    int   held;              /* row lit while the reader slides in */
+    float held_until;
+} I = { .pend = -1, .held = -1 };
 
 static const nos_screen scr_cell_read;
 
@@ -305,6 +329,7 @@ static void inbox_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fad
     float k = fade * st;
     if (k <= 0) return;
     /* fixed-width cards: the glass edge crops a low card, the text never jumps sideways */
+    pressed = pressed || i == I.pend || (i == I.held && nos_t < I.held_until);
     ui_rrect(fb, (float)CARD_X0, (float)(y + 4), (float)CARD_W, (float)(h - 8), 40,
              ui_dim(pressed ? C_LINE2 : C_SURF2, k));
     int tx = CARD_X0 + 40, tr = UI_VALUE_X;
@@ -320,8 +345,7 @@ static void inbox_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fad
 static void inbox_tap(int i)
 {
     if (i < 0 || i >= s_nsms) return;
-    s_open = i;
-    nos_push(&scr_cell_read, TX_PUSH);
+    I.pend = i;
 }
 
 static void inbox_enter(void)
@@ -332,12 +356,19 @@ static void inbox_enter(void)
     I.list.margin = 30;
     /* revealed by back (reader popped): keep the cards, no re-stagger */
     if (!nos_revealed()) I.t_enter = nos_t;
+    I.pend = I.held = -1;
 }
 
 static void inbox_tick(float dt)
 {
     ui_list_tick(&I.list, dt);
     I.txt = 1.0f;
+    if (I.pend >= 0 && nos_t - I.list.press_t >= HOLD_S && !nos_transitioning()) {
+        s_open = I.pend;
+        I.held = I.pend; I.held_until = nos_t + 0.6f;
+        I.pend = -1;
+        nos_push(&scr_cell_read, TX_PUSH);
+    }
 }
 
 static void inbox_draw(gfx_fb *fb)
@@ -374,7 +405,8 @@ static struct {
     int   sent_i;
     int   popped;
     int   inited;
-} R;
+    int   pend;                /* tapped chip, sent once its press has shown */
+} R = { .pend = -1 };
 
 static int count_lines(const char *s, int max_w)
 {
@@ -407,6 +439,7 @@ static void reply_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fad
     float k = fade * st;
     if (k <= 0) return;
     float w = 240, ph = 60;                         /* chip: 60 tall in a 90 px hit row */
+    pressed = pressed || i == R.pend;
     ui_rrect(fb, UI_CX - w / 2, (float)y + (h - ph) / 2, w, ph, ph / 2, ui_dim(pressed ? C_LINE2 : C_SURF2, k));
     ui_text(fb, UI_F_BODY, UI_CX, y + h / 2 + 8, k_replies[i], ui_dim(C_PRI, k), UI_CENTER, 0);
 }
@@ -414,6 +447,11 @@ static void reply_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fad
 static void reply_tap(int i)
 {
     if (R.result || s_open < 0 || i < 0 || i >= NREPLY) return;
+    R.pend = i;
+}
+
+static void reply_send(int i)
+{
     int ok = hal_lte_sms_send(s_sms[s_open].from, k_replies[i]);
     R.result = ok ? 1 : -1;
     R.t_result = nos_t;
@@ -430,6 +468,7 @@ static void read_enter(void)
     R.t_enter = nos_t;
     R.result = 0;
     R.popped = 0;
+    R.pend = -1;
     const hal_sms *m = (s_open >= 0 && s_open < s_nsms) ? &s_sms[s_open] : 0;
     R.lines = m ? count_lines(m->text, TEXT_W) : 1;
     if (R.lines > 7) R.lines = 7;
@@ -450,6 +489,11 @@ static void read_tick(float dt)
 {
     ui_list_tick(&R.list, dt);
     R.txt = 1.0f;
+    if (R.pend >= 0 && nos_t - R.list.press_t >= HOLD_S) {
+        int i = R.pend;
+        R.pend = -1;
+        if (!R.result && s_open >= 0 && s_open < s_nsms) reply_send(i);
+    }
     if (R.result == 1 && !R.popped && nos_t - R.t_result > 1.3f && !nos_transitioning()) { R.popped = 1; nos_pop(); }
     if (R.result == -1 && nos_t - R.t_result > 1.6f) R.result = 0;
 }
