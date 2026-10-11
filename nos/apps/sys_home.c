@@ -262,7 +262,8 @@ static int nearest_page(void) { return slot_page((int)floorf(H.x / PAGE_W + 0.5f
 static int at_face(void) { return !H.dragging && !H.settling && H.x == 0.0f; }
 
 /* §8 pressed state, for a face complication (its press rect) or a widget page (its
- * press hook): hidden for the first 100 ms, so a page drag's slop passes first and
+ * press hook): hidden for the first 60 ms (and dropped at 8 px of travel), so a page drag
+ * still in its slop
  * cancels it silently; then on until release. A quick tap still shows it for 3 frames,
  * and a tap that opens something keeps it lit while the iris grows over it. */
 static struct {
@@ -272,10 +273,15 @@ static struct {
     int down, lit;           /* finger still down; widget has heard press(1) */
     float t0, until;
 } PR;
+#define PR_SHOW_S 0.06f      /* a held, still press shows from the 2nd frame */
 static int pr_visible(void)
 {
     if (!PR.kind) return 0;
-    return PR.down ? nos_t - PR.t0 >= 0.09f : nos_t < PR.until;
+    if (!PR.down) return nos_t < PR.until;
+    /* a still finger lights from 60 ms; one already moving waits the old 90 ms (by then
+     * a starting drag has passed 8 px and dropped the press: no flash) */
+    float t = nos_t - PR.t0;
+    return t >= PR_SHOW_S && (nos_touch_travel() <= 3 || t >= 0.09f);
 }
 static void pr_cancel(void)
 {
@@ -286,7 +292,7 @@ static void pr_release(float hold)
 {
     if (!PR.kind || !PR.down) return;
     PR.down = 0;
-    float vis = PR.t0 + 0.09f;                   /* when it became visible */
+    float vis = PR.t0 + PR_SHOW_S;                   /* when it became visible */
     PR.until = nos_t < vis ? nos_t + 0.09f : vis + 0.10f;
     if (hold > 0 && PR.until < nos_t + hold) PR.until = nos_t + hold;
 }
