@@ -567,7 +567,9 @@ void nos_set_stripes(uint16_t *a, uint16_t *b, int rows, void (*wait_free)(void)
 }
 void nos_set_scratch(uint16_t *buf) { s_scratch = buf; }
 
-/* Dim: keep k/32 of every channel. One multiply per lit pixel. */
+/* Dim: keep k/32 of every channel. One multiply per lit pixel. Truncating, then
+ * dropping green's low bit, keeps neutral greys neutral (g6 = 2 * r5 stays exact)
+ * without a per-pixel branch; the lost bit is invisible on a dimmed backdrop. */
 static void dim_rows(gfx_fb *fb, int c0, int c1, int k)
 {
     if (fb->rec || k >= 32 || c1 <= c0) return;
@@ -578,12 +580,8 @@ static void dim_rows(gfx_fb *fb, int c0, int c1, int k)
             uint32_t c = p[x];
             if (!c) continue;
             uint32_t d = (c | (c << 16)) & 0x07E0F81Fu;
-            d = ((d * (uint32_t)k + 0x00400802u) >> 5) & 0x07E0F81Fu;   /* rounded */
-            uint16_t o = (uint16_t)(d | (d >> 16));
-            /* keep neutral greys neutral (5-6-5 truncation tints them green) */
-            unsigned r5 = c >> 11, g6 = (c >> 5) & 63, b5 = c & 31;
-            if (r5 == b5 && (g6 >> 1) == r5) { unsigned rr = o >> 11; o = (uint16_t)(rr << 11 | (rr << 1) << 5 | rr); }
-            p[x] = o;
+            d = ((d * (uint32_t)k) >> 5) & 0x07C0F81Fu;
+            p[x] = (uint16_t)(d | (d >> 16));
         }
     }
     GFX_COST_PX(GFX_COST_DIM, fb->h * (c1 - c0));   /* sim cost model only */
@@ -632,14 +630,19 @@ static void clear_sub(gfx_fb *fb)
     GFX_COST_PX(GFX_COST_FILL, fb->h * (fb->cx1 - fb->cx0));   /* sim cost model only */
 }
 
+/* sim check: dim by post-processing pixels (the old path) instead of ink, to prove
+ * every writer honours gfx_fb.dim (`set postdim 1`, compare frames) */
+int nos_debug_post_dim;
 static void draw_screen(const gfx_fb *fb, const nos_screen *s, int x0, int y0, int x1, int y1,
                         int ox, int oy, int dimk)
 {
     gfx_fb sub;
     if (!s || !sub_fb(fb, &sub, x0, y0, x1, y1, ox, oy)) return;
     if (!(s->flags & SCR_OPAQUE_BG)) clear_sub(&sub);
+    /* a dimmed backdrop scales its inks as it draws: no per-pixel pass */
+    if (dimk < 32 && !nos_debug_post_dim) sub.dim = 32 - (dimk < 0 ? 0 : dimk);
     if (s->draw) s->draw(&sub);
-    if (dimk < 32) dim_rows(&sub, sub.cx0, sub.cx1, dimk);
+    if (dimk < 32 && nos_debug_post_dim) dim_rows(&sub, sub.cx0, sub.cx1, dimk);
 }
 
 /* 8x8 Bayer thresholds 0..63 */
@@ -648,71 +651,157 @@ static const uint8_t BAYER8[8][8] = {
     {60,28,52,20,62,30,54,22}, { 3,35,11,43, 1,33, 9,41}, {51,19,59,27,49,17,57,25},
     {15,47, 7,39,13,45, 5,37}, {63,31,55,23,61,29,53,21} };
 
-/* Two-layer composite: `under` is already in fb; draw `over` into the scratch rows
- * and take its pixels where the transition's dither mask says so. */
-static void composite_two(const gfx_fb *fb, const nos_screen *over, float p, int type)
+uint32_t nos_dbg_us[4];   /* host trace: under draw, over draw, select, scratch clear */
+
+/* Scratch fb over the same rows as `fb`, clipped to columns [x0, x1) and cleared. */
+static void scratch_fb(const gfx_fb *fb, gfx_fb *o, int x0, int x1)
+{
+    *o = *fb;
+    o->px = s_scratch;
+    o->stride = 0; o->x_base = 0;
+    o->cx0 = x0; o->cx1 = x1;
+    uint32_t q = hal_micros();
+    for (int r = 0; r < o->h; r++) memset(o->px + (size_t)r * GFX_W + x0, 0, (size_t)(x1 - x0) * 2);
+    GFX_COST_PX(GFX_COST_FILL, o->h * (x1 - x0));   /* sim cost model only */
+    nos_dbg_us[3] += hal_micros() - q;
+}
+
+/* Dissolve: `under` is already in fb; draw `over` into the scratch rows and take its
+ * pixels where the ordered-dither mask says so. */
+static void dissolve_over(const gfx_fb *fb, const nos_screen *over, float p)
 {
     if (!over) return;
     if (fb->rec) { if (over->draw) { gfx_fb f = *fb; over->draw(&f); } return; }
-    if (!s_scratch) return;
-    gfx_fb o = *fb;
-    o.px = s_scratch;
-    o.stride = 0; o.x_base = 0;
     int c0 = fb->cx0, c1 = fb->cx1;
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
-    for (int r = 0; r < o.h; r++) memset(o.px + (size_t)r * GFX_W + c0, 0, (size_t)(c1 - c0) * 2);
-    GFX_COST_PX(GFX_COST_FILL, o.h * (c1 - c0));   /* sim cost model only */
+    gfx_fb o;
+    scratch_fb(fb, &o, c0, c1);
+    uint32_t q = hal_micros();
     if (over->draw) over->draw(&o);
-    if (type == TX_DISSOLVE) {
-        int thr = (int)(p * 64.0f + 0.5f);
-        for (int r = 0; r < fb->h; r++) {
-            int y = fb->y_base + r;
-            uint16_t *d = gfx_row(fb, r), *s = o.px + (size_t)r * GFX_W;
-            const uint8_t *b = BAYER8[y & 7];
-            for (int x = c0; x < c1; x++) if (b[x & 7] < thr) d[x] = s[x];
-        }
-        GFX_COST_PX(GFX_COST_SELECT, fb->h * (c1 - c0));   /* sim cost model only */
+    uint32_t q2 = hal_micros();
+    nos_dbg_us[1] += q2 - q;
+    int thr = (int)(p * 64.0f + 0.5f);
+    for (int r = 0; r < fb->h; r++) {
+        int y = fb->y_base + r;
+        uint16_t *d = gfx_row(fb, r), *s = o.px + (size_t)r * GFX_W;
+        const uint8_t *b = BAYER8[y & 7];
+        for (int x = c0; x < c1; x++) if (b[x & 7] < thr) d[x] = s[x];
+    }
+    GFX_COST_PX(GFX_COST_SELECT, fb->h * (c1 - c0));   /* sim cost model only */
+    nos_dbg_us[2] += hal_micros() - q2;
+}
+
+/* Dot-matrix iris. The new screen shows through a circle growing from the tapped
+ * icon; its edge is a 34 px ring where an ordered dither turns it into dots. Inside
+ * the ring only `over` can be seen and outside it only `under`, so each screen is
+ * drawn just where it is visible (over straight into the stripe), and only the ring
+ * pays for two layers. The dither test compares squared distance against one
+ * threshold per Bayer level: no square root per pixel. */
+#define IRIS_ROWS 16
+static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_screen *over,
+                      float p, int dimk)
+{
+    if (fb->rec) {
+        draw_screen(fb, under, 0, 0, GFX_W, GFX_H, 0, 0, dimk);
+        if (over && over->draw) { gfx_fb f = *fb; over->draw(&f); }
         return;
     }
-    /* iris: the radius grows to the farthest corner; a dithered band makes the edge
-     * a ring of dots rather than a hard line */
+    if (fb->h > IRIS_ROWS) {                         /* sim full frames: 16-row bands */
+        for (int r0 = 0; r0 < fb->h; r0 += IRIS_ROWS) {
+            gfx_fb sub;
+            int y0 = fb->y_base + r0, y1 = y0 + IRIS_ROWS;
+            if (y1 > fb->y_base + fb->h) y1 = fb->y_base + fb->h;
+            if (sub_fb(fb, &sub, 0, y0, GFX_W, y1, 0, 0)) iris_draw(&sub, under, over, p, dimk);
+        }
+        return;
+    }
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
     float fx = (float)nos_iris_x, fy = (float)nos_iris_y;
     /* the glass is a circle: the farthest visible pixel is centre distance + radius */
-    float far = sqrtf((fx - GFX_CX) * (fx - GFX_CX) + (fy - GFX_CY) * (fy - GFX_CY)) + GFX_W * 0.5f;
+    float far = gfx_fast_sqrt((fx - GFX_CX) * (fx - GFX_CX) + (fy - GFX_CY) * (fy - GFX_CY)) + GFX_W * 0.5f;
     const float band = 34.0f, R0 = 36.0f;      /* the tapped icon is the seed, not a hole */
     float R = R0 + p * (far + band - R0) - band * 0.5f;
     float rin = R - band * 0.5f, rout = R + band * 0.5f;
-    if (rout <= 0) return;
-    float rin2 = rin > 0 ? rin * rin : 0, rout2 = rout * rout;
-    unsigned sel = 0;                                /* sim cost model only */
+    float rin2 = rin > 0 ? rin * rin : 0, rout2 = rout > 0 ? rout * rout : 0;
+
+    /* per-row spans: [a0, a1) inside the outer edge, [i0, i1) solidly inside */
+    int16_t a0[IRIS_ROWS], a1[IRIS_ROWS], i0[IRIS_ROWS], i1[IRIS_ROWS];
+    int A0 = c1, A1 = c0, I0 = c0, I1 = c1;          /* union of spans, common interior */
     for (int r = 0; r < fb->h; r++) {
-        int y = fb->y_base + r;
-        float dy = (y + 0.5f) - fy, dy2 = dy * dy;
-        if (dy2 >= rout2) continue;
-        uint16_t *d = gfx_row(fb, r), *s = o.px + (size_t)r * GFX_W;
-        float hw_out = sqrtf(rout2 - dy2);
-        float hw_in = (rin > 0 && rin2 > dy2) ? sqrtf(rin2 - dy2) : -1.0f;
-        int a0 = (int)(fx - hw_out), a1 = (int)(fx + hw_out) + 1;
-        if (a0 < c0) a0 = c0;
-        if (a1 > c1) a1 = c1;
-        int i0 = a1, i1 = a1;
-        if (hw_in >= 0) { i0 = (int)(fx - hw_in) + 1; i1 = (int)(fx + hw_in); }
-        if (i0 < a0) i0 = a0;
-        if (i1 > a1) i1 = a1;
-        sel += a1 > a0 ? (unsigned)(a1 - a0) : 0u;
-        const uint8_t *b = BAYER8[y & 7];
-        for (int x = a0; x < a1; x++) {
-            if (x >= i0 && x < i1) {                 /* solid interior: copy the run */
-                memcpy(d + x, s + x, (size_t)(i1 - x) * 2);
-                x = i1 - 1;
-                continue;
-            }
-            float dx = (x + 0.5f) - fx;
-            float t = (rout - sqrtf(dx * dx + dy2)) / band;   /* 0 outer .. 1 inner */
-            if ((float)b[x & 7] < t * 64.0f) d[x] = s[x];
+        float dy = (fb->y_base + r + 0.5f) - fy, dy2 = dy * dy;
+        if (rout <= 0 || dy2 >= rout2) { a0[r] = a1[r] = i0[r] = i1[r] = 0; I1 = I0; continue; }
+        float hw_out = gfx_fast_sqrt(rout2 - dy2);   /* libm sqrtf is ~1000 cycles here */
+        int x0 = (int)(fx - hw_out), x1 = (int)(fx + hw_out) + 1;
+        if (x0 < c0) x0 = c0;
+        if (x1 > c1) x1 = c1;
+        int n0 = x1, n1 = x1;
+        if (rin > 0 && rin2 > dy2) {
+            float hw_in = gfx_fast_sqrt(rin2 - dy2);
+            n0 = (int)(fx - hw_in) + 1; n1 = (int)(fx + hw_in);
         }
+        if (n0 < x0) n0 = x0;
+        if (n1 > x1) n1 = x1;
+        if (n1 < n0) n1 = n0;
+        a0[r] = (int16_t)x0; a1[r] = (int16_t)x1; i0[r] = (int16_t)n0; i1[r] = (int16_t)n1;
+        if (x1 > x0) { if (x0 < A0) A0 = x0; if (x1 > A1) A1 = x1; }
+        if (n0 > I0) I0 = n0;
+        if (n1 < I1) I1 = n1;
     }
-    GFX_COST_PX(GFX_COST_SELECT, sel);
+    if (I1 <= I0) I0 = I1 = c0;                      /* no column is inside on every row */
+
+    uint32_t q = hal_micros();
+    if (I1 > I0) {
+        draw_screen(fb, under, c0, 0, I0, GFX_H, 0, 0, dimk);
+        draw_screen(fb, under, I1, 0, c1, GFX_H, 0, 0, dimk);
+    } else draw_screen(fb, under, c0, 0, c1, GFX_H, 0, 0, dimk);
+    uint32_t q1 = hal_micros();
+    nos_dbg_us[0] += q1 - q;
+    if (!over || A1 <= A0) return;
+    if (I1 > I0) draw_screen(fb, over, I0, 0, I1, GFX_H, 0, 0, 32);
+    nos_dbg_us[1] += hal_micros() - q1;
+    if (!s_scratch) return;
+
+    /* the ring: over into the scratch rows, then dither it in */
+    float thr2[64];
+    for (int b = 0; b < 64; b++) {
+        float t = rout - (float)b * band * (1.0f / 64.0f);   /* take if distance < t */
+        thr2[b] = t > 0 ? t * t : -1.0f;
+    }
+    int span[2][2] = { { A0, I1 > I0 ? I0 : A1 }, { I1 > I0 ? I1 : A1, A1 } };
+    for (int k = 0; k < 2; k++) {
+        int x0 = span[k][0], x1 = span[k][1];
+        if (x1 <= x0) continue;
+        gfx_fb o;
+        scratch_fb(fb, &o, x0, x1);
+        uint32_t q2 = hal_micros();
+        if (over->draw) over->draw(&o);
+        uint32_t q3 = hal_micros();
+        nos_dbg_us[1] += q3 - q2;
+        unsigned sel = 0;                            /* sim cost model only */
+        for (int r = 0; r < fb->h; r++) {
+            int lo = a0[r] > x0 ? a0[r] : x0, hi = a1[r] < x1 ? a1[r] : x1;
+            if (hi <= lo) continue;
+            int y = fb->y_base + r;
+            float dy = (y + 0.5f) - fy, dy2 = dy * dy;
+            uint16_t *d = gfx_row(fb, r), *src = o.px + (size_t)r * GFX_W;
+            const uint8_t *b = BAYER8[y & 7];
+            int n0 = i0[r], n1 = i1[r];
+            sel += (unsigned)(hi - lo);
+            for (int x = lo; x < hi; x++) {
+                if (x >= n0 && x < n1) {             /* solid on this row: copy the run */
+                    int e = n1 < hi ? n1 : hi;
+                    memcpy(d + x, src + x, (size_t)(e - x) * 2);
+                    x = e - 1;
+                    continue;
+                }
+                float dx = (x + 0.5f) - fx;
+                if (dx * dx + dy2 < thr2[b[x & 7]]) d[x] = src[x];
+            }
+        }
+        GFX_COST_PX(GFX_COST_SELECT, sel);
+        nos_dbg_us[2] += hal_micros() - q3;
+    }
 }
 
 static void draw_overlays(gfx_fb *fb)
@@ -760,13 +849,18 @@ static void scene_draw(gfx_fb *fb)
         break;
     }
     case TX_IRIS: case TX_DISSOLVE: {
-        if (!s_scratch) {            /* no second layer available: cut at the midpoint */
+        if (!s_scratch && T.type == TX_DISSOLVE) {   /* no second layer: cut at the midpoint */
             draw_screen(fb, p < 0.5f ? T.under : T.over, 0, 0, W, H, 0, 0, 32);
             break;
         }
-        int dimk = T.type == TX_IRIS ? 32 - (int)lroundf(18.0f * p) : 32;
-        draw_screen(fb, T.under, 0, 0, W, H, 0, 0, dimk);
-        if (p > 0.001f) composite_two(fb, T.over, p, T.type);
+        if (T.type == TX_IRIS) {
+            iris_draw(fb, T.under, p > 0.001f ? T.over : 0, p, 32 - (int)lroundf(18.0f * p));
+            break;
+        }
+        uint32_t q = hal_micros();
+        draw_screen(fb, T.under, 0, 0, W, H, 0, 0, 32);
+        nos_dbg_us[0] += hal_micros() - q;
+        if (p > 0.001f) dissolve_over(fb, T.over, p);
         break;
     }
     default:

@@ -16,8 +16,6 @@
 #include <string.h>
 
 /* from time_timer.c (exact-position trig and dot ring) */
-float time_sin(float x);
-float time_cos(float x);
 void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float lit, uint16_t on, uint16_t off);
 
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
@@ -354,7 +352,7 @@ static void dt_tick(float dt)
 }
 static void hand(gfx_fb *fb, float a, float r0, float r1, float step, float d, uint16_t c, float p)
 {
-    float s = time_sin(a), co = time_cos(a);
+    float s = gfx_fast_sin(a), co = gfx_fast_cos(a);
     int n = (int)((r1 - r0) / step + 0.5f) + 1;
     for (int i = 0; i < n; i++) {
         float g = m_clamp(p * (n + 2) - i, 0, 1);       /* dots appear outward */
@@ -390,7 +388,7 @@ static void dt_draw(gfx_fb *fb)
     float sk = qz(m_clamp((b - 0.7f) / 0.3f, 0, 1), 4);    /* the seconds dot grows in last */
     if (sk > 0) {
         float sa = 6.2831853f * D.t.s / 60.0f;
-        dot_disc(fb, UI_CX + AR * time_sin(sa), UI_CY - AR * time_cos(sa), 10 * sk, C_RED);
+        dot_disc(fb, UI_CX + AR * gfx_fast_sin(sa), UI_CY - AR * gfx_fast_cos(sa), 10 * sk, C_RED);
     }
 }
 const nos_screen scr_wc_detail = { "CITY", dt_enter, 0, dt_tick, dt_draw, 0, 0 };

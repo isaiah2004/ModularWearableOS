@@ -95,6 +95,7 @@ static void blit_glyph(gfx_fb *fb, const font_t *f, const font_glyph *g, int x, 
     const uint8_t *bm = f->bitmap + g->bitmap_off;
     int gx = x + g->xoff + fb->ox;
     if (gx >= cc1 || gx + g->w <= cc0) return;
+    color = gfx_ink(fb, color);
     int col0 = cc0 - gx < 0 ? 0 : cc0 - gx;
     int col1 = cc1 - gx > g->w ? g->w : cc1 - gx;
     int by0 = y + g->yoff + fb->oy - fb->y_base;
@@ -275,6 +276,7 @@ void ui_rrect(gfx_fb *fb, float x, float y, float w, float h, float r, uint16_t 
         gfx_rec_cmd(fb, bx0, by0, bx1, by1, hh);
         return;
     }
+    color = gfx_ink(fb, color);
     int lo = fb->y_base - fb->oy, hi = lo + fb->h;      /* logical rows held */
     if (by0 < lo) by0 = lo;
     if (by1 > hi) by1 = hi;
@@ -336,6 +338,7 @@ void ui_rrect_line(gfx_fb *fb, float x, float y, float w, float h, float r, floa
         gfx_rec_cmd(fb, bx0, by0, bx1, by1, hh);
         return;
     }
+    color = gfx_ink(fb, color);
     int lo = fb->y_base - fb->oy, hi = lo + fb->h;
     if (by0 < lo) by0 = lo;
     if (by1 > hi) by1 = hi;

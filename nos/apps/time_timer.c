@@ -28,28 +28,16 @@ int time_alarm_next(int *h, int *m, int *in_min);
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
 static float ease_o(float t) { t = m_clamp(t, 0, 1); float u = 1 - t; return 1 - u * u * u; }
 
-/* ====================================================== accurate fast trig
- * gfx_fast_sin's polynomial drifts to -0.038 at +-pi (8 px at the bezel), which bends
- * dot_ring near 3 and 6 o'clock. Fold to [-pi/2, pi/2] first, where it is ~1e-5. */
-float time_sin(float x)
-{
-    x -= 6.2831853f * floorf(x * 0.15915494f + 0.5f);
-    if (x > 1.5707963f) x = 3.1415927f - x;
-    else if (x < -1.5707963f) x = -3.1415927f - x;
-    return gfx_fast_sin(x);
-}
-float time_cos(float x) { return time_sin(x + 1.5707963f); }
-
 /* A dot ring like dot_ring() (n dots from 12 o'clock clockwise, [0, lit) lit with a
- * partially grown end dot, others `off`, 0 = skip), with exact positions. One damage
- * command per dot: a draining tip repaints one dot. */
+ * partially grown end dot, others `off`, 0 = skip). One damage command per dot
+ * (dot_ring records up to 16 arc chunks): a draining tip repaints one dot. */
 void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float lit,
                uint16_t on, uint16_t off)
 {
     lit = floorf(lit * 32.0f + 0.5f) / 32.0f;
     for (int i = 0; i < n; i++) {
         float a = 6.2831853f * (float)i / (float)n;
-        float x = cx + r * time_sin(a), y = cy - r * time_cos(a);
+        float x = cx + r * gfx_fast_sin(a), y = cy - r * gfx_fast_cos(a);
         float f = m_clamp(lit - (float)i, 0, 1);
         if (f >= 1) { dot_disc(fb, x, y, d, on); continue; }
         if (off) dot_disc(fb, x, y, d, off);
@@ -526,7 +514,7 @@ static void timer_draw_run(gfx_fb *fb, float b, float dig_b)
         time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, fl, C_WHITE, C_LINE2);
         float f = qz(lit - fl, 32);
         float a = 6.2831853f * fl / 60.0f;     /* always recorded: a steady command count */
-        dot_disc(fb, UI_CX + RING_R * time_sin(a), UI_CY - RING_R * time_cos(a),
+        dot_disc(fb, UI_CX + RING_R * gfx_fast_sin(a), UI_CY - RING_R * gfx_fast_cos(a),
                  f > 0 ? RING_D * gfx_fast_sqrt(f) + 1.0f : 0.05f, C_RED);
     } else
         time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, lit, C_WHITE, C_LINE2);
@@ -872,7 +860,7 @@ static void wg_draw_mode(gfx_fb *fb, int mode, float b)
          * pager owns the one red (unread dot) */
         if (k >= 1) {
             float a = 6.2831853f * (float)(W.sw_ms % 60000) / 60000.0f;
-            dot_disc(fb, UI_CX + WG_RING_R * time_sin(a), UI_CY - WG_RING_R * time_cos(a), 9, C_WHITE);
+            dot_disc(fb, UI_CX + WG_RING_R * gfx_fast_sin(a), UI_CY - WG_RING_R * gfx_fast_cos(a), 9, C_WHITE);
         }
         dot_style ts = { DOT_FONT_TALL, 5, 4, C_SEC, 0, 1, 1 };
         char tb[4];

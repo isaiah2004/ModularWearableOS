@@ -255,6 +255,7 @@ static inline int clip_hit(const dclip *k, float x0, float y0, float x1, float y
 
 static void stamp_mask(const dclip *k, const dmask *m, float cx, float cy, uint16_t col)
 {
+    col = gfx_ink(k->fb, col);
     int n = m->nph, S = m->S;
     int ix = ifloor(cx), iy = ifloor(cy);
     int qx = (int)((cx - (float)ix) * (float)n + 0.5f), qy = (int)((cy - (float)iy) * (float)n + 0.5f);

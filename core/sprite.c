@@ -41,7 +41,10 @@ void sprite_blit(gfx_fb *fb, const sprite *s, int x, int y, unsigned key)
     for (int r = 0; r < s->h; r++) {
         int by = y + r + fb->oy - fb->y_base;
         if ((unsigned)by >= (unsigned)fb->h) continue;
-        memcpy(gfx_row(fb, by) + bx + k0, &s->px[r * s->w + k0], (size_t)(k1 - k0) * 2);
+        uint16_t *d = gfx_row(fb, by) + bx + k0;
+        const uint16_t *src = &s->px[r * s->w + k0];
+        if (fb->dim) for (int i = 0; i < k1 - k0; i++) d[i] = gfx_ink(fb, src[i]);
+        else memcpy(d, src, (size_t)(k1 - k0) * 2);
         rows++;
     }
     GFX_COST(GFX_COST_BLIT, rows * (unsigned)(k1 - k0));
@@ -87,6 +90,8 @@ void sprite8_blit(gfx_fb *fb, const sprite8 *s, int x, int y, const uint16_t *lu
         return;
     }
     if (!s->px || !lut) { GFX_COST(GFX_COST_BLIT, 0); return; }
+    uint16_t dimmed[256];
+    if (fb->dim) { for (int i = 0; i < 256; i++) dimmed[i] = gfx_ink(fb, lut[i]); lut = dimmed; }
     int c0 = fb->cx0, c1 = fb->cx1;           /* screen-column clip window */
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
     if (c0 < 0) c0 = 0;

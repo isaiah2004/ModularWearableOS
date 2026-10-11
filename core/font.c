@@ -26,6 +26,7 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
                     y + (f->line_height - f->ascent) + 1, hh);
         return x + w;
     }
+    color = gfx_ink(fb, color);
     /* 2D dirty-rect x-window: skip glyphs (and clip columns) outside it, so text
      * isn't rasterized when the dirty rect is elsewhere (e.g. a face's clock is
      * not redrawn while only the globe's rect repaints). */

@@ -25,6 +25,8 @@
 #include "prefs.h"
 #include "apps/nos_apps.h"
 #include "faces/face.h"
+#include "faces/face_ext.h"
+#include "gfx_cost.h"
 #include <math.h>
 #include <string.h>
 
@@ -47,6 +49,80 @@ static uint16_t gdim(uint16_t c, float k)
     if (b != r || (g >> 1) != r) return ui_dim(c, k);       /* not a grey */
     int v = (int)(r * k + 0.5f);
     return (uint16_t)(v << 11 | (v * 2) << 5 | v);
+}
+
+/* neutral grey from an 8-bit level: green rounded on its own 6 bits, so light greys
+ * do not turn lavender (G = 2R is a shade short up there) and 255 is C_WHITE */
+static uint16_t grey565(int v)
+{
+    if (v >= 255) return C_WHITE;
+    if (v <= 0) return 0;
+    int r = (v * 31 + 127) / 255, g = (v * 63 + 127) / 255;
+    return (uint16_t)(r << 11 | g << 5 | r);
+}
+
+/* A pass over what is already drawn in a rounded rect [x0,x1) x [y0,y1) (radius rad, AA
+ * corners), so it can sit "under" art the screen does not own (the face):
+ *   RR_FADE    darken towards black by a (the page dots' capsule fading in),
+ *   RR_LIGHTEN raise every channel to at least col (a pressed fill under light-on-dark art),
+ *   RR_DARKEN  lower every channel to at most col (a pressed fill under ink on a white face).
+ * Raster only; records one command (box + params) so a change repaints just the box. */
+enum { RR_FADE, RR_LIGHTEN, RR_DARKEN };
+static uint16_t rr_px(uint16_t p, int op, int cr, int cg, int cb, int w)   /* w: 0..256 */
+{
+    int r = p >> 11, g = (p >> 5) & 63, b = p & 31, tr, tg, tb;
+    if (op == RR_FADE) {
+        int k = 256 - w;
+        tr = (r * k + 128) >> 8; tb = (b * k + 128) >> 8;
+        tg = (r == b && (g >> 1) == r) ? tr * 2 : (g * k + 128) >> 8;   /* greys stay neutral */
+        return (uint16_t)(tr << 11 | tg << 5 | tb);
+    }
+    if (op == RR_LIGHTEN) { tr = r > cr ? r : cr; tg = g > cg ? g : cg; tb = b > cb ? b : cb; }
+    else                  { tr = r < cr ? r : cr; tg = g < cg ? g : cg; tb = b < cb ? b : cb; }
+    if (w < 256) {
+        tr = r + (((tr - r) * w) >> 8); tg = g + (((tg - g) * w) >> 8); tb = b + (((tb - b) * w) >> 8);
+    }
+    return (uint16_t)(tr << 11 | tg << 5 | tb);
+}
+static void rr_pass(gfx_fb *fb, int x0, int y0, int x1, int y1, float rad, int op, uint16_t col, float a)
+{
+    unsigned h = gfx_hash_u(gfx_hash_u(0x5e11u, (unsigned)op), col);
+    if (gfx_rec_cmd(fb, x0, y0, x1, y1, gfx_hash_f(gfx_hash_f(h, a), rad))) return;
+    col = gfx_ink(fb, col);
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    int bx0 = x0 + fb->ox, bx1 = x1 + fb->ox;
+    if (bx0 < c0) bx0 = c0;
+    if (bx1 > c1) bx1 = c1;
+    int r0 = y0 + fb->oy - fb->y_base, r1 = y1 + fb->oy - fb->y_base;
+    if (r0 < 0) r0 = 0;
+    if (r1 > fb->h) r1 = fb->h;
+    int ia = (int)(m_clamp(a, 0, 1) * 256.0f + 0.5f);
+    if (ia <= 0 || bx1 <= bx0 || r1 <= r0) { GFX_COST(GFX_COST_DIM, 0); return; }
+    int cr = col >> 11, cg = (col >> 5) & 63, cb = col & 31;
+    unsigned n = 0, nb = 0;
+    for (int r = r0; r < r1; r++) {
+        uint16_t *p = gfx_row(fb, r);
+        float py = (float)(r - fb->oy + fb->y_base) + 0.5f;    /* logical y, pixel centre */
+        float dy = py < y0 + rad ? y0 + rad - py : py > y1 - rad ? py - (y1 - rad) : 0.0f;
+        for (int bx = bx0; bx < bx1; bx++) {
+            int w = ia;
+            if (dy > 0.0f) {
+                float px = (float)(bx - fb->ox) + 0.5f;
+                float dx = px < x0 + rad ? x0 + rad - px : px > x1 - rad ? px - (x1 - rad) : 0.0f;
+                if (dx > 0.0f) {
+                    float cov = m_clamp(rad + 0.5f - gfx_fast_sqrt(dx * dx + dy * dy), 0, 1);
+                    if (cov <= 0.0f) continue;
+                    w = (int)(cov * (float)ia + 0.5f);
+                    nb++;
+                }
+            }
+            p[bx] = rr_px(p[bx], op, cr, cg, cb, w);
+            n++;
+        }
+    }
+    GFX_COST(GFX_COST_DIM, n);
+    GFX_COST_PX(GFX_COST_BLEND, nb);
 }
 
 static const nos_widget *const k_wg[NWG] = { &wg_activity, &wg_heart, &wg_weather, &wg_music, &wg_timer };
@@ -72,6 +148,9 @@ static struct {
     int prev_awake_ms;
     int covered;             /* another screen is on top */
     int holding; float hold_t;   /* finger resting on the face: the edit rim charges */
+    int prs;                 /* face complication pressed: 1 finger down, 2 kept through its opening */
+    int pr[4];               /* its press rect (screen x0 y0 x1 y1) */
+    float pr_t;
     int inited;
 } H;
 
@@ -172,13 +251,19 @@ static void home_enter(void)
         H.last_tick_ms = hal_millis();
         sys_home_build_in();
     }
+    /* time spent under another screen (the face picker, an app) is not a sleep: the wake
+     * test below only measures gaps while home itself is on the glass */
     H.covered = 0;
+    H.last_tick_ms = hal_millis();
+    H.prev_awake_ms = nos_awake_ms();
+    H.prs = 0;
 }
 
 static void home_leave(void)
 {
     H.covered = 1;
     H.holding = 0;
+    if (H.prs == 1) H.prs = 0;           /* a latched press stays through its opening */
     widget_press(0, 0, 0, 0);
     if (H.dragging || H.grabbed) pager_release(0);
 }
@@ -233,6 +318,7 @@ static void home_tick(float dt)
     H.prev_awake_ms = awake;
     /* a face picked in the picker was already shown live and full size: no rebuild */
     if (nos_prefs.face != H.face_idx) H.face_idx = nos_prefs.face;
+    if (H.prs == 2 && nos_t - H.pr_t > 0.6f) H.prs = 0;   /* the opening has covered it */
 
     /* pager */
     if (H.settling) {
@@ -289,15 +375,30 @@ static void draw_dots(gfx_fb *fb)
     const float pitch = 14.0f, d = 7.0f;
     float pos = real_pos();
     float x0 = UI_CX - (NPAGE - 1) * pitch * 0.5f;
-    /* a black capsule keeps the dots legible over widget art (bezel rings), but only once
-     * the face has slid clear of the dots: the face itself never gets a backdrop */
-    if (floorf(H.x + 0.5f) >= UI_CX + (NPAGE - 1) * pitch * 0.5f + 16)
-        ui_rrect(fb, x0 - 13, DOTS_Y - 12, (NPAGE - 1) * pitch + 26, 24, 12, C_BG);
+    int xi = (int)floorf(H.x + 0.5f);
+    int st = nos_face_style(cur_face());
+    int light = (st & FACE_LIGHT) != 0;
+    /* a black capsule keeps the dots legible over art: over widget pages once the face has
+     * slid clear, and from the first drag frame over a face with art under the dot row.
+     * It fades with the dots, twice as fast, so the dots never sit on bare art (and the art
+     * never cuts back in). A white face gets ink-coloured dots instead, no capsule. */
+    int clear = xi >= UI_CX + (NPAGE - 1) * pitch * 0.5f + 16;
+    if (clear || ((st & FACE_FULL_BLEED) && !light)) {
+        float ca = m_clamp(H.dots_a * 2.0f, 0, 1);
+        int cx0 = (int)x0 - 13;
+        rr_pass(fb, cx0, DOTS_Y - 12, cx0 + (int)((NPAGE - 1) * pitch) + 26, DOTS_Y + 12, 12.0f,
+                RR_FADE, 0, ca);
+    }
     for (int i = 0; i < NPAGE; i++) {
         float near = 1.0f - m_clamp(fabsf(pos - i), 0, 1);
         near = floorf(near * 8.0f + 0.5f) / 8.0f;
-        uint16_t col = gdim(ui_mix(C_LINE2, C_WHITE, near), H.dots_a);
-        dot_disc(fb, x0 + i * pitch, (float)DOTS_Y, d + near * 2.0f, col);
+        float dx = x0 + i * pitch;
+        uint16_t col;
+        if (light && !clear && dx < (float)(GFX_W - xi) && dx >= (float)-xi) {     /* this dot is over the white face */
+            float ink = 204.0f * (1.0f - near);                 /* #CCCCCC .. black: C_LINE2..white inverted */
+            col = grey565((int)lroundf(255.0f + (ink - 255.0f) * H.dots_a));
+        } else col = gdim(ui_mix(C_LINE2, C_WHITE, near), H.dots_a);
+        dot_disc(fb, dx, (float)DOTS_Y, d + near * 2.0f, col);
     }
 }
 
@@ -327,6 +428,11 @@ static void home_draw(gfx_fb *fb)
         if (ox <= -(int)PAGE_W || ox >= GFX_W) continue;
         draw_page(fb, slot_page(s), ox);
     }
+    int light = (nos_face_style(cur_face()) & FACE_LIGHT) != 0;
+    /* a pressed complication: C_SURF2 under the face's art (#E0E0E0 under ink on white) */
+    if (H.prs && xi == 0)
+        rr_pass(fb, H.pr[0], H.pr[1], H.pr[2], H.pr[3], 16.0f, light ? RR_DARKEN : RR_LIGHTEN,
+                light ? grey565(0xE0) : C_SURF2, 1.0f);
     draw_dots(fb);
     /* the unread dot: on page 0 the face draws its own (face_ctx.unread); widget pages get
      * this red one, fading in with the slot offset as the face slides away */
@@ -341,7 +447,9 @@ static void home_draw(gfx_fb *fb)
     if (H.holding && xi == 0) {
         float k = m_clamp((nos_t - H.hold_t - 0.15f) / 0.30f, 0, 1) * 3.0f;
         k = floorf(k + 0.5f) / 8.0f;
-        if (k > 0) gfx_ring(fb, UI_CX, UI_CY, UI_R - 3.5f, 3.0f, gdim(C_SEC, k));
+        /* on a white face the rim darkens by the same amount instead */
+        if (k > 0) gfx_ring(fb, UI_CX, UI_CY, UI_R - 3.5f, 3.0f,
+                            light ? grey565((int)lroundf(255.0f - 153.0f * k)) : gdim(C_SEC, k));
     }
 }
 
@@ -358,12 +466,23 @@ static int home_input(const nos_input *in)
         H.grab_page = (int)floorf(H.x / PAGE_W + 0.5f);
         H.holding = !H.was_moving && H.x == 0.0f;
         H.hold_t = nos_t;
+        /* a complication under the finger shows pressed until release (all-zero rect: a
+         * target with nothing to light, e.g. a bezel ring) */
+        H.prs = 0;
+        if (H.holding && !H.alias) {
+            int r[4] = { 0, 0, 0, 0 };
+            if (nos_face_press_rect(cur_face(), in->x, in->y, r) && r[2] > r[0] && r[3] > r[1]) {
+                memcpy(H.pr, r, sizeof r);
+                H.prs = 1;
+            }
+        }
         /* a settled widget page shows its pressed state */
         if (!H.was_moving && !H.alias && H.x == (float)H.grab_page * PAGE_W)
             widget_press(H.grab_page, in->x, in->y, 1);
         return 1;
     case IN_DRAG_START:
         H.holding = 0;
+        H.prs = 0;
         widget_press(0, in->x, in->y, 0);           /* paging or a sheet: cancel */
         if (in->axis == AXIS_X) {
             H.dragging = 1;
@@ -402,7 +521,10 @@ static int home_input(const nos_input *in)
         if (p == 0) {
             const nos_face *f = cur_face();
             const nos_screen *s = f && f->tap ? f->tap(in->x, in->y) : 0;
-            if (s) nos_open(s, in->x, in->y);
+            if (s) {
+                if (H.prs) { H.prs = 2; H.pr_t = nos_t; }   /* stays lit while the iris opens */
+                nos_open(s, in->x, in->y);
+            }
         } else if (k_wg[p - 1]->tap) {
             k_wg[p - 1]->tap(in->x, in->y);         /* widgets open with nos_open (FB_OPEN) */
         }
@@ -410,6 +532,7 @@ static int home_input(const nos_input *in)
     }
     case IN_LONG:
         H.holding = 0;
+        H.prs = 0;
         if (nearest_page() == 0 && H.x < 1.0f && !H.was_moving) {
             H.grabbed = 0;
             nos_push(&scr_faces, TX_DISSOLVE);
@@ -420,10 +543,12 @@ static int home_input(const nos_input *in)
         if (H.grabbed && !H.dragging) pager_release(0);
         H.grabbed = 0;
         H.holding = 0;
+        if (H.prs == 1) H.prs = 0;
         widget_press(0, in->x, in->y, 0);
         return 1;
     case IN_BTN:                           /* dispatched on release, at once */
         H.holding = 0;
+        H.prs = 0;
         if (at_face()) nos_open(&scr_launcher, GFX_W, UI_CY);
         else { nos_feedback(FB_BACK); go_face(); }
         return 1;

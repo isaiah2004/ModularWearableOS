@@ -332,6 +332,7 @@ int fk_stext(gfx_fb *fb, const fk_sfont *sf, int x, int y, const char *s, uint16
     }
     int c0 = fb->cx0, c1 = fb->cx1;
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    col = gfx_ink(fb, col);
     unsigned n = 0;
     for (const unsigned char *c = (const unsigned char *)s; *c; c++) {
         int k = sidx(*c);

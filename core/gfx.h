@@ -47,6 +47,11 @@ typedef struct {
      * column clipping stays in screen columns (cx0/cx1), so only row addressing
      * changes - always go through gfx_row(). */
     int stride, x_base;
+    /* Ink dim for transition backdrops: 0 = none, else every colour drawn keeps
+     * (32 - dim)/32 of each channel. Applied once per primitive (dimming is
+     * linear, so AA blends against an already-dimmed backdrop agree), which makes
+     * a dimmed screen cost the same as a bright one. Writers call gfx_ink(). */
+    int dim;
 } gfx_fb;
 
 /* Pointer such that gfx_row(fb, r)[bx] is buffer row r, buffer column bx (screen
@@ -55,6 +60,16 @@ typedef struct {
 static inline uint16_t *gfx_row(const gfx_fb *fb, int r)
 {
     return fb->px + (r * (fb->stride ? fb->stride : GFX_W) - fb->x_base);
+}
+
+/* The colour a primitive actually writes into `fb` (see gfx_fb.dim). Truncating
+ * and dropping green's low bit keeps neutral greys neutral (g6 = 2 * r5). */
+static inline uint16_t gfx_ink(const gfx_fb *fb, uint16_t c)
+{
+    if (!fb->dim) return c;
+    uint32_t d = (c | ((uint32_t)c << 16)) & 0x07E0F81Fu;
+    d = ((d * (uint32_t)(32 - fb->dim)) >> 5) & 0x07C0F81Fu;
+    return (uint16_t)(d | (d >> 16));
 }
 
 /* Record a primitive's screen bbox + a hash of its visual parameters. Returns

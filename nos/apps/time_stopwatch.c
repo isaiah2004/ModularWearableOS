@@ -21,8 +21,6 @@
 #include <string.h>
 
 /* from time_timer.c (exact-position trig and dot ring) */
-float time_sin(float x);
-float time_cos(float x);
 void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float lit, uint16_t on, uint16_t off);
 
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
@@ -288,7 +286,7 @@ static void sw_draw(gfx_fb *fb)
     if (b > 0.3f) {
         float a = 6.2831853f * (float)(S.sw.elapsed_ms % 60000) / 60000.0f;
         float d = 10.0f * qz(m_clamp((b - 0.3f) * 3, 0, 1), 4);
-        dot_disc(fb, UI_CX + RING_R * time_sin(a), UI_CY - RING_R * time_cos(a), d, C_RED);
+        dot_disc(fb, UI_CX + RING_R * gfx_fast_sin(a), UI_CY - RING_R * gfx_fast_cos(a), d, C_RED);
     }
     ui_title(fb, "STOPWATCH", 0);
 

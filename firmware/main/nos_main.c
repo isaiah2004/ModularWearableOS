@@ -96,6 +96,7 @@ static bool on_dma_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_dat
     return woken == pdTRUE;
 }
 
+static volatile uint32_t s_rot_us, s_wait_us;   /* per-frame trace: rotate (core 1), stripe waits (core 0) */
 static void flush_task(void *arg)
 {
     flush_job j;
@@ -110,7 +111,9 @@ static void flush_task(void *arg)
         uint16_t *out = s_rotated[slot];
         xSemaphoreTake(s_dma_ready, portMAX_DELAY);
         /* one pass: read the dirty window, byte-swap to wire order, rotate CCW */
+        int64_t r0 = esp_timer_get_time();
         board_pixels_ccw_swap(j.buf, j.stride, out, j.w, j.rows, 1);
+        s_rot_us += (uint32_t)(esp_timer_get_time() - r0);
         xSemaphoreGive(s_buf_free);              /* the stripe can be re-rendered now */
         slot ^= 1;
         /* UI (x, y) -> native (y, 465 - x): the window is rows-wide, w-tall */
@@ -162,7 +165,12 @@ static void lcd_init(void)
 }
 
 /* engine stripe hooks */
-static void stripe_wait(void) { xSemaphoreTake(s_buf_free, portMAX_DELAY); }
+static void stripe_wait(void)
+{
+    int64_t t = esp_timer_get_time();
+    xSemaphoreTake(s_buf_free, portMAX_DELAY);
+    s_wait_us += (uint32_t)(esp_timer_get_time() - t);
+}
 static void stripe_flush(uint16_t *buf, int stride, int x0, int y0, int w, int rows)
 {
     flush_job j = { buf, x0, y0, w, rows, stride, JOB_STRIPE };
@@ -264,6 +272,8 @@ static QueueHandle_t s_cmd_q;
 static int s_inj_active, s_inj_x0, s_inj_y0, s_inj_x1, s_inj_y1, s_inj_ms;
 static int64_t s_inj_t0;
 static int s_perf;
+static int s_trace;
+extern uint32_t nos_dbg_us[4];                   /* print the next N painted frames (NOSF lines) */
 
 static void cmd_task(void *arg)
 {
@@ -310,6 +320,7 @@ static void cmd_exec(char *s)
         else printf("ERR no screen %s\n", s + 5);
     } else if (!strcmp(s, "home")) nos_home();
     else if (!strcmp(s, "perf")) { s_perf = !s_perf; printf("PERF %d\n", s_perf); }
+    else if (sscanf(s, "trace %d", &a) == 1) { s_trace = a; printf("TRACE %d\n", a); }
     else if (!strcmp(s, "awake")) { s_no_sleep = !s_no_sleep; printf("AWAKE %d\n", s_no_sleep); }
     else if (sscanf(s, "bri %d", &a) == 1) { nos_prefs.brightness = (uint8_t)a; prefs_save(); }
     else if (sscanf(s, "aod %d", &a) == 1) go_state(a ? PWR_AOD : PWR_ON);
@@ -322,7 +333,7 @@ static void cmd_exec(char *s)
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), nos_depth(),
                nos_top() ? nos_top()->name : "-");
     } else if (!strcmp(s, "help"))
-        printf("tap X Y | swipe X0 Y0 X1 Y1 [MS] | btn | open NAME | home | perf | awake | bri PCT | aod 0|1 | gb LINE | ext ... | info\n");
+        printf("tap X Y | swipe X0 Y0 X1 Y1 [MS] | btn | open NAME | home | perf | trace N | awake | bri PCT | aod 0|1 | gb LINE | ext ... | info\n");
     else printf("ERR unknown: %s\n", s);
     printf("DONE\n");
 }
@@ -469,10 +480,22 @@ void app_main(void)
         }
         if (g_tz_offset_min != nos_prefs.tz_min) { g_tz_offset_min = nos_prefs.tz_min; board_apply_timezone(); }
         int64_t a = esp_timer_get_time();
-        uint32_t px = nos_frame_run((float)(a - last_run) / 1000.0f);
+        float el_ms = (float)(a - last_run) / 1000.0f;
+        s_rot_us = 0; s_wait_us = 0; memset(nos_dbg_us, 0, sizeof nos_dbg_us);
+        uint32_t px = nos_frame_run(el_ms);
         last_run = a;
+        int64_t ad = esp_timer_get_time();
         frame_drain();
         int64_t work = esp_timer_get_time() - a;
+        if (s_trace > 0 && px) {
+            s_trace--;
+            printf("NOSF el=%.1f px=%u nr=%u cmds=%u rec=%u ras=%u wait=%u rot=%u drain=%u work=%u top=%s tx=%d u=%u o=%u sel=%u clr=%u\n",
+                   el_ms, (unsigned)px, (unsigned)nos_last.rects, (unsigned)nos_last.cmds,
+                   (unsigned)nos_last.record_us, (unsigned)nos_last.raster_us, (unsigned)s_wait_us,
+                   (unsigned)s_rot_us, (unsigned)(esp_timer_get_time() - ad), (unsigned)work,
+                   nos_top() ? nos_top()->name : "-", nos_transitioning(),
+                   (unsigned)nos_dbg_us[0], (unsigned)nos_dbg_us[1], (unsigned)nos_dbg_us[2], (unsigned)nos_dbg_us[3]);
+        }
         /* brightness after the frame is on the panel: never show a stale frame */
         set_level(nos_bright_override >= 0 ? nos_bright_override : user_level());
         if (++frames_ok == 90) ota_mark_valid();

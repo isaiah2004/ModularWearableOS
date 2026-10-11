@@ -18,8 +18,6 @@
 #include <string.h>
 
 /* from time_timer.c (exact-position trig and dot ring) */
-float time_sin(float x);
-float time_cos(float x);
 void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float lit, uint16_t on, uint16_t off);
 
 /* from time_timer.c */
@@ -48,11 +46,8 @@ static int in_circle(int x, int y, float cx, float cy, float r)
 static svc_alarm AL[SVC_ALARM_MAX];
 static int AL_n;
 static int a_svc = -1;           /* -1 unknown, 0 stub (local table), 1 real */
-/* ---- snooze: which alarm is snoozed (svc keeps it private; tracked from our own
- * SNOOZE button and dropped when it rings again, expires or its alarm goes away) ---- */
-static int s_snz = -1;
-static uint32_t s_snz_at;
-static int s_snz_h, s_snz_m;
+/* Snooze state lives in svc (svc_alarm_snoozed / svc_alarm_snooze_cancel). The local
+ * fallback table has no ringer, so nothing in it is ever snoozed. */
 
 
 static int al_count(void)
@@ -79,20 +74,17 @@ static int al_add(int h, int m)
 }
 static void al_remove(int i)
 {
-    if (s_snz == i) s_snz = -1;
-    else if (s_snz > i) s_snz--;
     if (a_svc == 0) {
         for (int k = i; k < AL_n - 1; k++) AL[k] = AL[k + 1];
         if (AL_n > 0) AL_n--;
     } else svc_alarm_remove(i);
 }
 static void al_save(void) { if (a_svc != 0) svc_alarm_save(); }
-static void snz_check(void)
+static int is_snoozed(int idx)
 {
-    if (s_snz < 0) return;
-    if (svc_alarm_ringing() >= 0 || (int32_t)(hal_millis() - s_snz_at) >= 0 || s_snz >= al_count()) s_snz = -1;
+    int i;
+    return a_svc != 0 && svc_alarm_snoozed(&i, NULL) && i == idx;
 }
-static int is_snoozed(int idx) { return s_snz >= 0 && idx == s_snz; }
 
 /* minutes from now to the alarm's next occurrence (ignores on/off) */
 static int al_in_min(const svc_alarm *a)
@@ -165,10 +157,17 @@ static struct {
     mspring tog[SVC_ALARM_MAX];
     int n;
     uint8_t order[SVC_ALARM_MAX];   /* display row -> alarm index, sorted by time */
-    char next[32];
-    int have_next;
+    char next[32], next_old[32];    /* header; the old one fades out when it changes */
+    int have_next, old_have_next;
+    float next_t0;
     int empty_pressed;
+    uint32_t snz_at;                 /* svc's snooze deadline the cached minute is for */
+    int snz_h, snz_m;                /* wall-clock minute the snooze rings in */
+    char lab[SVC_ALARM_MAX][24], lab_old[SVC_ALARM_MAX][24];   /* row sub-labels */
+    uint8_t lab_snz[SVC_ALARM_MAX], lab_old_snz[SVC_ALARM_MAX];
+    float lab_t0[SVC_ALARM_MAX];
 } A;
+#define XF_S 0.2f                    /* label change: old fades out, then the new one in */
 enum { PART_BODY = 0, PART_TOGGLE };
 
 static float list_max(void)
@@ -177,10 +176,33 @@ static float list_max(void)
     return content > GFX_H ? content - GFX_H : 0;
 }
 
-static void list_sync(void)
+/* the row's sub-label: "SNOOZED 07:09" while snoozed, else its days; returns 1 if snoozed */
+static int row_label(int idx, char *b, int n)
 {
-    snz_check();
+    if (is_snoozed(idx)) {
+        char tt[12];
+        ui_fmt_time(tt, sizeof tt, A.snz_h, A.snz_m);
+        snprintf(b, (size_t)n, "SNOOZED %s", tt);
+        return 1;
+    }
+    fmt_days(b, n, al_get(idx)->days);
+    return 0;
+}
+/* fade: a changed header / row label crossfades (off on entry and when rows shift) */
+static void list_sync(int fade)
+{
+    int was = A.n;
     A.n = al_count();
+    if (A.n != was) fade = 0;
+    uint32_t at;
+    if (a_svc != 0 && svc_alarm_snoozed(NULL, &at) && at != A.snz_at) {
+        /* the minute it rings in, computed once per snooze so it never flickers */
+        hal_datetime dt; hal_get_datetime(&dt);
+        int32_t left = (int32_t)(at - hal_millis());
+        int sec = dt.hour * 3600 + dt.minute * 60 + dt.second + (left > 0 ? (int)(left / 1000) : 0);
+        A.snz_h = sec / 3600 % 24; A.snz_m = sec / 60 % 60;
+        A.snz_at = at;
+    }
     msc_bounds(&A.sc, 0, list_max());
     /* rows in time order (svc keeps creation order; indices stay svc's) */
     for (int i = 0; i < A.n; i++) A.order[i] = (uint8_t)i;
@@ -191,28 +213,56 @@ static void list_sync(void)
         A.order[j + 1] = v;
     }
     int h, m, in;
-    A.have_next = time_alarm_next(&h, &m, &in);
-    if (A.have_next) {
+    char nx[32];
+    int hn = time_alarm_next(&h, &m, &in);
+    if (hn) {
         char t[16];
         fmt_in(t, sizeof t, in);
-        snprintf(A.next, sizeof A.next, "NEXT %s", t);
-    } else snprintf(A.next, sizeof A.next, "ALL ALARMS OFF");
+        snprintf(nx, sizeof nx, "NEXT %s", t);
+    } else snprintf(nx, sizeof nx, "ALL ALARMS OFF");
+    if (strcmp(nx, A.next)) {
+        if (fade && A.next[0]) {
+            memcpy(A.next_old, A.next, sizeof A.next);
+            A.old_have_next = A.have_next;
+            A.next_t0 = nos_t;
+        } else A.next_t0 = -10;
+        memcpy(A.next, nx, sizeof A.next);
+    }
+    A.have_next = hn;
+    for (int i = 0; i < A.n && i < SVC_ALARM_MAX; i++) {
+        char b[24];
+        int sz = row_label(i, b, sizeof b);
+        if (strcmp(b, A.lab[i])) {
+            if (fade) {
+                memcpy(A.lab_old[i], A.lab[i], sizeof A.lab[i]);
+                A.lab_old_snz[i] = A.lab_snz[i];
+                A.lab_t0[i] = nos_t;
+            } else A.lab_t0[i] = -10;
+            memcpy(A.lab[i], b, sizeof A.lab[i]);
+        } else if (!fade) A.lab_t0[i] = -10;
+        A.lab_snz[i] = (uint8_t)sz;
+    }
 }
+/* crossfade levels for a label change at t0: old out over the first half, new in after */
+static float xf_k(float t0) { return qz(m_clamp((nos_t - t0) / XF_S, 0, 1), 8); }
+static float xf_old(float t0) { return m_clamp(1.0f - 2.0f * xf_k(t0), 0, 1); }
+static float xf_new(float t0) { return m_clamp(2.0f * xf_k(t0) - 1.0f, 0, 1); }
 static int row_on(int idx) { return al_get(idx)->on || is_snoozed(idx); }
 
 static void alarm_enter(void)
 {
     A.pressed = -1; A.dragging = 0; A.empty_pressed = 0;
     int back = nos_revealed();                  /* revealed by a pop: keep scroll + no build */
+    int was = A.n;
     A.n = al_count();
-    if (!back) { A.t0 = nos_t + UI_ENTRY_S * 0.55f; A.build = 0; msc_init(&A.sc, 0, list_max(), 0); }
-    list_sync();
+    if (!back) { A.t0 = nos_t + UI_ENTRY_S * 0.55f; A.build = 0; msc_init(&A.sc, 0, list_max(), 0); A.next[0] = 0; }
+    list_sync(back && A.n == was);             /* rows shifted: no label crossfade */
     for (int i = 0; i < A.n && i < SVC_ALARM_MAX; i++) msp_init(&A.tog[i], row_on(i) ? 100.0f : 0.0f, SPRING_SNAPPY);
 }
 static void alarm_tick(float dt)
 {
     int was = A.n;
-    list_sync();
+    list_sync(1);
     if (A.n != was) {
         for (int i = 0; i < A.n; i++) msp_set(&A.tog[i], row_on(i) ? 100.0f : 0.0f);
         if (!A.n || !was) { A.t0 = nos_t; A.build = 0; }    /* list <-> empty: build the new state */
@@ -253,7 +303,11 @@ static void alarm_draw(gfx_fb *fb)
         return;
     }
     float sk = qz(m_clamp(b * 2, 0, 1), 8) * (1.0f - m_clamp(off / 50.0f, 0, 1));
-    if (sk > 0.02f) ui_label(fb, UI_CX, (int)(102 - off), A.next, ui_dim(A.have_next ? C_PRI : C_DIS, qz(sk, 8)), UI_CENTER);
+    if (sk > 0.02f) {
+        float ko = xf_old(A.next_t0), kn = xf_new(A.next_t0);
+        if (ko > 0) ui_label(fb, UI_CX, (int)(102 - off), A.next_old, ui_dim(A.old_have_next ? C_PRI : C_DIS, qz(sk, 8) * ko), UI_CENTER);
+        if (kn > 0) ui_label(fb, UI_CX, (int)(102 - off), A.next, ui_dim(A.have_next ? C_PRI : C_DIS, qz(sk, 8) * kn), UI_CENTER);
+    }
     for (int r = 0; r <= A.n; r++) {
         float y = row_top(r);
         if (y + L_ROW < 0) continue;
@@ -273,10 +327,10 @@ static void alarm_draw(gfx_fb *fb)
         }
         int idx = A.order[r];
         const svc_alarm *a = al_get(idx);
-        int snz = is_snoozed(idx);
         int pressed_body = A.pressed == r && A.press_part == PART_BODY;
-        ui_rrect(fb, UI_CX - L_CARD_W / 2, y + 6, L_CARD_W, L_CARD, 40, ui_dim(pressed_body ? C_SURF3 : C_SURF2, f));
-        char t[12], d[32];
+        uint16_t card = pressed_body ? C_SURF3 : C_SURF2;
+        ui_rrect(fb, UI_CX - L_CARD_W / 2, y + 6, L_CARD_W, L_CARD, 40, ui_dim(card, f));
+        char t[12];
         fmt_hm(t, sizeof t, a->h, a->m);
         /* the time dims with the toggle's own motion (not in one frame) */
         float on = qz(A.tog[idx].x / 100.0f, 8);
@@ -284,14 +338,14 @@ static void alarm_draw(gfx_fb *fb)
         int tw = dot_text_anim(fb, &st, L_TIME_X, y + 20, t, 0, p, DOT_REVEAL_RANDOM, (unsigned)idx);
         if (!nos_prefs.hour24)
             ui_label(fb, (int)L_TIME_X + tw + 8, (int)(y + 59), a->h < 12 ? "AM" : "PM", ui_dim(C_SEC, f), UI_LEFT);
-        if (snz) {
-            char sb[24], tt[12];
-            ui_fmt_time(tt, sizeof tt, s_snz_h, s_snz_m);
-            snprintf(sb, sizeof sb, "SNOOZED %s", tt);
-            ui_label(fb, (int)L_TIME_X, (int)(y + 84), sb, ui_dim(C_PRI, f), UI_LEFT);
-        } else {
-            fmt_days(d, sizeof d, a->days);
-            ui_label(fb, (int)L_TIME_X, (int)(y + 84), d, ui_dim(ui_mix(C_DIS, C_SEC, on), f), UI_LEFT);
+        /* sub-label: SNOOZED hh:mm in white, days dimming with the toggle; a change fades
+         * out the old text into the card colour, then fades the new one in */
+        {
+            uint16_t cn = A.lab_snz[idx] ? C_PRI : ui_mix(C_DIS, C_SEC, on);
+            uint16_t co = A.lab_old_snz[idx] ? C_PRI : ui_mix(C_DIS, C_SEC, on);
+            float ko = xf_old(A.lab_t0[idx]), kn = xf_new(A.lab_t0[idx]);
+            if (ko > 0) ui_label(fb, (int)L_TIME_X, (int)(y + 84), A.lab_old[idx], ui_dim(ui_mix(card, co, ko), f), UI_LEFT);
+            if (kn > 0) ui_label(fb, (int)L_TIME_X, (int)(y + 84), A.lab[idx], ui_dim(ui_mix(card, cn, kn), f), UI_LEFT);
         }
         float tx = L_TOG_X, ty = cy, ton = qz(A.tog[idx].x / 100.0f, 16);
         if (f >= 0.99f) ui_toggle(fb, tx, ty, ton);
@@ -333,20 +387,13 @@ static void add_alarm(void)
     nos_feedback(FB_TAP);
     open_edit(i, 1);
 }
-/* Cancel a snooze: svc has no call for it, but removing an alarm drops its snooze, so
- * the alarm is re-added unchanged (switched off: the snoozed ring was its one shot). */
+/* Cancel a snooze from the list toggle. svc drops the snooze; the alarm also switches
+ * off, so the toggle shows what the tap meant (a one-shot is already off: svc clears it
+ * when it fires). The toggle then slides off and the label + header crossfade. */
 static void snooze_cancel(int idx)
 {
-    svc_alarm a = *al_get(idx);
-    al_remove(idx);
-    s_snz = -1;
-    int j = al_add(a.h, a.m);
-    if (j >= 0) {
-        svc_alarm *n = al_get(j);
-        n->days = a.days; n->on = 0;
-        memcpy(n->label, a.label, sizeof n->label);
-        msp_set(&A.tog[j], 100.0f);              /* the knob slides off from on */
-    }
+    svc_alarm_snooze_cancel();
+    al_get(idx)->on = 0;
     al_save();
 }
 
@@ -571,9 +618,10 @@ const nos_screen scr_alarm_edit = { "ALARM EDIT", edit_enter, edit_leave, edit_t
 /* ============================================================== ringing */
 #define R_TIME_Y   100.0f
 #define R_SNZ_Y    250.0f
-#define R_SL_Y     362.0f
-#define R_SL_W     272.0f
-#define R_KNOB_R   36.0f
+#define R_SL_Y     360.0f     /* track 320..400: 26 px under the SNOOZE pill */
+#define R_SL_W     290.0f     /* far cap point 205 px from centre (bezel 233) */
+#define R_SL_R     40.0f
+#define R_KNOB_R   32.0f      /* 8 px inset, like the pill buttons' content */
 static struct {
     float t0, build;
     int h, m;
@@ -582,8 +630,8 @@ static struct {
     int grab, committed, haptic_on, snz_pressed, last_step, at_end;
     float grab_k;
 } R;
-static float sl_x0(void) { return UI_CX - R_SL_W / 2 + 44; }
-static float sl_x1(void) { return UI_CX + R_SL_W / 2 - 44; }
+static float sl_x0(void) { return UI_CX - R_SL_W / 2 + R_SL_R; }
+static float sl_x1(void) { return UI_CX + R_SL_W / 2 - R_SL_R; }
 
 static void ring_enter(void)
 {
@@ -642,9 +690,10 @@ static void ring_draw(gfx_fb *fb)
     ui_label(fb, UI_CX, (int)R_SNZ_Y + 6, "SNOOZE", ui_dim(C_PRI, k), UI_CENTER);
     /* slide to stop */
     float kx = qz(m_clamp(R.knob.x / 100.0f, 0, 1), 256);
-    gfx_fill_pill(fb, sl_x0(), R_SL_Y, sl_x1(), 44, ui_dim(C_SURF2, k));
+    gfx_fill_pill(fb, sl_x0(), R_SL_Y, sl_x1(), R_SL_R, ui_dim(C_SURF2, k));
     float hint = qz(m_clamp(1.0f - kx * 2.5f, 0, 1), 8) * k;
-    if (hint > 0) ui_label(fb, (int)(sl_x0() + R_KNOB_R + (sl_x1() + 44 - sl_x0() - R_KNOB_R) * 0.5f),
+    /* centred between the resting knob's edge and the track end: equal margins */
+    if (hint > 0) ui_label(fb, (int)floorf((sl_x0() + R_KNOB_R + sl_x1() + R_SL_R) * 0.5f + 0.5f),
                            (int)R_SL_Y + 6, "SLIDE TO STOP", ui_dim(C_SEC, hint), UI_CENTER);
     float x = m_lerp(sl_x0(), sl_x1(), kx);
     ui_circle(fb, x, R_SL_Y, R_KNOB_R * (0.72f + 0.28f * k), R.grab ? C_PRI : C_WHITE);   /* scale build */
@@ -652,13 +701,7 @@ static void ring_draw(gfx_fb *fb)
 }
 static void snooze(void)
 {
-    /* remember which alarm is snoozed and when it rings again (the list shows it) */
-    s_snz = svc_alarm_ringing();
-    s_snz_at = hal_millis() + 9u * 60000u;
-    hal_datetime dt; hal_get_datetime(&dt);
-    int t = dt.hour * 60 + dt.minute + 9;
-    s_snz_h = t / 60 % 24; s_snz_m = t % 60;
-    svc_alarm_snooze();
+    svc_alarm_snooze();                          /* svc remembers which alarm, and when */
     nos_toast("Snoozed for 9 min");
     ring_leave();
     nos_pop();

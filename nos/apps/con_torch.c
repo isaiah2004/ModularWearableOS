@@ -109,6 +109,7 @@ static const uint8_t BAYER[8][8] = {
 
 static void fill_dither(gfx_fb *fb, uint16_t a, uint16_t b, float p)
 {
+    a = gfx_ink(fb, a); b = gfx_ink(fb, b);
     int thr = (int)(p * 64.0f + 0.5f);
     if (fb->rec) {
         unsigned h = gfx_hash_u(gfx_hash_u(gfx_hash_u(0x70C4u, a), b), (unsigned)thr);

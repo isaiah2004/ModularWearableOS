@@ -119,6 +119,7 @@ void gfx_px_blend(gfx_fb *fb, int x, int y, uint16_t color, uint8_t alpha)
                     gfx_hash_f(gfx_hash_u(7u, color), (float)alpha));
         return;
     }
+    color = gfx_ink(fb, color);
     x += fb->ox;
     y += fb->oy - fb->y_base;
     if ((unsigned)x >= GFX_W || (unsigned)y >= (unsigned)fb->h || alpha == 0) {
@@ -161,6 +162,7 @@ void gfx_clear(gfx_fb *fb, uint16_t color)
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
     if (fb->ox == 0 && fb->oy == 0 && c0 == 0 && c1 == GFX_W && !fb->stride && !fb->x_base) {
+        color = gfx_ink(fb, color);
         uint32_t two = ((uint32_t)color << 16) | color;
         uint32_t *p = (uint32_t *)fb->px;
         for (int i = 0; i < GFX_W * fb->h / 2; i++)
@@ -168,6 +170,7 @@ void gfx_clear(gfx_fb *fb, uint16_t color)
         GFX_COST(GFX_COST_FILL, GFX_W * fb->h);
     } else if (fb->ox == 0 && fb->oy == 0) {
         /* 2D dirty-rect render: clear only the dirty columns of each row */
+        color = gfx_ink(fb, color);
         for (int y = 0; y < fb->h; y++)
             fill_span(&gfx_row(fb, y)[c0], c1 - c0, color);
         GFX_COST(GFX_COST_FILL, c1 > c0 ? (c1 - c0) * fb->h : 0);
@@ -186,6 +189,7 @@ void gfx_fill_rect(gfx_fb *fb, int x, int y, int w, int h, uint16_t color)
         gfx_rec_cmd(fb, x, y, x + w, y + h, hh);
         return;
     }
+    color = gfx_ink(fb, color);
     x += fb->ox;
     y += fb->oy - fb->y_base;
     int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
@@ -303,7 +307,7 @@ void gfx_fill_circle(gfx_fb *fb, float cx, float cy, float r, uint16_t color)
                     (int)(cx + r + 2), (int)(cy + r + 2), hh);
         return;
     }
-    unsigned n = fill_circle_raster(fb, cx, cy, r, color);
+    unsigned n = fill_circle_raster(fb, cx, cy, r, gfx_ink(fb, color));
     GFX_COST(GFX_COST_CIRCLE, n);
 }
 
@@ -331,6 +335,7 @@ void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t c
         gfx_rec_cmd(fb, ifloor(xa - r - 1), ifloor(cy - r - 1), iceil(xb + r + 1) + 1, iceil(cy + r + 1) + 1, hh);
         return;
     }
+    color = gfx_ink(fb, color);
     int c0 = fb->cx0, c1 = fb->cx1;
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
     if (c0 < 0) c0 = 0;
@@ -393,6 +398,7 @@ void gfx_taper(gfx_fb *fb, float ax, float ay, float bx, float by,
                         (int)((ay > by ? ay : by) + hmax + 2), hh);
         return;
     }
+    color = gfx_ink(fb, color);
     /* True tapered capsule SDF (half-width lerps ha->hb along the segment): one
      * stable coverage sample per pixel, no disc-sweep rim shimmer. See gfx_line. */
     float vx = bx - ax, vy = by - ay;
@@ -445,6 +451,7 @@ void gfx_ring(gfx_fb *fb, float cx, float cy, float r_mid, float thickness, uint
                     (int)(cx + ro + 1), (int)(cy + ro + 1), hh);
         return;
     }
+    color = gfx_ink(fb, color);
     float half = thickness * 0.5f;
     float r_out = r_mid + half + 1.0f;
     float r_in = r_mid - half - 1.0f;
@@ -535,6 +542,7 @@ void gfx_arc(gfx_fb *fb, float cx, float cy, float r_mid, float thickness,
                     iceil(cy - cmin * r_mid + pad) + 1, hh);
         return;
     }
+    color = gfx_ink(fb, color);
     float half = thickness * 0.5f;
     /* end-cap centers on the midline */
     float e0x = cx + fast_sin(a0) * r_mid, e0y = cy - fast_cos(a0) * r_mid;
@@ -693,6 +701,7 @@ void gfx_line(gfx_fb *fb, float x0, float y0, float x1, float y1,
                         (int)((y0 > y1 ? y0 : y1) + half + 2), hh);
         return;
     }
+    color = gfx_ink(fb, color);
     /* Rasterize as a sweep of discs (radius = half) along the segment: O(len)
      * work, not the O(len^2) of scanning the whole diagonal bounding box. */
     /* True capsule SDF: ONE coverage sample per pixel (distance to the segment
