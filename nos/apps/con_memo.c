@@ -135,6 +135,8 @@ static struct {
     float db, db_shown;          /* smoothed level, the number on screen */
     char  dbs[8], dbs_prev[8];
     float t_db, db_morph;
+    int   band, band_prev;       /* QUIET .. HEARING RISK of the shown number; -1 none */
+    float t_band;
     int   meter_frame;
     float meter;                 /* dB on the meter (10 Hz) */
     /* recording */
@@ -178,7 +180,7 @@ static void play_stop(void)
  * their case (ui_label_unit): the caller draws it with ui_text + label tracking. */
 static void fmt_len(char *b, int n, uint32_t ms)
 {
-    uint32_t s = (ms + 500) / 1000;
+    uint32_t s = ms / 1000;                    /* floored, as the hero clock counts */
     if (s < 60) snprintf(b, (size_t)n, "%u s", (unsigned)s);
     else if (s < 3600) snprintf(b, (size_t)n, "%u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
     else snprintf(b, (size_t)n, "%u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
@@ -273,7 +275,7 @@ static void saved_toast(int n)
 {
     (void)n;
     char b[24];
-    uint32_t s = (s_saved_ms + 500) / 1000;
+    uint32_t s = s_saved_ms / 1000;
     if (s < 600) snprintf(b, sizeof b, "SAVED %u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
     else snprintf(b, sizeof b, "MEMO SAVED");
     nos_toast(b);
@@ -323,6 +325,8 @@ static void memo_enter(void)
     R.rec_failed = 0;
     R.ts[0] = R.ts_prev[0] = 0;
     R.dbs[0] = R.dbs_prev[0] = 0;
+    R.band = R.band_prev = -1;
+    R.t_band = -10;
     R.db = R.db_shown = 0;
     R.meter = 0;
     memset(R.wave, 0, sizeof R.wave);
@@ -367,7 +371,6 @@ static void rec_start(void)
     s_rec_open = 1;
     R.rec_ms = 0;
     R.t_rec = nos_t;
-    R.t_saved = -10;
     nos_feedback(FB_TOGGLE_ON);           /* the monitored wave carries on, now in white */
 }
 
@@ -385,6 +388,8 @@ static void push_wave(uint8_t lvl)
     memmove(R.wave, R.wave + 1, WAVE_COLS - 1);
     R.wave[WAVE_COLS - 1] = lvl;
 }
+
+static int band_of(float db) { return db < 40 ? 0 : db < 70 ? 1 : db < 85 ? 2 : 3; }
 
 static void memo_tick(float dt)
 {
@@ -421,10 +426,13 @@ static void memo_tick(float dt)
         }
         R.meter_frame += frames;
         if (R.meter_frame >= 3) { R.meter_frame = 0; R.meter = R.db; }
-        /* the number: 1 Hz with a digit morph (the meter stays fast) */
-        if (nos_t - R.t_db >= 1.0f || !R.dbs[0]) {
+        /* the number: 1 Hz with a digit morph, but at once when the meter crosses into
+         * another band, so the hero, the label and the red dots always agree */
+        int bm = band_of(R.meter), bs = band_of(R.db_shown);
+        int cross = R.dbs[0] && bm != bs && ((bm == 3) != (bs == 3) || nos_t - R.t_db >= 0.1f);   /* red: at once */
+        if (nos_t - R.t_db >= 1.0f || !R.dbs[0] || cross) {
             char b[8];
-            int v = (int)lroundf(R.db);
+            int v = (int)floorf(R.meter);           /* floored like the meter's dots */
             if (v < 0) v = 0;
             if (v > 140) v = 140;
             snprintf(b, sizeof b, "%d", v);
@@ -435,6 +443,8 @@ static void memo_tick(float dt)
                 R.t_db = nos_t;
             } else R.t_db = nos_t - 0.75f;         /* unchanged: look again in 0.25 s */
             R.db_shown = (float)v;
+            int bd = band_of(R.db_shown);
+            if (bd != R.band) { R.band_prev = R.band; R.band = bd; R.t_band = nos_t; }
         }
         R.db_morph = R.dbs_prev[0] ? q((nos_t - R.t_db) / 0.28f, 16) : 1.0f;
     }
@@ -501,25 +511,66 @@ static void wave_draw(gfx_fb *fb, float x, float cy, uint16_t on, uint16_t line,
     }
 }
 
+/* Start and stop run on one ~150 ms clock with the button: colours take 4 steps,
+ * words leave over 2 steps and the new ones arrive over the next 2. */
+#define SWAP_S 0.15f
+static float rec_x(void) { return q((nos_t - R.t_rec) / SWAP_S, 4); }           /* 1 = settled */
+static float rec_look(void) { float x = rec_x(); return R.rec ? x : 1.0f - x; }  /* 1 = recording */
+static float swap_out(float x) { return x < 0.5f ? 1.0f - 2.0f * x : 0.0f; }
+static float swap_in(float x) { return x >= 0.5f ? 2.0f * x - 1.0f : 0.0f; }
+
+enum { H_RECORD, H_STOP, H_SAVED, H_NOSD };
+static void hint_draw(gfx_fb *fb, int h, float k)
+{
+    if (k <= 0) return;
+    switch (h) {
+    case H_NOSD:  ui_state(fb, UI_CX, 298, "NO SD CARD", ui_dim(C_PRI, k)); break;
+    case H_SAVED: ui_state(fb, UI_CX, 298, "SAVED", ui_dim(C_PRI, k)); break;
+    case H_STOP:  ui_label(fb, UI_CX, 298, "TAP TO STOP", ui_dim(C_SEC, k * R.txt), UI_CENTER); break;
+    default:      ui_label(fb, UI_CX, 298, "TAP TO RECORD", ui_dim(C_SEC, k * R.txt), UI_CENTER); break;
+    }
+}
+static void hint_swap(gfx_fb *fb, int a, int b, float x)
+{
+    if (a == b || x >= 1) { hint_draw(fb, b, 1); return; }
+    hint_draw(fb, a, swap_out(x));
+    hint_draw(fb, b, swap_in(x));
+}
+
 static void draw_recorder(gfx_fb *fb)
 {
     if (!R.mic) { absent(fb, "RECORDER", "Add the mic strap to record voice memos", R.build); return; }
     if (nos_t < R.t_enter) { ui_title(fb, "RECORDER", 0); return; }
-    ui_title(fb, R.rec ? "RECORDING" : "RECORDER", 0);
-    wave_draw(fb, UI_CX - WAVE_COLS * WAVE_PITCH * 0.5f, WAVE_CY, R.rec ? C_WHITE : C_DIS, C_LINE2, R.build);
+    float x = rec_x(), rl = rec_look();
+    const char *t_new = R.rec ? "RECORDING" : "RECORDER", *t_old = R.rec ? "RECORDER" : "RECORDING";
+    if (x >= 1) ui_title(fb, t_new, 0);
+    else {
+        if (swap_out(x) > 0) ui_label(fb, UI_CX, UI_TITLE_Y, t_old, ui_dim(C_SEC, swap_out(x)), UI_CENTER);
+        if (swap_in(x) > 0) ui_label(fb, UI_CX, UI_TITLE_Y, t_new, ui_dim(C_SEC, swap_in(x)), UI_CENTER);
+    }
+    wave_draw(fb, UI_CX - WAVE_COLS * WAVE_PITCH * 0.5f, WAVE_CY, ui_mix(C_DIS, C_WHITE, rl), C_LINE2, R.build);
 
-    /* elapsed time: ghosted until recording */
-    dot_style st = { DOT_FONT_TALL, 6.0f, 4.8f, R.rec ? C_WHITE : (nos_t - R.t_saved < 1.6f && !R.rec_failed ? C_PRI : C_DIS), 0, 1, 1 };
+    /* the idle state line: SAVED (or NO SD CARD) for a moment, then the hint */
+    float since = nos_t - R.t_saved;
+    float hold = R.rec_failed ? 2.0f : 1.6f;
+    int first = R.rec_failed ? H_NOSD : H_SAVED, ra, rb;
+    float rx;
+    if (R.rec_failed && since < SWAP_S) { ra = H_RECORD; rb = first; rx = q(since / SWAP_S, 4); }
+    else if (since < hold) { ra = rb = first; rx = 1; }
+    else { ra = first; rb = H_RECORD; rx = q((since - hold) / SWAP_S, 4); }
+
+    /* elapsed time: white while recording, C_PRI on the saved length, ghosted at rest */
+    float sk = R.rec_failed ? 0.0f : 1.0f - q((since - 1.6f) / SWAP_S, 4);
+    dot_style st = { DOT_FONT_TALL, 6.0f, 4.8f, ui_mix(ui_mix(C_DIS, C_PRI, sk), C_WHITE, rl), 0, 1, 1 };
     if (R.ts_prev[0] && R.ts_morph < 1) dot_text_morph(fb, &st, UI_CX, TIME_Y, R.ts_prev, R.ts, 1, R.ts_morph);
     else dot_text_anim(fb, &st, UI_CX, TIME_Y, R.ts, 1, q((nos_t - R.t_enter - 0.05f) / 0.3f, 32), DOT_REVEAL_RANDOM, 7);
 
     /* state line */
-    float since = nos_t - R.t_saved;
-    uint16_t c2 = ui_dim(C_SEC, R.txt);
-    if (R.rec_failed && since < 2.0f) ui_state(fb, UI_CX, 298, "NO SD CARD", C_PRI);
-    else if (!R.rec && since < 1.6f) ui_state(fb, UI_CX, 298, "SAVED", C_PRI);
-    else if (!R.rec) ui_label(fb, UI_CX, 298, "TAP TO RECORD", c2, UI_CENTER);
-    else ui_label(fb, UI_CX, 298, "TAP TO STOP", c2, UI_CENTER);
+    if (x < 1) {
+        int rest = rx < 0.5f ? ra : rb;
+        hint_swap(fb, R.rec ? rest : H_STOP, R.rec ? H_STOP : rest, x);
+    } else if (R.rec) hint_draw(fb, H_STOP, 1);
+    else hint_swap(fb, ra, rb, rx);
 
     /* record button: white ring, red dot <-> rounded square (EASE_MECH, 200 ms) */
     const float b = 1.0f;
@@ -548,11 +599,21 @@ static void draw_memos(gfx_fb *fb)
     }
 }
 
+static void band_words(gfx_fb *fb, int band, float k)
+{
+    static const char *const lab[4] = { "QUIET", "MODERATE", "LOUD", "HEARING RISK" };
+    static const char *const line[4] = { "Like a library", "Normal conversation", "Busy street traffic", "Limit your exposure" };
+    if (k <= 0 || band < 0 || band > 3) return;
+    uint16_t c1 = ui_dim(C_PRI, R.txt * k);
+    if (band == 3) ui_state(fb, UI_CX, 318, lab[band], c1);      /* red stays on the meter */
+    else ui_label(fb, UI_CX, 318, lab[band], c1, UI_CENTER);
+    body_line(fb, 356, line[band], ui_dim(C_SEC, R.txt * k));
+}
+
 static void draw_noise(gfx_fb *fb)
 {
     if (!R.mic) { absent(fb, "NOISE", "Add the mic strap to measure noise levels", R.build); return; }
     ui_title(fb, "NOISE", 0);
-    int risk = R.db_shown >= 85.0f;
     dot_style st = { DOT_FONT_TALL, 11.0f, 8.8f, C_WHITE, 0, 1, 1 };
     const char *s = R.dbs[0] ? R.dbs : "--";
     if (R.dbs_prev[0] && R.db_morph < 1) dot_text_morph(fb, &st, UI_CX, 104, R.dbs_prev, s, 1, R.db_morph);
@@ -563,19 +624,23 @@ static void draw_noise(gfx_fb *fb)
     const int n = 24, nsafe = 17;
     const float pitch = 12.0f, d = 8.0f;
     float x0 = UI_CX - pitch * (n - 1) * 0.5f;
-    float lit = floorf(m_clamp(R.meter, 0, 120) / 5.0f + 0.5f) * q(R.build, 16);
+    /* dot i lights at 5 i dB, so the first red dot and HEARING RISK both start at 85 */
+    float lit = (R.meter > 0 ? floorf(m_clamp(R.meter, 0, 119) / 5.0f) + 1.0f : 0.0f) * q(R.build, 16);
     dot_bar(fb, x0, 272, nsafe, pitch, d, lit < nsafe ? lit : nsafe, C_PRI, C_LINE2);
-    dot_bar(fb, x0 + nsafe * pitch, 272, n - nsafe, pitch, d, lit > nsafe ? lit - nsafe : 0, C_RED, C_LINE2);
+    /* the red dots belong to HEARING RISK: they light with the hero's band and take the
+     * label's 2-step ramp, so the number, the words and the red never disagree */
+    float x = q((nos_t - R.t_band) / SWAP_S, 4);
+    int cur = R.band >= 0 ? R.band : band_of(R.db_shown);
+    int prev3 = R.band_prev == 3 && x < 1;
+    float rk = cur == 3 ? (R.band_prev != 3 && x < 1 ? swap_in(x) : 1.0f) : prev3 ? swap_out(x) : 0.0f;
+    float red = cur == 3 || prev3 ? (lit > nsafe ? lit - nsafe : 0) : 0;
+    dot_bar(fb, x0 + nsafe * pitch, 272, n - nsafe, pitch, d, red, ui_mix(C_LINE2, C_RED, rk), C_LINE2);
 
-    const char *lab, *line;
-    int v = (int)R.db_shown;
-    if (v < 40)      { lab = "QUIET";        line = "Like a library"; }
-    else if (v < 70) { lab = "MODERATE";     line = "Normal conversation"; }
-    else if (v < 85) { lab = "LOUD";         line = "Busy street traffic"; }
-    else             { lab = "HEARING RISK"; line = "Limit your exposure"; }
-    if (risk) ui_state(fb, UI_CX, 318, lab, ui_dim(C_PRI, R.txt));   /* red stays on the meter */
-    else ui_label(fb, UI_CX, 318, lab, ui_dim(C_PRI, R.txt), UI_CENTER);
-    body_line(fb, 356, line, ui_dim(C_SEC, R.txt));
+    /* the band words swap out-then-in on the number's clock */
+    if (R.band_prev >= 0 && x < 1) {
+        band_words(fb, R.band_prev, swap_out(x));
+        band_words(fb, cur, swap_in(x));
+    } else band_words(fb, cur, 1);
 }
 
 static void memo_draw(gfx_fb *fb)
@@ -591,7 +656,7 @@ static void memo_draw(gfx_fb *fb)
         else if (pg == 1) draw_memos(&sub);
         else draw_noise(&sub);
     }
-    if (!R.rec) ui_page_dots(fb, UI_CX, UI_DOTS_Y, NPAGES, R.px.x / PAGE_W);
+    ui_page_dots_a(fb, UI_CX, UI_DOTS_Y, NPAGES, R.px.x / PAGE_W, 1.0f - rec_look());   /* gone while recording */
 }
 
 /* --------------------------------------------------------------- input */

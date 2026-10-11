@@ -247,6 +247,7 @@ static void round_button(gfx_fb *fb, float cx, float cy, float r, int decline, i
     else ui_circle(fb, cx, cy, r, fill);
     float pitch = 4.2f * (r / BTN_R);
     float ip = out > 0 ? 1.0f - q(out * 1.6f, 8) : icon_p;
+    if (r < 6) return;                     /* a folding disc: no glyph residue at the end */
     dot_icon_anim(fb, icon, cx, cy, pitch, pitch * 0.8f, ink, ip, out > 0 ? DOT_REVEAL_RANDOM : DOT_REVEAL_CENTER);
 }
 

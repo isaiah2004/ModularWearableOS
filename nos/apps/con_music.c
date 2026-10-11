@@ -261,15 +261,19 @@ static void music_tick(float dt)
 }
 
 /* ------------------------------------------------------------- drawing */
+/* The playhead dot comes in with the ring's last dots, over 3 colour steps from the
+ * unlit ring grey (no pop when the build ends). t0 = when the ring build started. */
+static float head_k(float t0) { return q((nos_t - t0 - UI_ENTRY_S + 0.05f) / 0.1f, 3); }
+
 static void draw_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float dcur,
-                      int pos, float build, int have)
+                      int pos, float build, int have, float head)
 {
     float lit = (float)pos * build;
     if (!have) { dot_ring(fb, cx, cy, r, n, d, 0, 0, 0, C_LINE); return; }
     dot_ring(fb, cx, cy, r, n, d, 0, lit, C_PRI, C_LINE2);
-    if (build >= 1) {
+    if (head > 0) {
         float a = 6.2831853f * (float)pos / (float)n;
-        dot_disc(fb, cx + r * gfx_fast_sin(a), cy - r * gfx_fast_cos(a), dcur, C_WHITE);
+        dot_disc(fb, cx + r * gfx_fast_sin(a), cy - r * gfx_fast_cos(a), dcur, ui_mix(C_LINE2, C_WHITE, head));
     }
 }
 
@@ -349,7 +353,7 @@ static void music_draw(gfx_fb *fb)
         draw_empty(fb, M.build, P.connected);
         return;
     }
-    draw_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 11.0f, M.ring_pos, b, P.have);
+    draw_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 11.0f, M.ring_pos, b, P.have, head_k(M.t_enter));
     if (nos_t < M.t_enter && !M.from_wg) return;          /* the iris shows black until 40% */
 
     /* equaliser: columns rise row by row with the build */
@@ -514,11 +518,11 @@ static int wg_on_disc(int x, int y)
     float dx = x - UI_CX, dy = y - WG_CY;
     return dx * dx + dy * dy <= (WG_R + 16) * (WG_R + 16);
 }
-/* Pressed after 2 frames of a resting finger (a flick across the page never flashes
- * it), and for at least 3 frames on a quick tap. */
+/* Pressed as soon as home reports the finger (home already waits out a page drag's
+ * slop), and for at least 3 frames on a quick tap. */
 static int wg_pressed(void)
 {
-    return (G.down && nos_t - G.t_down >= 1.5f / NOS_FPS) || nos_t - G.t_tap < 2.5f / NOS_FPS;
+    return G.down || nos_t - G.t_tap < 2.5f / NOS_FPS;
 }
 
 static void wg_tick(float dt, int visible)
@@ -543,9 +547,10 @@ static void wg_draw(gfx_fb *fb)
         return;
     }
     dot_ring(fb, UI_CX, WG_CY, WG_RING_R, WG_RING_N, 4.0f, 0, (float)G.pos * b, C_SEC, C_LINE2);
-    if (G.build >= 1) {
+    float hk = head_k(G.t_shown);
+    if (hk > 0) {
         float a = 6.2831853f * (float)G.pos / WG_RING_N;
-        dot_disc(fb, UI_CX + WG_RING_R * gfx_fast_sin(a), WG_CY - WG_RING_R * gfx_fast_cos(a), 9.0f, C_WHITE);
+        dot_disc(fb, UI_CX + WG_RING_R * gfx_fast_sin(a), WG_CY - WG_RING_R * gfx_fast_cos(a), 9.0f, ui_mix(C_LINE2, C_WHITE, hk));
     }
     /* opening the app: the disc and the words travel into the app's places here too, so
      * both sides of the iris edge show the same motion (no ghost of the old layout) */

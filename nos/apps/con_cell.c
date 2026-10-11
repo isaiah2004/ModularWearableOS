@@ -209,11 +209,11 @@ static void cell_draw(gfx_fb *fb)
     case LS_LIVE:
         /* units keep their case: -81 dBm */
         snprintf(b, sizeof b, "%d", L.l.rssi_dbm);
-        ui_label_unit(fb, UI_CX, 236, L.l.rssi_dbm ? b : UI_NONE, "dBm", c2, UI_CENTER);
-        body_line(fb, 276, L.l.op[0] ? L.l.op : "Unknown network", c1);
-        /* 18 px of air above the RADIO disc */
+        ui_label_unit(fb, UI_CX, 232, L.l.rssi_dbm ? b : UI_NONE, "dBm", c2, UI_CENTER);
+        body_line(fb, 270, L.l.op[0] ? L.l.op : "Unknown network", c1);
+        /* 16 px of air above the RADIO disc (text 283-299, disc top 316) */
         snprintf(b, sizeof b, "%s / %s", L.l.tech[0] ? L.l.tech : "LTE", L.l.registered == 2 ? "ROAMING" : "HOME");
-        ui_label(fb, UI_CX, 304, b, c3, UI_CENTER);
+        ui_label(fb, UI_CX, 298, b, c3, UI_CENTER);
         break;
     case LS_OFF:
         ui_state(fb, UI_CX, 238, "OFF", c2);

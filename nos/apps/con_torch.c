@@ -2,8 +2,8 @@
  *
  * White at full brightness; a tap switches to a dim, warm red night-vision light.
  * A vertical drag sets the level in 10% detents (a small dot gauge shows while the
- * finger is down). Entry and mode changes are ordered-dither dissolves of ~150 ms,
- * never a hard cut to white. The panel brightness is restored on leave. */
+ * finger is down). Entry and mode changes are flat 4-step colour fades of ~150 ms
+ * (#404040, #808080, #C0C0C0, white on entry), never a hard cut to white and no dither. The panel brightness is restored on leave. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -12,7 +12,6 @@
 #include "hal_ext.h"
 #include "prefs.h"
 #include "apps/nos_apps.h"
-#include "gfx_cost.h"
 #include <math.h>
 
 #define TORCH_RED   0x7800          /* #780000: deep warm red, kind to dark-adapted eyes */
@@ -25,9 +24,9 @@
 static struct {
     int   mode;            /* 0 white, 1 red */
     float level[2];        /* 0.1 .. 1.0 per mode */
-    uint16_t from, to;     /* dissolve colours */
-    float p;               /* dissolve progress 0..1 (quantised) */
-    float t0;              /* dissolve start (nos_t), < 0 = waiting for the transition */
+    uint16_t from, to;     /* fade colours */
+    float p;               /* fade progress 0..1 (4 steps) */
+    float t0;              /* fade start (nos_t), < 0 = waiting for the transition */
     int   started;
     float hint;            /* hint label alpha 0..1 (quantised) */
     int   hint_i;          /* 0 = tap hint, 1 = drag hint */
@@ -75,13 +74,11 @@ static void torch_leave(void)
     nos_prefs.torch = 0;
 }
 
-static float q16(float x) { return floorf(m_clamp(x, 0, 1) * 16.0f + 0.5f) / 16.0f; }
-
 static void torch_tick(float dt)
 {
     nos_keep_awake();
-    /* the dissolve starts with the opening iris: the iris edge and the dither read as
-     * one soft switch-on, with no black beat and never a white flash */
+    /* the fade starts with the opening iris: the iris edge and the fade read as one
+     * soft switch-on, with no black beat and never a white flash */
     if (!T.started) {
         T.started = 1;
         T.t0 = nos_t;
@@ -89,7 +86,7 @@ static void torch_tick(float dt)
     }
     if (T.started) {
         float p = (nos_t - T.t0) / DISSOLVE_S;
-        T.p = q16(bezier_ease(&EASE_STANDARD, m_clamp(p, 0, 1)));
+        T.p = floorf(m_clamp(p, 0, 1) * 4.0f + 0.5f) / 4.0f;     /* 4 flat steps */
         if (T.p >= 1) T.from = T.to;
     }
     /* hints, once per visit: the tap, then the drag (4-step fades) */
@@ -103,42 +100,11 @@ static void torch_tick(float dt)
     if (T.started) set_bl(backlight_for(T.mode, T.level[T.mode]));
 }
 
-/* 8x8 Bayer thresholds 0..63 (same order as the engine's dissolve) */
-static const uint8_t BAYER[8][8] = {
-    { 0,32, 8,40, 2,34,10,42}, {48,16,56,24,50,18,58,26}, {12,44, 4,36,14,46, 6,38},
-    {60,28,52,20,62,30,54,22}, { 3,35,11,43, 1,33, 9,41}, {51,19,59,27,49,17,57,25},
-    {15,47, 7,39,13,45, 5,37}, {63,31,55,23,61,29,53,21} };
-
-static void fill_dither(gfx_fb *fb, uint16_t a, uint16_t b, float p)
-{
-    a = gfx_ink(fb, a); b = gfx_ink(fb, b);
-    int thr = (int)(p * 64.0f + 0.5f);
-    if (fb->rec) {
-        unsigned h = gfx_hash_u(gfx_hash_u(gfx_hash_u(0x70C4u, a), b), (unsigned)thr);
-        gfx_rec_cmd(fb, -fb->ox, -fb->oy, GFX_W - fb->ox, GFX_H - fb->oy, h);
-        return;
-    }
-    int c0 = fb->cx0, c1 = fb->cx1;
-    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
-    if (c0 < 0) c0 = 0;
-    if (c1 > GFX_W) c1 = GFX_W;
-    for (int r = 0; r < fb->h; r++) {
-        int ly = fb->y_base + r - fb->oy;
-        uint16_t *row = gfx_row(fb, r);
-        const uint8_t *bay = BAYER[ly & 7];
-        for (int bx = c0; bx < c1; bx++) {
-            int lx = bx - fb->ox;
-            row[bx] = bay[lx & 7] < thr ? b : a;
-        }
-    }
-    GFX_COST(GFX_COST_SELECT, (unsigned)(fb->h * (c1 > c0 ? c1 - c0 : 0)));
-}
-
 static void torch_draw(gfx_fb *fb)
 {
     uint16_t bg;
     if (T.p >= 1 || T.from == T.to) { bg = T.to; gfx_fill_rect(fb, 0, 0, GFX_W, GFX_H, bg); }
-    else { bg = T.p < 0.5f ? T.from : T.to; fill_dither(fb, T.from, T.to, T.p); }
+    else { bg = ui_mix(T.from, T.to, T.p); gfx_fill_rect(fb, 0, 0, GFX_W, GFX_H, bg); }
     if (T.p < 1) return;
     /* ink a few steps off the light colour: readable, never loud */
     uint16_t ink = T.mode ? 0x3000 : 0xA514;        /* #300000 / #A0A0A0 */
