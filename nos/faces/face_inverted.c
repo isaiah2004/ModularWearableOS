@@ -125,7 +125,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
             int on_white = r >= 191.0f;
             uint16_t bg = on_white ? C_WHITE : C_BG;
             uint16_t dc = on_white ? ui_mix(C_MID, C_INK, ink) : C_MID;
-            dot_disc(fb, UI_CX, 48.0f, 9.0f, ui_mix(bg, dc, lv));
+            dot_disc(fb, UI_CX, 48.0f, 8.0f, ui_mix(bg, dc, lv));
         }
     }
 }

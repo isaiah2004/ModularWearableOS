@@ -88,7 +88,9 @@ void  fk_wake_off(const fk_wake *w, const face_ctx *c, float *dx, float *dy);
 
 /* ---- unread notifications: one dot at (233, 24) ----
  * fk_unread_tick() in tick (fades in/out in 4 colour steps); fk_unread() last in draw.
- * col = C_RED where the face has no other red, else C_PRI (C_INK on white faces).
+ * 8 px, like the widget pages' dot. col = C_RED unless the face shows another red at the
+ * same time (at most one red), then C_PRI (C_INK on white faces): DOT, GLYPH, INVERTED,
+ * LIFE and TAPE always; SEGMENT and SPLIT only while their red state is up.
  * In AOD it is a 6 px C_SEC dot. backing = colour of the disc behind it. */
 void  fk_unread_tick(const face_ctx *c);
 void  fk_unread(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy);

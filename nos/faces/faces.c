@@ -286,7 +286,7 @@ void fk_unread_a(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, 
     float k = s_unread_k * m_clamp(a, 0, 1);
     if (k <= 0.0f) return;
     if (a >= 1.0f) dot_disc(fb, UI_CX + dx, 24.0f + dy, 20.0f, backing);   /* no moat while fading */
-    dot_disc(fb, UI_CX + dx, 24.0f + dy, 9.0f, ui_mix(backing, col, k));
+    dot_disc(fb, UI_CX + dx, 24.0f + dy, 8.0f, ui_mix(backing, col, k));   /* 8 px, as on the widget pages */
 }
 void fk_unread(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy)
 {
