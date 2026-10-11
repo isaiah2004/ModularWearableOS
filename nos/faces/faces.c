@@ -316,6 +316,91 @@ void fk_dots(gfx_fb *fb, int n, int chunk, fk_dot_fn fn, const void *ctx)
     }
 }
 
+/* ---- tapered capsule (watch hands) ----------------------------------------------------
+ * gfx_taper's pixels exactly (the same per-pixel coverage), but each row only walks the
+ * capsule's own x-span instead of its whole bounding box: a hand at 10:08 crosses a box
+ * of ~160 x 110 px of which it covers a sliver, and the box was walked once per stripe. */
+static uint8_t tp_cov(float d)
+{
+    float c = d + 0.5f;
+    if (c <= 0.0f) return 0;
+    if (c >= 1.0f) return 255;
+    return (uint8_t)(c * 255.0f);
+}
+/* clip [*lo, *hi] to the x where k*x + m lies in [a, b] */
+static void tp_clip(float k, float m, float a, float b, float *lo, float *hi)
+{
+    if (k > 1e-6f || k < -1e-6f) {
+        float x0 = (a - m) / k, x1 = (b - m) / k;
+        if (x0 > x1) { float t = x0; x0 = x1; x1 = t; }
+        if (x0 > *lo) *lo = x0;
+        if (x1 < *hi) *hi = x1;
+    } else if (m < a || m > b) { *lo = 1e9f; *hi = -1e9f; }
+}
+static void tp_disc(float cx, float cy, float r, float fy, float *lo, float *hi)
+{
+    float dy = fy - cy, q = r * r - dy * dy;
+    if (q <= 0.0f) return;
+    float h = gfx_fast_sqrt(q);
+    if (cx - h < *lo) *lo = cx - h;
+    if (cx + h > *hi) *hi = cx + h;
+}
+void fk_taper(gfx_fb *fb, float ax, float ay, float bx, float by, float ha, float hb, uint16_t color)
+{
+    float vx = bx - ax, vy = by - ay;
+    float vlen2 = vx * vx + vy * vy;
+    if (fb->rec || vlen2 < 1e-6f) { gfx_taper(fb, ax, ay, bx, by, ha, hb, color); return; }
+    float hmax = ha > hb ? ha : hb;
+    color = gfx_ink(fb, color);
+    float inv = 1.0f / vlen2, rmax = hmax + 1.0f, rmax2 = rmax * rmax;
+    float len = gfx_fast_sqrt(vlen2), nx = -vy / len, ny = vx / len;
+    unsigned n = 0;
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    if (c0 < 0) c0 = 0;
+    if (c1 > GFX_W) c1 = GFX_W;
+    int px0 = ifl((ax < bx ? ax : bx) - rmax), px1 = icl((ax > bx ? ax : bx) + rmax);
+    int py0 = ifl((ay < by ? ay : by) - rmax), py1 = icl((ay > by ? ay : by) + rmax);
+    int lo_row = fb->y_base - fb->oy, hi_row = lo_row + fb->h - 1;
+    if (py0 < lo_row) py0 = lo_row;
+    if (py1 > hi_row) py1 = hi_row;
+    for (int py = py0; py <= py1; py++) {
+        int byi = py + fb->oy - fb->y_base;
+        if ((unsigned)byi >= (unsigned)fb->h) continue;
+        float fy = py + 0.5f;
+        /* the row's x-span: the end discs, and the band |n.(p - a)| <= rmax with
+         * 0 <= t <= 1 (the capsule is convex, so the union is one interval) */
+        float lo = 1e9f, hi = -1e9f;
+        tp_disc(ax, ay, rmax, fy, &lo, &hi);
+        tp_disc(bx, by, rmax, fy, &lo, &hi);
+        float blo = -1e9f, bhi = 1e9f;
+        tp_clip(nx, ny * (fy - ay) - nx * ax, -rmax, rmax, &blo, &bhi);
+        tp_clip(vx * inv, (vy * (fy - ay) - vx * ax) * inv, 0.0f, 1.0f, &blo, &bhi);
+        if (blo <= bhi) { if (blo < lo) lo = blo; if (bhi > hi) hi = bhi; }
+        if (lo > hi) continue;
+        int x0 = ifl(lo - 0.5f) - 1, x1 = icl(hi - 0.5f) + 1;
+        if (x0 < px0) x0 = px0;
+        if (x1 > px1) x1 = px1;
+        uint16_t *row = gfx_row(fb, byi);
+        for (int px = x0; px <= x1; px++) {
+            unsigned bxi = (unsigned)(px + fb->ox);
+            if (bxi < (unsigned)c0 || bxi >= (unsigned)c1) continue;
+            float fx = px + 0.5f;
+            float t = ((fx - ax) * vx + (fy - ay) * vy) * inv;
+            if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+            float ddx = fx - (ax + t * vx), ddy = fy - (ay + t * vy);
+            float d2 = ddx * ddx + ddy * ddy;
+            if (d2 >= rmax2) continue;
+            float hw = ha + (hb - ha) * t;
+            uint8_t a = tp_cov(hw - gfx_fast_sqrt(d2));
+            if (!a) continue;
+            row[bxi] = a == 255 ? color : gfx_blend565(row[bxi], color, a);
+            n++;
+        }
+    }
+    GFX_COST(GFX_COST_LINE, n);
+}
+
 typedef struct { float cx, cy, r, d; int n, lit; uint16_t on, off; } ring_args;
 static void ring_dot(int i, const void *vc, float *x, float *y, float *d, uint16_t *col)
 {

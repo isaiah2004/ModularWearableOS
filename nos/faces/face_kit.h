@@ -59,6 +59,8 @@ float fk_cos(float x);
 /* A set of n anti-aliased dots produced by fn(i): recorded as one damage command per
  * `chunk` consecutive dots (bbox + hash of what they draw), rasterised with
  * dot_disc only where they touch the stripe. d <= 0 skips a dot. */
+/* gfx_taper's pixels, walking only the capsule's span per row (hands) */
+void  fk_taper(gfx_fb *fb, float ax, float ay, float bx, float by, float ha, float hb, uint16_t color);
 typedef void (*fk_dot_fn)(int i, const void *ctx, float *x, float *y, float *d, uint16_t *col);
 void  fk_dots(gfx_fb *fb, int n, int chunk, fk_dot_fn fn, const void *ctx);
 
@@ -102,6 +104,15 @@ float fk_unread_level(const face_ctx *c);            /* current fade level 0..1 
 /* ---- one red per screen: while the REC chip is up (c->rec 0..1, stepped by the shell)
  * a face's own red accents ease to alt (C_PRI; C_INK on white). TAPE keeps its lamp red:
  * there the lamp is the recording light and the chip drops its dot. */
+/* ---- lite draw (the picker, dimmed or sliding): the ghost layer (unlit cells, empty
+ * track, future dots) fades with k = 1 - lite in quarter steps and is skipped below 1/2,
+ * where under the dim it is near black anyway. Returns 1 (as designed) .. 0 (skip). */
+static inline float fk_ghost(const face_ctx *c)
+{
+    float l = c->lite <= 0.0f ? 0.0f : c->lite >= 1.0f ? 1.0f : c->lite;
+    float k = (float)(int)((1.0f - l) * 4.0f + 0.5f) / 4.0f;
+    return k > 0.25f ? k : 0.0f;
+}
 static inline float fk_rec(const face_ctx *c)
 {
     return c->rec <= 0.0f ? 0.0f : c->rec >= 1.0f ? 1.0f : c->rec;

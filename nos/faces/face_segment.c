@@ -362,13 +362,68 @@ static void draw_values(gfx_fb *fb, float a)
 /* sprite_blit for a ring quadrant, copying only the three rings' spans (the rest of the
  * sprite is black over a cleared frame): ~6x fewer pixels, which matters most under an
  * ink dim (wake, picker), where pixels go through gfx_ink - once per run of one colour */
-static void blit_quad(gfx_fb *fb, const sprite *s, int x, int y, unsigned key)
+/* lite draw: per ring, the lit arc (from 12 clockwise, as the sprite holds it) and how
+ * strongly the empty track beyond it shows (1 as designed, 0 skipped) */
+typedef struct { float g; int lit[NRING]; float s[NRING], c[NRING]; } seg_lite;
+
+/* copy n pixels, through the ink dim once per run of one colour */
+static void copy_px(const gfx_fb *fb, uint16_t *d, const uint16_t *p, int m)
+{
+    if (!fb->dim) { memcpy(d, p, (size_t)m * 2); return; }
+    uint16_t lp = 0, ld = gfx_ink(fb, 0);
+    for (int i = 0; i < m; i++) {
+        uint16_t v = p[i];
+        if (v != lp) { lp = v; ld = gfx_ink(fb, v); }
+        d[i] = ld;
+    }
+}
+
+/* the part of span [l0, l1) of row ly (one half of the glass) on ring k's lit arc:
+ * returns [*a, *b); the rest of the span is empty track. The arc's edge is the radial
+ * line at its angle, which runs through the 3 px gap between segments (no pixel of a
+ * segment within 1 px of it), so a row's cut can round freely. */
+static void lit_part(const seg_lite *L, int k, int ly, int l0, int l1, int *a, int *b)
+{
+    int n = L->lit[k];
+    *a = l0; *b = l1;
+    if (n >= NSEG) return;                         /* all lit */
+    if (n <= 0) { *b = l0; return; }               /* none */
+    float th = (float)n * (6.2831853f / NSEG);
+    float up = UI_CY - ((float)ly + 0.5f);          /* row height above the centre */
+    int right = l0 >= UI_CX;
+    float xb = 0;
+    int prefix = 0, all = 0, none = 0;
+    if (right) {
+        if (th >= 3.1415927f) all = 1;
+        else if (up > 0) { if (th >= 1.5707963f) all = 1; else prefix = 1; }
+        else { if (th <= 1.5707963f) none = 1; else prefix = 0; }
+    } else {
+        if (th <= 3.1415927f) none = 1;
+        else if (up < 0) { if (th >= 4.712389f) all = 1; else prefix = 0; }
+        else { if (th <= 4.712389f) none = 1; else prefix = 1; }
+    }
+    if (all) return;
+    if (none) { *b = l0; return; }
+    float cs = L->c[k];
+    xb = UI_CX + (cs > 1e-4f || cs < -1e-4f ? up * L->s[k] / cs : (L->s[k] > 0 ? 1e4f : -1e4f));
+    int e = xb < -1e4f ? -10000 : xb > 1e4f ? 10000 : (int)(xb + 0.5f + 10000.0f) - 10000;
+    if (prefix) { if (e < l1) *b = e < l0 ? l0 : e; }
+    else { if (e > l0) *a = e > l1 ? l1 : e; }
+}
+
+/* sprite_blit for a ring quadrant, copying only the three rings' spans (the rest of the
+ * sprite is black over a cleared frame): ~6x fewer pixels, which matters most under an
+ * ink dim (wake, picker), where pixels go through gfx_ink - once per run of one colour.
+ * Lite (L): the empty track beyond each ring's lit arc fades with L->g, skipped at 0. */
+static void blit_quad(gfx_fb *fb, const sprite *s, int x, int y, unsigned key, const seg_lite *L)
 {
     if (fb->rec || !s->px) { sprite_blit(fb, s, x, y, key); return; }
     int c0 = fb->cx0, c1 = fb->cx1;
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
+    gfx_fb fo = *fb;                                /* the empty track's ink under lite */
+    if (L) nos_ink_dim(&fo, L->g);
     unsigned n = 0;
     for (int r = 0; r < s->h; r++) {
         int ly = y + r, by = ly + fb->oy - fb->y_base;
@@ -384,37 +439,50 @@ static void blit_quad(gfx_fb *fb, const sprite *s, int x, int y, unsigned key)
             if (l1 + fb->ox > c1) l1 = c1 - fb->ox;
             if (l1 <= l0) continue;
             if (!row) row = gfx_row(fb, by);
-            uint16_t *d = row + l0 + fb->ox;
-            const uint16_t *p = src + (l0 - x);
-            int m = l1 - l0;
-            if (fb->dim) {
-                uint16_t lp = 0, ld = gfx_ink(fb, 0);
-                for (int i = 0; i < m; i++) {
-                    uint16_t v = p[i];
-                    if (v != lp) { lp = v; ld = gfx_ink(fb, v); }
-                    d[i] = ld;
-                }
-            } else memcpy(d, p, (size_t)m * 2);
-            n += (unsigned)m;
+            if (!L) {
+                copy_px(fb, row + l0 + fb->ox, src + (l0 - x), l1 - l0);
+                n += (unsigned)(l1 - l0);
+                continue;
+            }
+            int la, lb;
+            lit_part(L, k >> 1, ly, l0, l1, &la, &lb);
+            if (lb > la) { copy_px(fb, row + la + fb->ox, src + (la - x), lb - la); n += (unsigned)(lb - la); }
+            if (L->g > 0.0f) {                      /* the empty track either side of it */
+                if (la > l0) { copy_px(&fo, row + l0 + fb->ox, src + (l0 - x), la - l0); n += (unsigned)(la - l0); }
+                if (l1 > lb && lb >= la) { int b0 = lb > l0 ? lb : l0; copy_px(&fo, row + b0 + fb->ox, src + (b0 - x), l1 - b0); n += (unsigned)(l1 - b0); }
+            }
         }
     }
     GFX_COST(GFX_COST_BLIT, n);
 }
 
-static void blit_rings(gfx_fb *fb, float a)
+static void blit_rings(gfx_fb *fb, float a, float g)
 {
     if (G && G->ok) {
         gfx_fb d = *fb;
         if (a < 1.0f) nos_ink_dim(&d, a);
-        unsigned dk = (unsigned)d.dim * 0x9E37u;            /* the dim is part of the look */
-        for (int q = 0; q < 4; q++) blit_quad(&d, &G->q[q], qx(q), qy(q), G->key[q] + dk);
+        seg_lite L, *lp = 0;
+        if (g < 1.0f) {
+            L.g = g;
+            for (int r = 0; r < NRING; r++) {
+                int nl = 0;
+                while (nl < NSEG && G->drawn[r][nl] != COL_OFF && G->drawn[r][nl]) nl++;
+                L.lit[r] = nl;
+                float th = (float)nl * (6.2831853f / NSEG);
+                L.s[r] = fk_sin(th); L.c[r] = fk_cos(th);
+            }
+            lp = &L;
+        }
+        /* the dim and the lite level are part of the look */
+        unsigned dk = (unsigned)d.dim * 0x9E37u + (unsigned)(g * 4.0f + 0.5f) * 0x51EDu;
+        for (int q = 0; q < 4; q++) blit_quad(&d, &G->q[q], qx(q), qy(q), G->key[q] + dk, lp);
         return;
     }
     /* no PSRAM: segments as dots (cheap, still discrete) */
     for (int r = 0; r < NRING; r++) {
         float sh = s_shown[r];
         float lap1 = sh > NSEG ? NSEG : sh;
-        fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)lap1, ui_dim(C_WHITE, a), ui_dim(COL_OFF, a));
+        fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)lap1, ui_dim(C_WHITE, a), g > 0.0f ? ui_dim(COL_OFF, a * g) : 0);
         if (sh > NSEG) fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)(sh - NSEG), ui_dim(s_red, a), 0);
     }
 }
@@ -434,7 +502,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
          * so no single frame adds more than about a quarter of the light */
         float kr = c->aod ? 0.0f : m_clamp((k - 0.5f) / 0.5f, 0, 1);
         float kd = m_clamp(k / 0.5f, 0, 1);
-        if (kr > 0.0f) blit_rings(fb, kr);
+        if (kr > 0.0f) blit_rings(fb, kr, 1.0f);
         int lit = (int)s_target[0];
         if (lit > NSEG) lit = NSEG;
         aod_ctx A = { dx, dy, 3.0f + 3.0f * kd, lit, kr > 0.0f ? (int)s_target[0] - NSEG : 0,
@@ -468,7 +536,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         fk_unread(fb, c, ui_mix(C_SEC, unread_rest, k), C_BG, dx, dy + 74.0f);
         return;
     }
-    blit_rings(fb, 1.0f);
+    blit_rings(fb, 1.0f, fk_ghost(c));
     float la = e >= 1.0f ? 1.0f : (float)(int)(fk_ease(e * 1.4f) * 4.0f) / 4.0f;
     draw_time(fb, c, 1.0f, 0, 0);
     /* the date row; the battery takes it over while low or charging */

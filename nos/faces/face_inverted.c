@@ -93,6 +93,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     if (ink > 1.0f) ink = 1.0f;
     float fade = open < 1.0f ? 0.0f : steps4(after + 0.25f);
     uint16_t dcol = ui_mix(C_MID, C_INK, ink);
+    fade *= fk_ghost(c);                                /* lite (picker): the unlit cells fade out */
     uint16_t ghost = fade > 0.0f ? ui_mix(C_WHITE, C_GHOSTW, fade) : 0;
     dot_style st = { DOT_FONT_TALL, P, P * 0.8f, dcol, ghost, 1, 1 };
     /* a wake keeps the AOD digits (and their minute morph, if the minute turns now) */

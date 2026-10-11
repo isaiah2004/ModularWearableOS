@@ -100,8 +100,8 @@ static void hand(gfx_fb *fb, float a, float len, float hw, uint16_t col, float c
 {
     float s = fk_sin(a), c = fk_cos(a);
     float x0 = UI_CX + dx, y0 = UI_CY + dy;
-    gfx_taper(fb, x0, y0, x0 + s * len, y0 - c * len, hw, hw, col);
-    if (core > 0.25f) gfx_taper(fb, x0, y0, x0 + s * len, y0 - c * len, core, core, C_BG);
+    fk_taper(fb, x0, y0, x0 + s * len, y0 - c * len, hw, hw, col);
+    if (core > 0.25f) fk_taper(fb, x0, y0, x0 + s * len, y0 - c * len, core, core, C_BG);
 }
 
 /* tick ring: dot i of 60. k = wake morph (0 = AOD: hour dots only, smaller, inset) */

@@ -62,6 +62,7 @@ typedef struct {
     int prev; float whiten;                          /* the old now-dot turning white */
     int skip_now;
     uint16_t red;                                    /* C_RED, easing to C_PRI while recording */
+    float ghost;                                     /* future dots: 1 as designed .. 0 skipped (lite) */
 } life_ctx;
 
 static void grid_dot(int i, const void *vc, float *x, float *y, float *d, uint16_t *col)
@@ -82,9 +83,10 @@ static void grid_dot(int i, const void *vc, float *x, float *y, float *d, uint16
     *d = DOTD;
     if (i == L->prev && L->whiten < 1.0f) { *col = ui_mix(L->red, C_PRI, L->whiten); return; }
     float f = m_clamp(L->past - (float)i, 0, 1);
+    uint16_t fut = L->ghost >= 1.0f ? C_FUT : ui_mix(C_BG, C_FUT, L->ghost);
     if (f >= 1.0f) *col = C_PRI;
-    else if (f <= 0.0f) *col = C_FUT;
-    else *col = ui_mix(C_FUT, C_PRI, (float)(int)(f * 4.0f) / 4.0f);
+    else if (f <= 0.0f) { *col = fut; if (L->ghost <= 0.0f) *d = 0; }
+    else *col = ui_mix(fut, C_PRI, (float)(int)(f * 4.0f) / 4.0f);
 }
 
 /* the present minute's dot: red; while recording (one red per screen) it eases to a
@@ -107,7 +109,8 @@ static void day_dot(int i, const void *vc, float *x, float *y, float *d, uint16_
     *d = i % 6 == 0 ? 9.0f : 6.0f;
     if (i == L->hour && f > 0.0f) { *col = C_WHITE; *d = 11.0f; }
     else if (f >= 1.0f) *col = C_SEC;
-    else *col = C_LINE2;
+    else if (L->ghost <= 0.0f) { *d = 0; *col = 0; return; }
+    else *col = L->ghost >= 1.0f ? C_LINE2 : ui_mix(C_BG, C_LINE2, L->ghost);
     if (L->k < 1.0f) *col = ui_mix(C_BG, *col, (L->k - 0.25f) / 0.75f);
 }
 
@@ -137,7 +140,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     fk_wake_off(&S.w, c, &dx, &dy);
     float k = fk_wake_k(&S.w, c);
     if (c->aod || k < 1.0f) {
-        life_ctx L = { (float)m, m, dx, dy, k, c->dt.hour, (float)c->dt.hour + 1.0f, -1, 1.0f, 0, fk_red(c, C_PRI) };
+        life_ctx L = { (float)m, m, dx, dy, k, c->dt.hour, (float)c->dt.hour + 1.0f, -1, 1.0f, 0, fk_red(c, C_PRI), fk_ghost(c) };
         fk_dots(fb, 24, 4, day_dot, &L);
         fk_dots(fb, COLS * ROWS, COLS, grid_dot, &L);
         float nx = GX0 + (float)(m % COLS) * PITCH + dx, ny = GY0 + (float)(m / COLS) * PITCH + dy;
@@ -176,7 +179,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         grow = 0.4f + 0.6f * fk_ease(since / 0.2f);
         whiten = (float)(int)(since * 30.0f + 1.0f) / 3.0f;
     }
-    life_ctx L = { past, m, 0, 0, 1.0f, c->dt.hour, hpast, m > 0 ? m - 1 : -1, whiten, !draining, fk_red(c, C_PRI) };
+    life_ctx L = { past, m, 0, 0, 1.0f, c->dt.hour, hpast, m > 0 ? m - 1 : -1, whiten, !draining, fk_red(c, C_PRI), fk_ghost(c) };
     fk_dots(fb, 24, 4, day_dot, &L);
     fk_dots(fb, COLS * ROWS, 5, grid_dot, &L);
 
@@ -193,7 +196,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         br = (float)(int)(br * 7.0f + 0.5f) / 7.0f;
         float d = DOTD * (0.78f + 0.22f * br) * grow;
         float nx = GX0 + (float)(m % COLS) * PITCH, ny = GY0 + (float)(m / COLS) * PITCH;
-        if (grow < 1.0f) dot_disc(fb, nx, ny, DOTD, C_FUT);
+        if (grow < 1.0f && L.ghost > 0.0f) dot_disc(fb, nx, ny, DOTD, L.ghost >= 1.0f ? C_FUT : ui_mix(C_BG, C_FUT, L.ghost));
         if (d > 0.5f) now_dot(fb, c, nx, ny, d, L.red);
     }
     fk_unread(fb, c, C_PRI, C_BG, 0, U_DY);          /* y 64: well clear of the day ring's top dot */

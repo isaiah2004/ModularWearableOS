@@ -82,7 +82,8 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     draw_date(fb, c, lab, 0, 0);
     fk_status(fb, c, UI_CX, Y_STAT, lab, UI_CENTER);
 
-    dot_style st = { DOT_FONT_TALL, P, D, C_WHITE, GHOST, 1, 1 };
+    float g = fk_ghost(c);                              /* lite (picker): the lattice fades out */
+    dot_style st = { DOT_FONT_TALL, P, D, C_WHITE, g >= 1.0f ? GHOST : g > 0.0f ? ui_mix(C_BG, GHOST, g) : 0, 1, 1 };
     if (e < 1.0f) {
         dot_text_anim(fb, &st, UI_CX, Y_HH, S.hh.to, 1, m_clamp(e / 0.65f, 0, 1), DOT_REVEAL_RANDOM, 7);
         dot_text_anim(fb, &st, UI_CX, Y_MM, S.mm.to, 1, m_clamp((e - 0.2f) / 0.65f, 0, 1), DOT_REVEAL_RANDOM, 11);

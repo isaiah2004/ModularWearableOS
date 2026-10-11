@@ -62,7 +62,7 @@ static void tick(const face_ctx *c, float dt)
 static const float k_ring_r[] = { 28.0f, 38.0f, 48.0f, 58.0f };
 #define NRINGS 4
 
-typedef struct { float cx, cy, rot, dx, dy; int lit; float k, build; } reel_ctx;
+typedef struct { float cx, cy, rot, dx, dy; int lit; float k, build, ghost; } reel_ctx;
 
 static int ring_n(float r) { return (int)(6.2831853f * r / 11.0f + 0.5f); }
 static int pack_dots(void)
@@ -104,8 +104,9 @@ static void pack_dot(int i, const void *vc, float *x, float *y, float *d, uint16
     b = (float)(int)(b * 4.0f) / 4.0f;
     if (k < 0) { *d = 4.0f * b; *col = C_LINE2; return; }
     int full = j < R->lit;
+    if (!full && R->ghost <= 0.0f) { *d = 0; *col = 0; return; }   /* lite: empty pack skipped */
     *d = (full ? 7.0f : 3.0f) * b;
-    *col = full ? C_SEC : C_LINE2;
+    *col = full ? C_SEC : R->ghost >= 1.0f ? C_LINE2 : ui_mix(C_BG, C_LINE2, R->ghost);
 }
 
 /* hub: a ring of 12 dots with one gap, so its stepping turn reads at a glance */
@@ -157,8 +158,9 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         rot = ((float)(c->dt.second % 12) + q) * 0.5235988f + spin;  /* one turn per 12 s */
     }
     float build = e >= 1.0f ? 1.0f : fk_ease(e / 0.7f);
-    reel_ctx L = { RX_L, RY, rot, dx, dy, lit_l, k, build };
-    reel_ctx R = { RX_R, RY, rot, dx, dy, lit_r, k, build };
+    float g = fk_ghost(c);
+    reel_ctx L = { RX_L, RY, rot, dx, dy, lit_l, k, build, g };
+    reel_ctx R = { RX_R, RY, rot, dx, dy, lit_r, k, build, g };
     reel(fb, &L);
     reel(fb, &R);
     /* the cassette window around the reels */

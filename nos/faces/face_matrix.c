@@ -263,11 +263,17 @@ static void tick(const face_ctx *c, float dt)
 
 /* per-cell look: level colour normally; during the wake morph the digit cells grow from
  * the AOD dot and the grid fades up from black */
-static int cell_look(int i, float k, float *d, uint16_t *col)
+static int cell_look(int i, float k, float g, float *d, uint16_t *col)
 {
     int L = M->lvl[i];
     if (L == L_OFF) return 0;
-    if (k >= 1.0f) { *d = DOTD; *col = k_lvl[L]; return 1; }
+    if (k >= 1.0f) {
+        if (L == 0 && g < 1.0f) {                     /* lite (picker): the ghost grid fades out */
+            if (g <= 0.0f) return 0;
+            *d = DOTD; *col = ui_mix(C_BG, GHOST, g); return 1;
+        }
+        *d = DOTD; *col = k_lvl[L]; return 1;
+    }
     if (M->now[i]) { *d = D_AOD + (DOTD - D_AOD) * k; *col = ui_mix(C_SEC, C_WHITE, k); return 1; }
     if (s_bat_aod && bat_cell(i)) {                   /* the AOD battery bar grows like the digits */
         *d = D_AOD + (DOTD - D_AOD) * k;
@@ -321,7 +327,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         fk_unread(fb, c, C_SEC, C_BG, dx, dy - 2.2f);
         return;
     }
-    float k = s_wake_k;
+    float k = s_wake_k, g = fk_ghost(c);
     fk_view v;
     if (!fb->rec) fk_view_of(fb, &v);
     const float e = DOTD * 0.5f + 1.0f;
@@ -332,7 +338,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
             int c1 = c0 + CHUNK < s_hi[r] ? c0 + CHUNK : s_hi[r];
             if (fb->rec) {
                 unsigned h = gfx_hash_u(0x3A7Bu, (unsigned)(r * 64 + c0));
-                h = gfx_hash_f(gfx_hash_f(gfx_hash_f(h, k), dx), dy);
+                h = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(h, k), g), dx), dy);
                 for (int col = c0; col < c1; col++) h = gfx_hash_u(h, M->lvl[r * N + col] | (M->now[r * N + col] << 4));
                 gfx_rec_cmd(fb, (int)(cell_x(c0) + dx - e), (int)(y - e), (int)(cell_x(c1 - 1) + dx + e) + 1,
                             (int)(y + e) + 1, h);
@@ -341,7 +347,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
             if (cell_x(c1 - 1) + dx + e <= v.x0 || cell_x(c0) + dx - e >= v.x1) continue;
             for (int col = c0; col < c1; col++) {
                 float d; uint16_t cc;
-                if (cell_look(r * N + col, k, &d, &cc)) dot_disc(fb, cell_x(col) + dx, y, d, cc);
+                if (cell_look(r * N + col, k, g, &d, &cc)) dot_disc(fb, cell_x(col) + dx, y, d, cc);
             }
         }
     }
