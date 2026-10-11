@@ -95,7 +95,7 @@ static struct {
     int lt_n, lt_pmin, lt_pmax; float lt_min, lt_max, lt_last;
     int mg_n, mg_moved; float mg_first_f, mg_first_h, mg_sum; hal_mag mg;
     int hr_live, hr_last; hal_hr hr;
-    int touch_hits; float touch_off; int touch_miss; float touch_worst;
+    float touch_off; int touch_miss; float mdx[3], mdy[3];   /* the last 3 near misses */
 } T;
 
 static struct {
@@ -108,7 +108,12 @@ static struct {
     float sw_t, build_t;      /* view switch time; the view's entry build clock */
     int npass, nfail, ntested;
     char hero[12];
+    char cnt_from[12], cnt_to[12]; float cnt_t;   /* "8/13" tested-and-resolved, morphing */
+    int pend; float pend_t;   /* a list fading out before a RE-RUN or the fails-first re-layout */
+    float title_off0, title_t0;   /* the title slides back from this scroll after a reset */
+    int covered;              /* a row page is on top */
 } G;
+enum { PEND_NONE = 0, PEND_RERUN, PEND_RELAYOUT };
 #define VIEW_LIST (-1)
 #define VIEW_NONE (-2)
 
@@ -204,7 +209,7 @@ static void test_rtc(dres *r)
     if (ds == 0) { WHY(D_RTC, "STOPPED"); res(D_RTC, ST_FAIL); }
     else if (fabsf(ds - up) > 1.2f) { WHY(D_RTC, "OFF BY %+.0f s", ds - up); res(D_RTC, ST_FAIL); }
     else if (d1.year < 2020) { WHY(D_RTC, "DATE NOT SET"); res(D_RTC, ST_FAIL); }
-    else { WHY(D_RTC, "+%d s IN %.1f s", ds, up); res(D_RTC, ST_PASS); }
+    else { WHY(D_RTC, "ON TIME"); res(D_RTC, ST_PASS); }
 }
 
 static void test_batt(dres *r)
@@ -323,7 +328,7 @@ static void test_env(dres *r)
     if (!isfinite(e->temp_c) || e->temp_c < -20 || e->temp_c > 60) { WHY(D_ENV, "%.0f\xB0" "C, OUT OF RANGE", e->temp_c); res(D_ENV, ST_FAIL); }
     else if (!isfinite(e->humidity) || e->humidity < 0 || e->humidity > 100) { WHY(D_ENV, "%.0f%% RH, OUT", e->humidity); res(D_ENV, ST_FAIL); }
     else if (!isfinite(e->pressure_hpa) || e->pressure_hpa < 300 || e->pressure_hpa > 1100) { WHY(D_ENV, "%.0f hPa, OUT", e->pressure_hpa); res(D_ENV, ST_FAIL); }
-    else { WHY(D_ENV, "%.1f\xB0  %.0f hPa", e->temp_c, e->pressure_hpa); res(D_ENV, ST_PASS); }
+    else { WHY(D_ENV, "%.1f\xB0" "C  %.0f hPa", e->temp_c, e->pressure_hpa); res(D_ENV, ST_PASS); }
 }
 
 static void test_light(dres *r)
@@ -385,8 +390,12 @@ static void test_hr(dres *r)
 
 /* ======================================================================= the run */
 static void card_reset(void);
+static void card_keep(void);
+static void list_init(void);
+static float dlist_off(void);
 static void go_view(int v)
 {
+    card_keep();                     /* the outgoing card fades as it was, not reset */
     G.pview = G.view;
     G.view = v;
     G.sw_t = nos_t;
@@ -394,7 +403,29 @@ static void go_view(int v)
     card_reset();
 }
 
-static void run_start(int first)
+static void count_text(char *o, int n)
+{
+    int tot = 0, res_n = 0;
+    for (int d = 0; d < D_N; d++) {
+        if (R[d].st == ST_ABSENT) continue;
+        tot++;
+        res_n += resolved(R[d].st);
+    }
+    snprintf(o, (size_t)n, tot >= 10 ? "%2d/%d" : "%d/%d", res_n, tot);   /* fixed width: it morphs */
+}
+static void count_set(int init)
+{
+    char b[12];
+    count_text(b, sizeof b);
+    if (init) { snprintf(G.cnt_to, sizeof G.cnt_to, "%s", b); memcpy(G.cnt_from, G.cnt_to, sizeof G.cnt_from); G.cnt_t = -100; return; }
+    if (!strcmp(b, G.cnt_to)) return;
+    memcpy(G.cnt_from, G.cnt_to, sizeof G.cnt_from);
+    snprintf(G.cnt_to, sizeof G.cnt_to, "%s", b);
+    G.cnt_t = nos_t;
+}
+
+/* mode 1: the screen's entry (build at nos_enter_t); 2: after a RE-RUN fade-out */
+static void run_start(int mode)
 {
     memset(R, 0, sizeof R);
     memset(&T, 0, sizeof T);
@@ -409,10 +440,15 @@ static void run_start(int first)
         } else if (is_card(d)) { R[d].st = ST_WAIT; G.queue[G.nq++] = d; }
         else test_start(d);
     }
-    G.running = 1; G.done = 0;
+    G.running = 1; G.done = 0; G.nfail = 0; G.pend = 0;
     R[G.queue[0]].st = ST_ASK;
-    if (first) { G.pview = VIEW_NONE; G.view = G.queue[0]; G.sw_t = nos_t; G.build_t = nos_enter_t(); card_reset(); }
-    else go_view(G.queue[0]);
+    list_init();
+    count_set(1);
+    G.pview = VIEW_NONE; G.view = G.queue[0]; G.sw_t = nos_t;
+    G.build_t = mode == 1 ? nos_enter_t() : nos_t;
+    G.title_t0 = nos_t;
+    if (mode == 1) G.title_off0 = 0;
+    card_reset();
 }
 
 static void run_finish(void)
@@ -428,11 +464,17 @@ static void run_finish(void)
     char b[64];
     snprintf(b, sizeof b, "DIAG DONE %d/%d PASS, %d FAIL, %d ABSENT", G.npass, G.ntested, G.nfail, D_N - G.ntested);
     hal_log(b);
+    nos_feedback(G.nfail ? FB_ERROR : FB_SUCCESS);
+    if (!G.nfail) return;
+    /* fails go to the top. A list on screen fades out first, then rebuilds in that order */
+    if (G.view == VIEW_LIST && !G.covered && nos_t >= G.build_t) { G.pend = PEND_RELAYOUT; G.pend_t = nos_t; }
+    else list_init();
 }
 
 static void card_restore(void);
 static void run_abort(void)
 {
+    G.pend = 0;
     if (!G.running) return;
     for (int d = 0; d < D_N; d++) if (R[d].st == ST_RUN) power_down(d);
     card_restore();
@@ -446,11 +488,11 @@ static void diag_step(float dt)
 {
     if (!G.running || G.step_frame == nos_frame) return;
     G.step_frame = nos_frame;
-    nos_keep_awake();
-    int open = 0;
+    int open = 0, run = 0;
     for (int d = 0; d < D_N; d++) {
         dres *r = &R[d];
         if (r->st == ST_RUN) {
+            run = 1;
             r->el += dt;
             switch (d) {
             case D_IMU: test_imu(r); break;
@@ -469,6 +511,8 @@ static void diag_step(float dt)
         }
         open += !resolved(r->st);
     }
+    if (run) nos_keep_awake();        /* only a background test holds the screen; a card waits like any page */
+    count_set(0);
     if (!open) run_finish();
 }
 
@@ -528,26 +572,30 @@ static void pill(gfx_fb *fb, float cx, float cy, float w, const char *label, int
 }
 
 /* ======================================================================= cards */
-#define TGT_R 44
+#define TGT_R 44                  /* a hit */
+#define TGT_NEAR 120              /* a miss that counts; farther is a stray touch */
+#define CARD_WAIT_S 30.0f         /* an unanswered card resolves as NO ANSWER */
 static const int TGT[2][2] = { { 150, 150 }, { 316, 380 } };
-static struct {
+typedef struct {
     int tgt;                      /* touch: target in play */
-    float hit_t;
+    float hit_t, miss_t;
     int miss_x, miss_y, missed;
     float play_t;                 /* haptic / speaker: last play */
     int played;
     int pressed;                  /* 1 left / single, 2 right, 3 the icon */
     float flash_t; int flash_b;
-    int held;                     /* button card: the side button is down */
+    int held;                     /* button card: the side button is down (or was, at the press) */
     float t_in;                   /* nos_t the card came up */
-} C;
+} cstate;
+static cstate C, Cp;              /* the card on screen; the one fading out */
 
 static void card_reset(void)
 {
     memset(&C, 0, sizeof C);
-    C.flash_t = -100; C.hit_t = -100; C.play_t = -100;
+    C.flash_t = -100; C.hit_t = -100; C.play_t = -100; C.miss_t = -100;
     C.t_in = nos_t;
 }
+static void card_keep(void) { Cp = C; }
 static void card_restore(void)
 {
     hal_haptic_set_strength(nos_prefs.haptic_strength);
@@ -565,11 +613,12 @@ static void card_play(int d)
     C.play_t = nos_t;
     C.played = 1;
 }
-/* a card resolved: on to the next one, or the list */
+/* a card resolved: a tick, then the next card or the list */
 static void card_done(int d, int st)
 {
     res(d, st);
     card_restore();
+    nos_feedback(FB_TICK);
     G.qi++;
     if (G.qi < G.nq) { R[G.queue[G.qi]].st = ST_ASK; go_view(G.queue[G.qi]); }
     else go_view(VIEW_LIST);
@@ -579,6 +628,11 @@ static void card_tick(void)
     int d = G.view;
     C.held = d == D_BUTTON && hal_button_down();
     if ((d == D_HAPTIC || d == D_SPK) && !C.played && nos_t >= G.build_t + 0.1f) card_play(d);
+    if (nos_t - C.t_in > CARD_WAIT_S) {
+        WHY(d, "NO ANSWER");
+        RD(d, 0, "NO ANSWER IN %.0f s", CARD_WAIT_S);
+        card_done(d, ST_FAIL);
+    }
 }
 
 static int pair_hit(int x, int y)
@@ -604,31 +658,48 @@ static int card_btn(int d, int x, int y)
     return 0;
 }
 
+static const char *dir_word(float dx, float dy)
+{
+    int h = dx < -12 ? -1 : dx > 12 ? 1 : 0, v = dy < -12 ? -1 : dy > 12 ? 1 : 0;
+    static const char *const W[3][3] = { { "UP LEFT", "UP", "UP RIGHT" }, { "LEFT", "", "RIGHT" },
+                                         { "DOWN LEFT", "DOWN", "DOWN RIGHT" } };
+    return W[v + 1][h + 1];
+}
+/* The touch card judges the panel, not the person: the back-swipe edge and stray touches
+ * far from the dot don't count; it fails only on 3 near misses with one consistent offset */
 static void touch_down(int x, int y)
 {
+    if (x < 40) return;                                   /* the back-swipe edge */
     float dx = (float)(x - TGT[C.tgt][0]), dy = (float)(y - TGT[C.tgt][1]);
     float off = sqrtf(dx * dx + dy * dy);
+    if (off > TGT_NEAR) return;                           /* a stray touch */
     if (off <= TGT_R) {
         if (off > T.touch_off) T.touch_off = off;
         C.tgt++; C.hit_t = nos_t; C.missed = 0;
-        nos_feedback(FB_TICK);
         if (C.tgt >= 2) {
-            snprintf(R[D_TOUCH].rd[0], sizeof R[D_TOUCH].rd[0], "LAST TAP %d, %d", x, y);
-            RD(D_TOUCH, 1, "%d MISS%s", T.touch_miss, T.touch_miss == 1 ? "" : "ES");
-            WHY(D_TOUCH, "OFF BY %.0f PX AT MOST", T.touch_off);
+            RD(D_TOUCH, 0, "LAST TAP %d, %d", x, y);
+            RD(D_TOUCH, 1, "%d NEAR MISS%s", T.touch_miss, T.touch_miss == 1 ? "" : "ES");
+            WHY(D_TOUCH, "%.0f PX OFF", T.touch_off);
             card_done(D_TOUCH, ST_PASS);
-        }
+        } else nos_feedback(FB_TICK);
         return;
     }
+    C.miss_x = x; C.miss_y = y; C.missed = 1; C.miss_t = nos_t;
+    int i = T.touch_miss % 3;
+    T.mdx[i] = dx; T.mdy[i] = dy;
     T.touch_miss++;
-    if (off > T.touch_worst) T.touch_worst = off;
-    C.miss_x = x; C.miss_y = y; C.missed = 1;
-    if (T.touch_miss >= 3) {
-        RD(D_TOUCH, 0, "TAP %d, %d FOR %d, %d", x, y, TGT[C.tgt][0], TGT[C.tgt][1]);
-        RD(D_TOUCH, 1, "%d MISS%s", T.touch_miss, T.touch_miss == 1 ? "" : "ES");
-        WHY(D_TOUCH, "MISSED BY %.0f PX", T.touch_worst);
-        card_done(D_TOUCH, ST_FAIL);
+    if (T.touch_miss < 3) return;
+    float mx = (T.mdx[0] + T.mdx[1] + T.mdx[2]) / 3.0f, my = (T.mdy[0] + T.mdy[1] + T.mdy[2]) / 3.0f;
+    float spread = 0;
+    for (int j = 0; j < 3; j++) {
+        float ex = T.mdx[j] - mx, ey = T.mdy[j] - my, e = sqrtf(ex * ex + ey * ey);
+        if (e > spread) spread = e;
     }
+    if (spread > 30.0f) return;                           /* scattered: a person, not an offset */
+    RD(D_TOUCH, 0, "TAP %d, %d FOR %d, %d", x, y, TGT[C.tgt][0], TGT[C.tgt][1]);
+    RD(D_TOUCH, 1, "3 MISSES, OFFSET %+.0f, %+.0f PX", mx, my);
+    WHY(D_TOUCH, "OFF BY %.0f PX %s", sqrtf(mx * mx + my * my), dir_word(mx, my));
+    card_done(D_TOUCH, ST_FAIL);
 }
 
 static int card_input(const nos_input *in)
@@ -639,14 +710,15 @@ static int card_input(const nos_input *in)
             if (in->type != IN_BTN_DOUBLE) {
                 WHY(D_BUTTON, "PRESS SEEN");
                 RD(D_BUTTON, 0, "%s", in->type == IN_BTN_LONG ? "LONG PRESS" : "PRESS AND RELEASE");
+                C.held = 1;                      /* the pressed disc fades out with the card */
                 card_done(D_BUTTON, ST_PASS);
             }
             return 1;
         }
         if (d == D_TOUCH) {          /* the button skips a touch panel that can't be used */
             if (in->type == IN_BTN && nos_t - C.t_in > 0.5f) {
-                RD(D_TOUCH, 0, "%d MISSES BEFORE THE SKIP", T.touch_miss);
-                WHY(D_TOUCH, "SKIPPED");
+                RD(D_TOUCH, 0, "%d NEAR MISSES BEFORE THE SKIP", T.touch_miss);
+                WHY(D_TOUCH, "SKIPPED, NOT TESTED");
                 card_done(D_TOUCH, ST_FAIL);
             }
             return 1;
@@ -656,7 +728,7 @@ static int card_input(const nos_input *in)
     if (nos_t < G.build_t) return 1;          /* the card is still coming in */
     if (d == D_TOUCH) {
         if (in->type == IN_DOWN) touch_down(in->x, in->y);
-        return 1;
+        return in->type != IN_DRAG_START;      /* a swipe from the edge still goes back */
     }
     switch (in->type) {
     case IN_DOWN: C.pressed = card_btn(d, in->x, in->y); return 1;
@@ -666,16 +738,15 @@ static int card_input(const nos_input *in)
         C.pressed = 0;
         if (!b) return 1;
         C.flash_b = b; C.flash_t = nos_t;
-        if (b == 3) { card_play(d); return 1; }
-        nos_feedback(FB_TAP);
+        if (b == 3) { nos_feedback(FB_TAP); card_play(d); return 1; }
         if (d == D_BUTTON) {
             RD(D_BUTTON, 0, "NO PRESS BEFORE THE SKIP");
-            WHY(D_BUTTON, "SKIPPED");
+            WHY(D_BUTTON, "SKIPPED, NOT TESTED");
             card_done(D_BUTTON, ST_FAIL);
         } else {
             int yes = b == 2;
             RD(d, 0, "%s", d == D_HAPTIC ? "HAPTIC_BUZZ  300 ms" : "SFX_NOTIFY");
-            RD(d, 1, "%s %d %%", d == D_HAPTIC ? "STRENGTH" : "VOLUME",
+            RD(d, 1, "%s %d%%", d == D_HAPTIC ? "STRENGTH" : "VOLUME",
                d == D_HAPTIC ? (nos_prefs.haptic_strength > 80 ? nos_prefs.haptic_strength : 80)
                              : (nos_prefs.volume > 60 ? nos_prefs.volume : 60));
             if (d == D_HAPTIC) WHY(d, yes ? "FELT IT" : "NOT FELT");
@@ -688,54 +759,81 @@ static int card_input(const nos_input *in)
     }
 }
 
-static void draw_card(gfx_fb *fb, int d, float bp, float k)
+static int card_index(int d)
+{
+    int qi = 0;
+    while (qi < G.nq - 1 && G.queue[qi] != d) qi++;
+    return qi;
+}
+/* "1 OF 4": stays put across cards; only the digit swaps (out, then in) */
+static void draw_step(gfx_fb *fb, float k)
+{
+    float p = nos_t - G.sw_t;
+    int fading = G.pview >= 0 && G.view >= 0 && p < FADE_S;
+    int cur = card_index(G.view) + 1, old = fading ? card_index(G.pview) + 1 : cur;
+    char tail[12], a[4], b[4];
+    snprintf(tail, sizeof tail, " OF %d", G.nq);
+    snprintf(a, sizeof a, "%d", old);
+    snprintf(b, sizeof b, "%d", cur);
+    int wd = ui_label_width(b), wt = ui_label_width(tail);
+    int x0 = UI_CX - (wd + wt) / 2;
+    ui_label(fb, x0 + wd, 104, tail, ui_dim(C_DIS, k), UI_LEFT);
+    if (fading) {
+        float h = p / FADE_S;
+        if (h < 0.5f) ui_label(fb, x0, 104, a, ui_dim(C_DIS, k * q8(1.0f - h * 2.0f)), UI_LEFT);
+        else ui_label(fb, x0, 104, b, ui_dim(C_DIS, k * q8(h * 2.0f - 1.0f)), UI_LEFT);
+    } else ui_label(fb, x0, 104, b, ui_dim(C_DIS, k), UI_LEFT);
+}
+
+/* `out`: the card is fading out, drawn as it was left (held flash, held button) */
+static void draw_card(gfx_fb *fb, int d, float bp, float k, const cstate *c, int out)
 {
     float tk = q8((bp - 0.3f) / 0.7f) * k;     /* text follows the icon */
-    char step[16];
-    int qi = 0;
-    while (qi < G.nq - 1 && G.queue[qi] != d) qi++;     /* this card's own place, also fading out */
-    snprintf(step, sizeof step, "%d OF %d", qi + 1, G.nq);
-    if (tk > 0) ui_label(fb, UI_CX, 104, step, ui_dim(C_DIS, tk), UI_CENTER);
-    const char *head = "", *body = "";
+    const char *head = "", *hint = "";
     switch (d) {
-    case D_BUTTON: head = "Press the button"; body = "The side button, once"; break;
-    case D_TOUCH: head = "Tap the dots"; body = "Or press the button to skip"; break;
-    case D_HAPTIC: head = "Felt it?"; body = "Tap the bell to buzz again"; break;
-    case D_SPK: head = "Heard it?"; body = "Tap the speaker to play again"; break;
+    case D_BUTTON: head = "Press the button"; hint = "THE SIDE BUTTON, ONCE"; break;
+    case D_TOUCH: head = "Tap the dots"; hint = "OR PRESS THE BUTTON TO SKIP"; break;
+    case D_HAPTIC: head = "Felt it?"; hint = "TAP THE BELL TO REPLAY"; break;
+    case D_SPK: head = "Heard it?"; hint = "TAP THE SPEAKER TO REPLAY"; break;
     }
     if (d == D_TOUCH) {
         for (int i = 0; i < 2; i++) {
             float x = (float)TGT[i][0], y = (float)TGT[i][1];
             float p = q8((bp - i * 0.15f) / 0.5f);
             if (p <= 0) continue;
-            if (i < C.tgt) dot_disc(fb, x, y, 18.0f * p, ui_dim(C_DIS, k));
-            else if (i == C.tgt) {
+            if (i < c->tgt) dot_disc(fb, x, y, 18.0f * p, ui_dim(C_DIS, k));
+            else if (i == c->tgt) {
                 dot_disc(fb, x, y, 30.0f * p, ui_dim(C_WHITE, k));
-                uint16_t rc = fmodf(nos_t - C.t_in, 1.0f) < 0.5f ? C_LINE2 : C_DIS;
+                uint16_t rc = nos_t - c->miss_t < 0.2f ? C_PRI : fmodf(nos_t - c->t_in, 1.0f) < 0.5f ? C_LINE2 : C_DIS;
                 ui_circle_line(fb, x, y, 30.0f, 2.0f, ui_dim(rc, k * p));
             } else ui_circle_line(fb, x, y, 15.0f, 2.0f, ui_dim(C_LINE2, k * p));
         }
-        if (C.missed) dot_disc(fb, (float)C.miss_x, (float)C.miss_y, 8.0f, ui_dim(C_DIS, k));
+        if (c->missed) dot_disc(fb, (float)c->miss_x, (float)c->miss_y, 8.0f, ui_dim(C_DIS, k));
+        float ms = nos_t - c->miss_t;
+        if (ms < 0.8f) ui_label(fb, UI_CX, 330, "MISSED", ui_dim(C_PRI, k * q8((0.8f - ms) / 0.2f)), UI_CENTER);
     } else {
         int icon = DI[d].icon;
-        float since = nos_t - C.play_t;
-        int lit = (d == D_BUTTON && C.held) || (C.pressed == 3 && nos_touch_travel() <= PRESS_TRAVEL) || since < 0.6f;
-        if (lit) dot_disc(fb, UI_CX, 170, 96.0f, ui_dim(C_SURF2, k));
+        float since = nos_t - c->play_t;
+        int press = !out && c->pressed == 3 && nos_touch_travel() <= PRESS_TRAVEL;
+        /* the lit disc behind a playing icon steps off over 2 levels */
+        float lk = press || (d == D_BUTTON && c->held) || since < 0.6f ? 1.0f : since < 0.7f ? 0.5f : 0.0f;
+        if (lk > 0 && !(d == D_BUTTON && c->held)) dot_disc(fb, UI_CX, 170, 96.0f, ui_dim(C_SURF2, k * lk));
         /* playing: one ring stepping outward (discrete, 3 steps) */
         if ((d == D_HAPTIC || d == D_SPK) && since < 0.6f) {
             int s = (int)(since / 0.2f);
             ui_circle_line(fb, UI_CX, 170, 50.0f + s * 4.0f, 2.0f, ui_dim(s == 2 ? C_LINE2 : C_DIS, k));
         }
-        if (d == D_BUTTON && C.held) dot_disc(fb, UI_CX, 170, 96.0f, ui_dim(C_WHITE, k));
-        dot_icon_anim(fb, icon, UI_CX, 170, 4.2f, 3.4f, ui_dim(d == D_BUTTON && C.held ? C_BG : C_WHITE, k),
+        if (d == D_BUTTON && c->held) dot_disc(fb, UI_CX, 170, 96.0f, ui_dim(C_WHITE, k));
+        dot_icon_anim(fb, icon, UI_CX, 170, 4.2f, 3.4f, ui_dim(d == D_BUTTON && c->held ? C_BG : C_WHITE, k),
                       m_clamp(bp / 0.7f, 0, 1), DOT_REVEAL_CENTER);
     }
     if (tk <= 0) return;
     ui_text(fb, UI_F_TITLE, UI_CX, 270, head, ui_dim(C_PRI, tk), UI_CENTER, 0);
-    ui_text(fb, UI_F_BODY, UI_CX, 306, body, ui_dim(C_SEC, tk), UI_CENTER, 0);
-    /* buttons arrive with the text, at full colour; a finger that moves drops the press */
-    int fl = nos_t - C.flash_t < PRESS_FLASH ? C.flash_b : 0;
-    int pr = nos_touch_travel() <= PRESS_TRAVEL ? C.pressed : 0;
+    ui_label(fb, UI_CX, 302, hint, ui_dim(C_SEC, tk), UI_CENTER);
+    /* buttons arrive with the text, at full colour; a finger that moves drops the press;
+     * a card fading out keeps the button that answered it lit */
+    int fl = out ? c->flash_b : nos_t - c->flash_t < PRESS_FLASH ? c->flash_b : 0;
+    int pr = !out && nos_touch_travel() <= PRESS_TRAVEL ? c->pressed : 0;
     if (d == D_BUTTON)
         pill(fb, UI_CX, UI_BTN_Y, UI_BTN_W, "SKIP", BTN_SECONDARY, pr == 1 || fl == 1, k);
     else if (d == D_HAPTIC || d == D_SPK) {
@@ -747,37 +845,52 @@ static void draw_card(gfx_fb *fb, int d, float bp, float k)
 /* ======================================================================= list */
 enum { LK_SUM = 0, LK_HDR, LK_ROW, LK_BTN };
 typedef struct { uint8_t kind, d; const char *label; } lentry;
-static const lentry LE[] = {
-    { LK_SUM, 0, 0 },
-    { LK_HDR, 0, "Board" },
-    { LK_ROW, D_BUTTON, 0 }, { LK_ROW, D_TOUCH, 0 }, { LK_ROW, D_IMU, 0 }, { LK_ROW, D_RTC, 0 },
-    { LK_ROW, D_BATT, 0 }, { LK_ROW, D_SD, 0 },
-    { LK_HDR, 0, "Strap modules" },
-    { LK_ROW, D_HAPTIC, 0 }, { LK_ROW, D_MIC, 0 }, { LK_ROW, D_SPK, 0 }, { LK_ROW, D_GPS, 0 },
-    { LK_ROW, D_LTE, 0 }, { LK_ROW, D_ENV, 0 }, { LK_ROW, D_LIGHT, 0 }, { LK_ROW, D_MAG, 0 },
-    { LK_ROW, D_HR, 0 },
-    { LK_BTN, 0, 0 },
-};
-#define NLE ((int)(sizeof LE / sizeof LE[0]))
+#define NLE_MAX (D_N + 6)
 #define MU 30
 #define MTOP 96
 static int lunits(int k) { return k == LK_SUM ? 6 : k == LK_HDR ? 2 : k == LK_BTN ? 4 : 3; }
 
 static struct {
     ui_list L;
-    int start[NLE];
-    int8_t unit_e[NLE * 6];
+    lentry e[NLE_MAX];
+    int n;
+    int start[NLE_MAX];
+    int8_t unit_e[NLE_MAX * 6];
     int nunits;
     int was_moving;
     int flash_e; float flash_t;
 } DL;
 
+static void add_e(int kind, int d, const char *label) { DL.e[DL.n++] = (lentry){ (uint8_t)kind, (uint8_t)d, label }; }
+/* While testing (or with nothing failed): Board, then Strap modules. With fails: FAILED
+ * first, straight under the summary (the first fail row at y 336), then the passes, then
+ * what isn't connected. */
+static void list_layout(void)
+{
+    DL.n = 0;
+    add_e(LK_SUM, 0, 0);
+    if (G.done && G.nfail) {
+        add_e(LK_HDR, 0, "Failed");
+        for (int d = 0; d < D_N; d++) if (R[d].st == ST_FAIL) add_e(LK_ROW, d, 0);
+        int h = 0;
+        for (int d = 0; d < D_N; d++) if (R[d].st == ST_PASS) { if (!h++) add_e(LK_HDR, 0, "Passed"); add_e(LK_ROW, d, 0); }
+        h = 0;
+        for (int d = 0; d < D_N; d++) if (R[d].st == ST_ABSENT) { if (!h++) add_e(LK_HDR, 0, "Not connected"); add_e(LK_ROW, d, 0); }
+    } else {
+        add_e(LK_HDR, 0, "Board");
+        for (int d = 0; d < D_BOARD_N; d++) add_e(LK_ROW, d, 0);
+        add_e(LK_HDR, 0, "Strap modules");
+        for (int d = D_BOARD_N; d < D_N; d++) add_e(LK_ROW, d, 0);
+    }
+    add_e(LK_BTN, 0, 0);
+}
 static void list_init(void)
 {
+    list_layout();
     int u = 0;
-    for (int e = 0; e < NLE; e++) {
+    for (int e = 0; e < DL.n; e++) {
         DL.start[e] = u;
-        int k = lunits(LE[e].kind);
+        int k = lunits(DL.e[e].kind);
         for (int j = 0; j < k; j++) DL.unit_e[u + j] = (int8_t)e;
         u += k;
     }
@@ -801,42 +914,66 @@ static float lbuild(float y, float *dy)
     return e;
 }
 
-static void draw_summary(gfx_fb *fb, float y, float k)
+/* `built`: draw as fully built (a list fading out) */
+static void draw_summary(gfx_fb *fb, float y, float k, int built)
 {
-    char b[24];
+    char b[40];
+    /* the hero builds straight away when the run was already done as the list came in */
+    int direct = G.done && G.t_done <= G.build_t;
+    float hero_t0 = direct ? G.build_t : G.t_done + FADE_S;
     float p = G.done ? nos_t - G.t_done : -1;
-    if (!G.done || p < FADE_S) {          /* in progress: the state, then it fades for the hero */
+    if (!G.done || (!direct && p < FADE_S && !built)) {   /* in progress: the state, then it fades for the hero */
         float sk = G.done ? q8(1.0f - p / FADE_S) : 1.0f;
-        int nres = 0;
-        for (int d = 0; d < D_N; d++) nres += resolved(R[d].st);
-        ui_state(fb, UI_CX, (int)(y + 50), G.running || G.done ? "TESTING" : "STOPPED", ui_dim(C_SEC, k * sk));
-        snprintf(b, sizeof b, "%d OF %d", nres, D_N);
-        ui_label(fb, UI_CX, (int)(y + 108), b, ui_dim(C_DIS, k * sk), UI_CENTER);
+        ui_state(fb, UI_CX, (int)(y + 44), G.running || G.done ? "TESTING" : "STOPPED", ui_dim(C_SEC, k * sk));
+        /* the count of tested parts in dots, morphing as each resolves */
+        dot_style cs = { DOT_FONT_5X7, UI_SUB_PITCH, UI_SUB_PITCH * 0.8f, ui_dim(C_PRI, k * sk), 0, 1, 1 };
+        float mp = (nos_t - G.cnt_t) / MORPH_S;
+        if (mp >= 1 || strlen(G.cnt_from) != strlen(G.cnt_to)) dot_text_a(fb, &cs, UI_CX, y + 60, G.cnt_to, 1);
+        else dot_text_morph(fb, &cs, UI_CX, y + 60, G.cnt_from, G.cnt_to, 1, mp);
+        /* the long waits say what they wait for */
+        int nrun = 0, first = -1, cards = 0;
+        for (int d = 0; d < D_N; d++) {
+            if (R[d].st == ST_RUN) { if (first < 0) first = d; nrun++; }
+            cards += R[d].st == ST_ASK || R[d].st == ST_WAIT;
+        }
+        if (!cards && first >= 0) {
+            if (nrun == 1) snprintf(b, sizeof b, "%s", DI[first].title);
+            else snprintf(b, sizeof b, "%s +%d", DI[first].title, nrun - 1);
+            ui_label(fb, UI_CX, (int)(y + 108), b, ui_dim(C_DIS, k * sk), UI_CENTER);
+        }
     } else {
-        float bp = m_clamp((p - FADE_S) / UI_ENTRY_S, 0, 1);
+        float bp = built ? 1.0f : m_clamp((nos_t - hero_t0) / UI_ENTRY_S, 0, 1);
         float pitch = hero_pitch(G.hero);
         dot_style hs = { DOT_FONT_TALL, pitch, pitch * 0.8f, ui_dim(C_WHITE, k), 0, 1, 1 };
         float yy = y + 2 + (UI_HEROW_PITCH - pitch) * 9.0f * 0.5f - (pitch > UI_HEROW_PITCH ? 4 : 0);
         if (bp < 1) dot_text_anim(fb, &hs, UI_CX, yy, G.hero, 1, bp, DOT_REVEAL_RANDOM, 29);
         else dot_text_a(fb, &hs, UI_CX, yy, G.hero, 1);
         float tk = k * q8((bp - 0.3f) / 0.7f);
+        int nabs = 0;
+        for (int d = 0; d < D_N; d++) nabs += R[d].st == ST_ABSENT;
         if (tk > 0) {
-            if (!G.nfail) ui_label(fb, UI_CX, (int)(y + 108), "PASSED", ui_dim(C_SEC, tk), UI_CENTER);
-            else {                         /* the screen's one red: the dot by the fail count */
+            if (G.nfail) {                 /* the screen's one red: the dot by the fail count */
                 snprintf(b, sizeof b, "%d FAILED", G.nfail);
                 int w1 = ui_label_width("PASSED"), w2 = ui_label_width(b);
                 int x0 = UI_CX - (w1 + 28 + 16 + w2) / 2;
                 ui_label(fb, x0, (int)(y + 108), "PASSED", ui_dim(C_SEC, tk), UI_LEFT);
                 dot_disc(fb, x0 + w1 + 28 + 4, y + 102, 8.0f, ui_dim(C_RED, tk));
                 ui_label(fb, x0 + w1 + 28 + 16, (int)(y + 108), b, ui_dim(C_PRI, tk), UI_LEFT);
-            }
+            } else if (nabs) {             /* what wasn't there, said quietly */
+                snprintf(b, sizeof b, "%d NOT CONNECTED", nabs);
+                int w1 = ui_label_width("PASSED"), w2 = ui_label_width(b);
+                int x0 = UI_CX - (w1 + 24 + 6 + w2) / 2;
+                ui_label(fb, x0, (int)(y + 108), "PASSED", ui_dim(C_SEC, tk), UI_LEFT);
+                dot_disc(fb, x0 + w1 + 12 + 3, y + 102, 5.0f, ui_dim(C_DIS, tk));
+                ui_label(fb, x0 + w1 + 24 + 6, (int)(y + 108), b, ui_dim(C_DIS, tk), UI_LEFT);
+            } else ui_label(fb, UI_CX, (int)(y + 108), "PASSED", ui_dim(C_SEC, tk), UI_CENTER);
         }
     }
     /* one dot per part, in list order */
     const float pd = 16.0f;
     float x0 = UI_CX - (D_N - 1) * pd * 0.5f - 4.0f;
     for (int d = 0; d < D_N; d++) {
-        float q = q8((nos_t - G.build_t - 0.08f - d * 0.012f) / 0.12f);
+        float q = built ? 1.0f : q8((nos_t - G.build_t - 0.08f - d * 0.012f) / 0.12f);
         if (q <= 0) continue;
         float gx = d >= D_BOARD_N ? 8.0f : 0.0f;
         status_dot(fb, x0 + d * pd + gx, y + 142, 8.0f * q, R[d].st, k);
@@ -866,7 +1003,8 @@ static void draw_row(gfx_fb *fb, int d, float y, float h, int pressed, float k)
     float vk = gap >= ROW_GAP ? 1.0f : q8((gap - 8) / (float)(ROW_GAP - 8));
     float kc = resolved(r->st) ? q8((nos_t - r->t_done) / 0.2f) : 0;   /* result cross-fade */
     if (r->st == ST_ABSENT && r->t_done < 0) kc = 1;
-    status_dot(fb, tx - 19, cy - 11, 10, r->st, k);
+    if (G.done && G.nfail && r->t_done < G.t_done) kc = 1;            /* re-laid out: settled */
+    status_dot(fb, tx - 19, cy - 11, r->st == ST_FAIL ? 12 : 10, r->st, k);
     int absent = r->st == ST_ABSENT;
     ui_text(fb, UI_F_BODY, tx, cap_base(UI_F_BODY, cy - 11), DI[d].name, ui_dim(absent ? C_SEC : C_PRI, k), UI_LEFT, 0);
     int sb = cap_base(UI_F_LABEL, cy + 17);
@@ -878,7 +1016,7 @@ static void draw_row(gfx_fb *fb, int d, float y, float h, int pressed, float k)
         uint16_t sc = r->st == ST_FAIL ? C_PRI : absent ? C_DIS : C_SEC;
         dlab(fb, tx, sb, r->why, ui_dim(sc, k * kc), UI_LEFT);
         if (val && vk > 0) dlab(fb, vx, cap_base(UI_F_LABEL, cy - 11), val,
-                                ui_dim(r->st == ST_FAIL ? C_PRI : C_SEC, k * kc * vk), UI_RIGHT);
+                                ui_dim(r->st == ST_FAIL ? C_PRI : C_DIS, k * kc * vk), UI_RIGHT);
     }
     chevron(fb, rx, cy - 11, ui_dim(C_DIS, k));
 }
@@ -891,30 +1029,31 @@ static int list_pressed(void)
     return -1;
 }
 
-static void draw_list(gfx_fb *fb, float k)
+static void draw_list(gfx_fb *fb, float k, int built)
 {
     float off = dlist_off();
-    int pe = list_pressed();
-    for (int e = 0; e < NLE; e++) {
-        float h = (float)(lunits(LE[e].kind) * MU);
+    int pe = k >= 1 ? list_pressed() : -1;
+    for (int e = 0; e < DL.n; e++) {
+        float h = (float)(lunits(DL.e[e].kind) * MU);
         float y = MTOP + DL.start[e] * MU - off;
         if (y + h < 0) continue;
         if (y > GFX_H) break;
-        float bdy, bk = lbuild(y, &bdy);
+        float bdy = 0, bk = built ? 1.0f : lbuild(y, &bdy);
         if (bk <= 0) continue;
         y += floorf(bdy + 0.5f);
         float cy = y + h * 0.5f;
         float rk = qfade(cy) * bk * k;
-        const lentry *le = &LE[e];
-        if (le->kind == LK_SUM) draw_summary(fb, y, rk);
+        const lentry *le = &DL.e[e];
+        if (le->kind == LK_SUM) draw_summary(fb, y, rk, built);
         else if (le->kind == LK_HDR) {
             int lx, rx;
             row_cols(cy, &lx, &rx);
             ui_label(fb, lx, (int)(y + h - 16), le->label, ui_dim(C_DIS, rk), UI_LEFT);
-        } else if (le->kind == LK_ROW) draw_row(fb, le->d, y, h, e == pe && k >= 1, rk);
+        } else if (le->kind == LK_ROW) draw_row(fb, le->d, y, h, e == pe, rk);
         else if (G.done && rk > 0) {
-            float bk2 = q8((nos_t - G.t_done - FADE_S) / UI_ENTRY_S);
-            if (bk2 > 0) pill(fb, UI_CX, y + 60, UI_BTN_W, "RE-RUN", BTN_SECONDARY, e == pe && k >= 1, rk * bk2);
+            float hero_t0 = G.t_done <= G.build_t ? G.build_t : G.t_done + FADE_S;
+            float bk2 = built ? 1.0f : q8((nos_t - hero_t0) / UI_ENTRY_S);
+            if (bk2 > 0) pill(fb, UI_CX, y + 60, UI_BTN_W, "RE-RUN", BTN_SECONDARY, e == pe, rk * bk2);
         }
     }
     float content = (float)(MTOP + DL.nunits * MU + DL.L.bottom_pad);
@@ -934,17 +1073,18 @@ static int list_input(const nos_input *in)
         int u = fy >= 0 ? (int)(fy / MU) : -1;
         if (u < 0 || u >= DL.nunits) return 1;
         int e = DL.unit_e[u];
-        if (LE[e].kind == LK_ROW) {
+        if (DL.e[e].kind == LK_ROW) {
             DL.flash_e = e; DL.flash_t = nos_t;
             nos_feedback(FB_TAP);
-            row_open = LE[e].d;
+            row_open = DL.e[e].d;
             nos_push(&scr_diag_row, TX_PUSH);
-        } else if (LE[e].kind == LK_BTN && G.done) {
+        } else if (DL.e[e].kind == LK_BTN && G.done) {
             float by = MTOP + DL.start[e] * MU - dlist_off() + 60;
             if (fabsf(in->y - by) <= UI_BTN_H * 0.5f + 4 && fabsf(in->x - (float)UI_CX) <= UI_BTN_W * 0.5f + 10) {
                 DL.flash_e = e; DL.flash_t = nos_t;
                 nos_feedback(FB_TAP);
-                run_start(0);
+                G.pend = PEND_RERUN; G.pend_t = nos_t;   /* the list fades out as it is, then the run restarts */
+                G.title_off0 = dlist_off();
             }
         }
         return 1;
@@ -956,6 +1096,7 @@ static int list_input(const nos_input *in)
 static void diag_enter(void)
 {
     if (G.inited && nos_revealed()) {          /* back from a row page: keep it all */
+        G.covered = 0;
         if (G.running) {
             if (R[D_GPS].st == ST_RUN) hal_gps_enable(1);
             if (R[D_HR].st == ST_RUN) hal_hr_enable(1);
@@ -963,14 +1104,15 @@ static void diag_enter(void)
         }
         return;
     }
-    list_init();
     G.inited = 1;
+    G.covered = 0;
     G.step_frame = 0;
     run_start(1);
 }
+/* leaving (back, home, or the screen going to sleep / AOD): the run stops cleanly */
 static void diag_leave(void)
 {
-    if (nos_leaving_covered()) return;        /* covered (a row page): the tests carry on */
+    if (nos_leaving_covered()) { G.covered = 1; return; }   /* a row page: the tests carry on */
     run_abort();
     G.inited = 0;
 }
@@ -978,34 +1120,58 @@ static void diag_tick(float dt)
 {
     ui_list_tick(&DL.L, dt);
     diag_step(dt);
-    if (G.view != VIEW_LIST) card_tick();
-}
-static void draw_view(gfx_fb *fb, int v, float bp, float k)
-{
-    if (v == VIEW_LIST) draw_list(fb, k);
-    else if (v >= 0) draw_card(fb, v, bp, k);
+    if (G.pend && nos_t - G.pend_t >= FADE_S) {
+        if (G.pend == PEND_RERUN) run_start(2);
+        else {                                   /* fails to the top: rebuild in the new order */
+            G.title_off0 = dlist_off(); G.title_t0 = nos_t;
+            list_init();
+            G.build_t = nos_t;
+            G.pend = 0;
+        }
+    }
+    if (!G.pend && G.view != VIEW_LIST && G.view >= 0) card_tick();
 }
 static void diag_draw(gfx_fb *fb)
 {
-    ui_title(fb, "DIAGNOSTICS", G.view == VIEW_LIST ? dlist_off() : 0);
+    /* the title rides the list scroll; after a reset it slides in from where it was */
+    float ts = G.view == VIEW_LIST || G.pend ? dlist_off() : 0;
+    float tp = (nos_t - G.title_t0) / UI_ENTRY_S;
+    if (tp < 1 && !G.pend) ts = fmaxf(ts, fminf(G.title_off0, 48.0f) * (1.0f - q8(tp)));
+    ui_title(fb, "DIAGNOSTICS", ts);
+    if (G.pend) { draw_list(fb, q8(1.0f - (nos_t - G.pend_t) / FADE_S), 1); return; }
     float p = nos_t - G.sw_t;
-    if (G.pview != VIEW_NONE && p < FADE_S) { draw_view(fb, G.pview, 1, q8(1.0f - p / FADE_S)); return; }
-    draw_view(fb, G.view, m_clamp((nos_t - G.build_t) / UI_ENTRY_S, 0, 1), 1);
+    int fading = G.pview != VIEW_NONE && p < FADE_S;
+    if (G.view >= 0 || (fading && G.pview >= 0)) {
+        float sk = 1;
+        if (fading && G.view < 0) sk = q8(1.0f - p / FADE_S);          /* the last card: the step goes too */
+        else if (!fading && G.pview == VIEW_NONE) sk = q8((m_clamp((nos_t - G.build_t) / UI_ENTRY_S, 0, 1) - 0.3f) / 0.7f);
+        if (sk > 0) draw_step(fb, sk);
+    }
+    if (fading) {
+        if (G.pview == VIEW_LIST) draw_list(fb, q8(1.0f - p / FADE_S), 1);
+        else draw_card(fb, G.pview, 1, q8(1.0f - p / FADE_S), &Cp, 1);
+        return;
+    }
+    float bp = m_clamp((nos_t - G.build_t) / UI_ENTRY_S, 0, 1);
+    if (G.view == VIEW_LIST) draw_list(fb, 1, 0);
+    else draw_card(fb, G.view, bp, 1, &C, 0);
 }
 static int diag_input(const nos_input *in)
 {
     int btn = in->type == IN_BTN || in->type == IN_BTN_LONG || in->type == IN_BTN_DOUBLE;
+    if (G.pend) return !btn;
     /* touches wait out a view cross-fade; the side button never does (the button card
      * takes a press from its first frame) */
     if (!btn && nos_t - G.sw_t < FADE_S && G.pview != VIEW_NONE) return 1;
     if (G.view != VIEW_LIST) return card_input(in);
-    if (in->type == IN_BTN || in->type == IN_BTN_LONG || in->type == IN_BTN_DOUBLE) return 0;
+    if (btn) return 0;
     return list_input(in);
 }
 
 const nos_screen scr_diag = { "DIAG", diag_enter, diag_leave, diag_tick, diag_draw, diag_input, 0 };
 
 /* ======================================================================= row page */
+int set_modules_absent_copy(uint32_t ext, const char **body, const char **foot);   /* set_modules.c */
 static struct { int d; float t0; } RV;
 
 static void row_enter(void)
@@ -1021,37 +1187,37 @@ static void row_draw(gfx_fb *fb)
     const dres *r = &R[d];
     float bp = m_clamp((nos_t - RV.t0) / UI_ENTRY_S, 0, 1);
     ui_title(fb, DI[d].title, 0);
-    int absent = r->st == ST_ABSENT;
-    dot_icon_anim(fb, DI[d].icon, UI_CX, 132, 3.6f, 2.9f, absent ? C_DIS : C_WHITE, m_clamp(bp / 0.7f, 0, 1),
-                  DOT_REVEAL_CENTER);
+    if (r->st == ST_ABSENT) {                  /* the OS's standard absent state, as Modules */
+        const char *body = "", *foot = 0;
+        set_modules_absent_copy(DI[d].ext, &body, &foot);
+        if (d == D_SD) ui_absent(fb, DOT_ICON_SD, "No card", body, 0, bp);
+        else ui_absent(fb, DI[d].icon, "Not connected", body, foot, bp);
+        return;
+    }
+    dot_icon_anim(fb, DI[d].icon, UI_CX, 126, 3.6f, 2.9f, C_WHITE, m_clamp(bp / 0.7f, 0, 1), DOT_REVEAL_CENTER);
     float tk = q8((bp - 0.3f) / 0.7f);
     if (tk <= 0) return;
     float kc = resolved(r->st) ? q8((nos_t - r->t_done) / 0.2f) : 0;
-    if (absent && r->t_done < 0) kc = 1;
-    if (kc < 1) {
-        const char *s = r->st == ST_ASK || r->st == ST_WAIT ? "WAITING" : "TESTING";
-        ui_state(fb, UI_CX, 198, s, ui_dim(C_SEC, tk * (1.0f - kc)));
-    }
+    if (kc < 1) ui_state(fb, UI_CX, 214, r->st == ST_ASK || r->st == ST_WAIT ? "WAITING" : "TESTING",
+                         ui_dim(C_SEC, tk * (1.0f - kc)));
     if (kc > 0) {
-        const char *s = r->st == ST_PASS ? "PASS" : r->st == ST_FAIL ? "FAIL" : "NO MODULE";
-        char b[24];
-        snprintf(b, sizeof b, "[ %s ]", s);
-        uint16_t c = absent ? C_DIS : C_PRI;
-        ui_label(fb, UI_CX, 198, b, ui_dim(c, tk * kc), UI_CENTER);
+        /* the verdict in words, the one size up; the reason only when it failed */
+        const char *s = r->st == ST_PASS ? "Passed" : "Failed";
+        ui_text(fb, UI_F_TITLE, UI_CX, 220, s, ui_dim(C_PRI, tk * kc), UI_CENTER, 0);
         if (r->st == ST_FAIL) {                 /* the one red on the page */
-            int w = ui_label_width(b);
-            dot_disc(fb, UI_CX - w * 0.5f - 16, 192, 10, ui_dim(C_RED, tk * kc));
+            int w = ui_text_width(UI_F_TITLE, s, 0);
+            dot_disc(fb, UI_CX - w * 0.5f - 18, 210, 10, ui_dim(C_RED, tk * kc));
+            dlab(fb, UI_CX, 250, r->why, ui_dim(C_SEC, tk * kc), UI_CENTER);
         }
-        if (!absent || strcmp(r->why, "NO MODULE")) dlab(fb, UI_CX, 228, r->why, ui_dim(C_SEC, tk * kc), UI_CENTER);
     }
-    ui_label(fb, UI_CX, 268, "READING", ui_dim(C_DIS, tk), UI_CENTER);
+    ui_label(fb, UI_CX, 286, "READING", ui_dim(C_DIS, tk), UI_CENTER);
     if (kc > 0 && (r->rd[0][0] || r->rd[1][0])) {
         for (int i = 0; i < 2; i++)
-            if (r->rd[i][0]) dlab(fb, UI_CX, 292 + i * 24, r->rd[i], ui_dim(C_PRI, tk * kc), UI_CENTER);
-    } else dlab(fb, UI_CX, 292, UI_NONE, ui_dim(C_DIS, tk), UI_CENTER);
-    ui_label(fb, UI_CX, 352, "CHECK", ui_dim(C_DIS, tk), UI_CENTER);
+            if (r->rd[i][0]) dlab(fb, UI_CX, 310 + i * 24, r->rd[i], ui_dim(C_PRI, tk * kc), UI_CENTER);
+    } else dlab(fb, UI_CX, 310, UI_NONE, ui_dim(C_DIS, tk), UI_CENTER);
+    ui_label(fb, UI_CX, 370, "CHECK", ui_dim(C_DIS, tk), UI_CENTER);
     for (int i = 0; i < 2; i++)
-        if (DI[d].check[i]) dlab(fb, UI_CX, 376 + i * 24, DI[d].check[i], ui_dim(C_SEC, tk), UI_CENTER);
+        if (DI[d].check[i]) dlab(fb, UI_CX, 394 + i * 22, DI[d].check[i], ui_dim(C_SEC, tk), UI_CENTER);
 }
 static int row_input(const nos_input *in) { (void)in; return 0; }
 static const nos_screen scr_diag_row = { "DIAG_ROW", row_enter, 0, row_tick, row_draw, row_input, 0 };

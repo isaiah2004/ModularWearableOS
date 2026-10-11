@@ -53,24 +53,6 @@ typedef struct {
     const char *wire;      /* bring-up: the part and exactly where it is expected */
 } mod_info;
 
-/* The OS's short module names, for "NO <NAME>" notes, toasts and states (rows say NO
- * MODULE, pages "Not connected" + "<NAME> MODULE"). Toast-sized: NO + up to 8 caps. */
-const char *set_modules_short(uint32_t ext)
-{
-    switch (ext) {
-    case EXT_HAPTIC: return "HAPTICS";
-    case EXT_MIC: return "MIC";
-    case EXT_SPEAKER: return "SPEAKER";
-    case EXT_GPS: return "GPS";
-    case EXT_LTE: return "LTE";
-    case EXT_ENV: return "CLIMATE";
-    case EXT_LIGHT: return "LIGHT SENSOR";   /* notes only: too long for a toast */
-    case EXT_MAG: return "COMPASS";
-    case EXT_HR: return "HR SENSOR";
-    default: return "MODULE";
-    }
-}
-
 static const mod_info MI[M_COUNT] = {
     { "Touch", "I2C 0x38  FT3168", "TOUCH", DOT_ICON_HAND, 0, "", "", "" },
     { "Motion", "I2C 0x6B  QMI8658", "MOTION", DOT_ICON_LEVEL, 0, "", "", "" },
@@ -228,6 +210,18 @@ static void presence(int ok[M_COUNT], int imu_ok, const hal_storage *sd, const h
     ok[M_BATT] = rail_mv(pw) > 0;
     ok[M_WIFI] = hal_status(HAL_FEAT_WIFI) == HAL_CONN_UP;
     ok[M_BLE] = hal_status(HAL_FEAT_BLE) != HAL_CONN_OFF;
+}
+
+/* Diagnostics' absent row page: the same body and footer as here (SD: ext 0) */
+int set_modules_absent_copy(uint32_t ext, const char **body, const char **foot)
+{
+    for (int m = 0; m < M_COUNT; m++)
+        if (ext ? MI[m].ext == ext : m == M_SD) {
+            if (body) *body = MI[m].body;
+            if (foot) *foot = MI[m].foot[0] ? MI[m].foot : 0;
+            return 1;
+        }
+    return 0;
 }
 
 int set_modules_online(int *total)

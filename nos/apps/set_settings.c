@@ -43,7 +43,6 @@ void nos_host_power(int mode);   /* firmware/sim: 0 sleep, 1 restart, 2 power of
 /* set_modules.c: one module count and one page per part, shared with Settings */
 int  set_modules_online(int *total);
 void set_modules_open_sd(void);      /* the SD card page, titled STORAGE */
-const char *set_modules_short(uint32_t ext);   /* module short names: "SPEAKER", "HAPTICS" ... */
 /* exported to Modules: the radio pages (Modules adds its bus line) */
 void set_settings_open_radio(int bt, int from_modules);
 
@@ -451,11 +450,11 @@ static int tog_absent(int id)
     return id == I_GPS ? !(m & EXT_GPS) : id == I_SOUND ? !(m & EXT_SPEAKER) :
            id == I_HAPTICS ? !(m & EXT_HAPTIC) : 0;
 }
-/* "NO <NAME>" from the OS's one short-name table (set_modules.c) */
+/* "NO <NAME>" from the OS's one short-name table (ui_module_short) */
 static const char *no_module(uint32_t ext)
 {
     static char b[24];
-    snprintf(b, sizeof b, "NO %s", set_modules_short(ext));
+    snprintf(b, sizeof b, "NO %s", ui_module_short(ext));
     return b;
 }
 static const char *tog_missing(int id) { return no_module(id == I_GPS ? EXT_GPS : id == I_SOUND ? EXT_SPEAKER : EXT_HAPTIC); }
