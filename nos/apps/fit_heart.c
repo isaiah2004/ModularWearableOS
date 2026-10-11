@@ -635,7 +635,7 @@ static void draw_absent(gfx_fb *fb, float oy, float k)
     if (!nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, (int)oy)) return;
     float p = H.prev_mode < 0 ? m_clamp(H.t / 0.4f, 0, 1) : k;
     ui_absent(&sub, DOT_ICON_HEART, "Not connected", "Add the strap to measure BPM and SpO2",
-              "HR MODULE", p);
+              "HR SENSOR MODULE", p);
 }
 
 static void draw_nocontact(gfx_fb *fb, float oy, float k)

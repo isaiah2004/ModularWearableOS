@@ -26,8 +26,14 @@ const nos_app nos_app_list[] = {
 };
 const int nos_app_count = sizeof nos_app_list / sizeof nos_app_list[0];
 
+/* the last app opened from anywhere (launcher, widget, notification, CC): a double
+ * press reopens it */
+static const nos_screen *s_last_app;
+const nos_screen *nos_last_app(void) { return s_last_app; }
+
 void nos_open(const nos_screen *s, int from_x, int from_y)
 {
+    for (int i = 0; i < nos_app_count; i++) if (nos_app_list[i].scr == s) { s_last_app = s; break; }
     nos_iris_x = from_x;
     nos_iris_y = from_y;
     nos_iris_seed = 0;
