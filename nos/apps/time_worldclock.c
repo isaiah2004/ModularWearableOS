@@ -19,6 +19,8 @@
 void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float lit, uint16_t on, uint16_t off);
 
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
+#define PRESS_HOLD 0.1f          /* a pressed control shows >= 0.1 s (3 frames) even on a quick tap */
+static float ink_k(float k) { return qz(m_clamp((k - 0.6f) / 0.4f, 0, 1), 3); }
 
 /* Standard offsets plus the city's daylight-saving rule. */
 enum { DST_NONE = 0, DST_EU, DST_US, DST_AU, DST_NZ, DST_EG };
@@ -167,11 +169,15 @@ static void upper(char *d, int n, const char *s)
 
 /* ================================================================ list */
 static ui_list s_list;
-static struct { float t0, build; ctime_t t[NFAV]; int empty_pressed; } WL;
+static struct {
+    float t0, build; ctime_t t[NFAV];
+    int empty_pressed; float empty_t0, empty_unpress;
+    int tap_i; float tap_t;      /* the tapped row stays pressed PRESS_HOLD past the tap */
+} WL;
 extern const nos_screen scr_wc_pick, scr_wc_detail;
 static int s_detail_city;
 
-#define WL_ROW 96
+#define WL_ROW 90                /* the list-row pitch (§8) */
 #define WL_TOP 108
 
 static void wl_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
@@ -180,16 +186,18 @@ static void wl_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
     if (p <= 0) return;
     float f = fade * qz(m_clamp(p * 2, 0, 1), 8);
     float cy = y + h * 0.5f;
-    if (i >= F.n) {                                       /* edit row */
-        float w = 200;
-        ui_rrect(fb, UI_CX - w / 2, y + 4, w, h - 8, (h - 8) / 2.0f, ui_dim(pressed ? C_SURF3 : C_SURF2, f));
-        ui_label(fb, UI_CX, (int)cy + 6, "EDIT CITIES", ui_dim(C_PRI, f), UI_CENTER);
+    pressed = pressed || (i == WL.tap_i && nos_t - WL.tap_t < PRESS_HOLD);
+    if (i >= F.n) {                                       /* edit row: a pill, pressed C_SEC + black ink */
+        float w = UI_BTN_W;
+        ui_rrect(fb, UI_CX - w / 2, y + 4, w, h - 8, (h - 8) / 2.0f, ui_dim(pressed ? C_SEC : C_SURF2, f));
+        ui_label(fb, UI_CX, (int)cy + 6, "EDIT CITIES", pressed ? C_BG : ui_dim(C_PRI, f), UI_CENTER);
         return;
     }
     /* fixed-width card (the notification card: 344 wide, r 40, SURF2); content on fixed
      * anchors, so rows near the bezel are clipped by the glass, never squeezed */
     const ctime_t *t = &WL.t[i];
-    ui_rrect(fb, UI_CX - 172.0f, y + 4, 344.0f, h - 8.0f, 40, ui_dim(pressed ? C_SURF3 : C_SURF2, f));
+    uint16_t card = pressed ? C_LINE2 : C_SURF2;          /* a pressed card: C_LINE2 */
+    ui_rrect(fb, UI_CX - 172.0f, y + 4, 344.0f, h - 8.0f, 40, ui_dim(card, f));
     char nm[24], rel[32], tm[12];
     upper(nm, sizeof nm, k_city[F.idx[i]].name);
     fmt_rel(rel, sizeof rel, t);
@@ -197,7 +205,7 @@ static void wl_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
     int day = is_day(t);
     float ax = UI_CX - 150.0f;
     dot_disc(fb, ax, cy - 12, 9, ui_dim(day ? C_WHITE : C_DIS, f));
-    if (!day) dot_disc(fb, ax, cy - 12, 5, ui_dim(pressed ? C_SURF3 : C_SURF2, f));  /* hollow = night */
+    if (!day) dot_disc(fb, ax, cy - 12, 5, ui_dim(card, f));  /* hollow = night */
     ui_label(fb, (int)ax + 16, (int)cy - 5, nm, ui_dim(C_PRI, f), UI_LEFT);
     ui_label(fb, (int)ax + 16, (int)cy + 23, rel, ui_dim(C_SEC, f), UI_LEFT);
     dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, ui_dim(day ? C_WHITE : C_PRI, f), 0, 1, 1 };
@@ -206,6 +214,7 @@ static void wl_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
 }
 static void wl_tap(int i)
 {
+    WL.tap_i = i; WL.tap_t = nos_t;
     if (i >= F.n) { nos_push(&scr_wc_pick, TX_PUSH); return; }
     s_detail_city = F.idx[i];
     nos_push(&scr_wc_detail, TX_PUSH);
@@ -218,8 +227,8 @@ static void wl_enter(void)
     s_list.margin = 28;
     msc_jump(&s_list.sc, m_clamp(keep, s_list.sc.min, s_list.sc.max));
     s_list.bar_t = -10;
-    WL.empty_pressed = 0;
-    if (!nos_revealed()) { WL.t0 = nos_t + UI_ENTRY_S * 0.55f; WL.build = 0; }   /* pop reveal: no rebuild */
+    WL.empty_pressed = 0; WL.empty_unpress = 0; WL.tap_i = -1;
+    if (!nos_revealed()) { WL.t0 = nos_enter_t(); WL.build = 0; }   /* pop reveal: no rebuild */
     for (int i = 0; i < F.n; i++) city_time(F.idx[i], &WL.t[i]);
 }
 static void wl_tick(float dt)
@@ -228,6 +237,7 @@ static void wl_tick(float dt)
     for (int i = 0; i < F.n; i++) city_time(F.idx[i], &WL.t[i]);
     ui_list_tick(&s_list, dt);
     WL.build = m_clamp((nos_t - WL.t0) / 0.4f, 0, 1);
+    if (WL.empty_unpress > 0 && nos_t >= WL.empty_unpress) { WL.empty_pressed = 0; WL.empty_unpress = 0; }
 }
 #define WL_EMPTY_BTN ((float)UI_BTN_Y)
 static void wl_draw(gfx_fb *fb)
@@ -238,9 +248,10 @@ static void wl_draw(gfx_fb *fb)
         float k = m_clamp(WL.build * 2 - 0.6f, 0, 1);
         if (k <= 0) return;
         /* primary button builds by scale steps at full colour (no grey fade-up) */
-        float sc = 0.72f + 0.28f * qz(k, 8), w = UI_BTN_W * sc, h = UI_BTN_H * sc;
-        ui_rrect(fb, UI_CX - w / 2, WL_EMPTY_BTN - h / 2, w, h, h / 2, WL.empty_pressed ? C_SEC : C_WHITE);
-        if (k >= 1) ui_label(fb, UI_CX, (int)WL_EMPTY_BTN + 6, "ADD CITIES", C_BG, UI_CENTER);
+        float sc = 0.72f + 0.28f * qz(k, 8), w = UI_BTN_W * sc, h = UI_BTN_H * sc, ik = ink_k(qz(k, 8));
+        uint16_t fill = WL.empty_pressed ? C_SEC : C_WHITE;
+        ui_rrect(fb, UI_CX - w / 2, WL_EMPTY_BTN - h / 2, w, h, h / 2, fill);
+        if (ik > 0) ui_label(fb, UI_CX, (int)WL_EMPTY_BTN + 6, "ADD CITIES", ui_mix(fill, C_BG, ik), UI_CENTER);
         return;
     }
     ui_title(fb, "WORLD CLOCK", ui_list_offset(&s_list));
@@ -250,9 +261,10 @@ static int wl_input(const nos_input *in)
 {
     if (F.n == 0) {
         int hit = fabsf((float)(in->x - UI_CX)) < UI_BTN_W / 2 + 4 && fabsf(in->y - WL_EMPTY_BTN) < 48;
-        if (in->type == IN_DOWN) { WL.empty_pressed = hit; return hit; }
-        if (in->type == IN_UP || in->type == IN_DRAG_START) { WL.empty_pressed = 0; return 0; }
-        if (in->type == IN_TAP && hit) { WL.empty_pressed = 0; nos_feedback(FB_TAP); nos_push(&scr_wc_pick, TX_PUSH); return 1; }
+        if (in->type == IN_DOWN) { WL.empty_pressed = hit; WL.empty_t0 = nos_t; WL.empty_unpress = 0; return hit; }
+        if (in->type == IN_DRAG_START) { WL.empty_pressed = 0; WL.empty_unpress = 0; return 0; }
+        if (in->type == IN_UP) { if (WL.empty_pressed) WL.empty_unpress = fmaxf(nos_t, WL.empty_t0 + PRESS_HOLD); return 0; }
+        if (in->type == IN_TAP && hit) { nos_feedback(FB_TAP); nos_push(&scr_wc_pick, TX_PUSH); return 1; }
         return 0;
     }
     return ui_list_input(&s_list, in);
@@ -262,7 +274,9 @@ const nos_screen scr_worldclock = { "WORLD CLOCK", wl_enter, 0, wl_tick, wl_draw
 /* ============================================================== chooser */
 static ui_list s_pick;
 static float s_pick_t0, s_pick_build;
-#define PK_ROW 80
+static int   s_pk_tap_i = -1;
+static float s_pk_tap_t;
+#define PK_ROW 90                /* the list-row pitch (§8) */
 #define PK_TOP 100
 
 static void pk_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
@@ -276,6 +290,7 @@ static void pk_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
     ui_row_span(cy, 26, &cx0, &cx1);
     if (cx0 > UI_CX - 170) cx0 = UI_CX - 170;
     if (cx1 < UI_CX + 170) cx1 = UI_CX + 170;
+    pressed = pressed || (i == s_pk_tap_i && nos_t - s_pk_tap_t < PRESS_HOLD);
     if (pressed) ui_rrect(fb, (float)cx0, y + 4, (float)(cx1 - cx0), h - 8.0f, 32, ui_dim(C_SURF2, f));
     char nm[24], off[16];
     upper(nm, sizeof nm, k_city[i].name);
@@ -294,6 +309,7 @@ static void pk_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
 }
 static void pk_tap(int i)
 {
+    s_pk_tap_i = i; s_pk_tap_t = nos_t;
     int k = fav_find(i);
     if (k >= 0) {
         for (int j = k; j < F.n - 1; j++) F.idx[j] = F.idx[j + 1];
@@ -301,7 +317,7 @@ static void pk_tap(int i)
         nos_feedback(FB_TOGGLE_OFF);
     } else if (F.n >= NFAV) {
         nos_feedback(FB_ERROR);
-        nos_toast("Up to 4 cities");
+        nos_toast("List full");
         return;
     } else {
         F.idx[F.n++] = (uint8_t)i;
@@ -315,7 +331,7 @@ static void pk_enter(void)
     ui_list_init(&s_pick, NCITY, PK_ROW, PK_TOP, pk_row, pk_tap);
     s_pick.margin = 26;
     s_pick.bar_t = -10;
-    s_pick_t0 = nos_t; s_pick_build = 0;
+    s_pick_t0 = nos_enter_t(); s_pick_build = 0; s_pk_tap_i = -1;
 }
 static void pk_tick(float dt)
 {
@@ -338,7 +354,7 @@ static struct { float t0, build; ctime_t t; char name[24], rel[32], tm[12]; } D;
 
 static void dt_enter(void)
 {
-    D.t0 = nos_t; D.build = 0;
+    D.t0 = nos_enter_t(); D.build = 0;
     city_time(s_detail_city, &D.t);
     upper(D.name, sizeof D.name, k_city[s_detail_city].name);
     fmt_rel(D.rel, sizeof D.rel, &D.t);

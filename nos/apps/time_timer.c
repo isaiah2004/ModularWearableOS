@@ -28,6 +28,16 @@ int time_alarm_next(int *h, int *m, int *in_min);
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
 static float ease_o(float t) { t = m_clamp(t, 0, 1); float u = 1 - t; return 1 - u * u * u; }
 
+/* Pressed controls show for >= 0.1 s (3 frames) even on a quick tap (§8): IN_UP sets
+ * the release time, tick clears the press then. */
+#define PRESS_HOLD 0.1f
+/* An outgoing view draws complete at one flat alpha (s_alpha < 1 only inside that
+ * draw), so every frame of a departure carries a visible step. */
+static float s_alpha = 1.0f;
+static uint16_t AL(uint16_t c) { return s_alpha < 1.0f ? ui_dim(c, s_alpha) : c; }
+/* the label of a pill that builds by scale: in from k 0.6, 3 steps of fill -> ink */
+static float ink_k(float k) { return qz(m_clamp((k - 0.6f) / 0.4f, 0, 1), 3); }
+
 /* A dot ring like dot_ring() (n dots from 12 o'clock clockwise, [0, lit) lit with a
  * partially grown end dot, others `off`, 0 = skip). One damage command per dot
  * (dot_ring records up to 16 arc chunks): a draining tip repaints one dot. */
@@ -400,7 +410,7 @@ static float preset_cy(int i) { return 170.0f + (i / 3) * 100.0f; }
 #define BTN_Y     344.0f
 #define BTN_SIDE  104.0f
 #define DIG_TOP   184.0f
-#define OUT_S     0.15f            /* outgoing view departs over 150 ms, then the new one builds */
+#define OUT_S     0.15f            /* outgoing view: linear 150 ms fade (5 frames), then the new one builds */
 #define PAUSE_S   0.15f
 
 /* A white primary surface builds in by scale steps at full colour (a dimmed white would
@@ -413,7 +423,9 @@ static struct {
     int view, prev, out_on;
     float out_t0, build_t0, build, out;
     int dig_keep;           /* digits already on screen (opened from the widget): no reveal */
-    int pressed;
+    int title_keep;         /* view change: TIMER is the title of both, it stays */
+    int pressed, out_pressed;   /* out_pressed: the tapped control, held while its view leaves */
+    float press_t0, unpress_at;
     tm_t tm;
     dgm dig;
     float lit;              /* ring lit dots (fractional), frozen once cancelled */
@@ -431,12 +443,15 @@ static void timer_load_digits(int morph)
 /* fresh: no outgoing phase (the screen just appeared) */
 static void timer_set_view(int v, int fresh)
 {
-    if (!fresh && v != T.view) { T.prev = T.view; T.out_on = 1; T.out_t0 = nos_t; T.build_t0 = nos_t + OUT_S; }
-    else { T.out_on = 0; T.build_t0 = nos_t; }
+    if (!fresh && v != T.view) {
+        T.prev = T.view; T.out_on = 1; T.out_t0 = nos_t; T.build_t0 = nos_t + OUT_S;
+        T.out_pressed = T.pressed;
+        T.title_keep = 1;
+    } else { T.out_on = 0; T.build_t0 = nos_t; }
     T.view = v;
     T.build = 0;
     T.out = T.out_on ? 1.0f : 0.0f;
-    T.pressed = P_NONE;
+    T.pressed = P_NONE; T.unpress_at = 0;
     if (v == V_RUN) {
         timer_load_digits(0);
         tm_total_label(T.total_lbl, sizeof T.total_lbl, T.tm.total);
@@ -454,8 +469,10 @@ static void timer_enter(void)
     /* revealed by a pop it was already on screen (ticked under the transition): keep it */
     if (nos_t - s_timer_seen < 0.2f && T.view == v) return;
     timer_set_view(v, 1);
-    T.dig_keep = v == V_RUN;       /* a running timer's digits are already known (widget) */
-    T.build_t0 = nos_t + UI_ENTRY_S * 0.55f;   /* iris entries build from ~40% of the iris */
+    /* a running timer's digits, title and total are already on screen (widget) */
+    T.dig_keep = v == V_RUN;
+    T.title_keep = 0;
+    T.build_t0 = nos_enter_t();
 }
 
 static void timer_tick(float dt)
@@ -465,8 +482,9 @@ static void timer_tick(float dt)
     tm_get(&T.tm);
     if (T.view == V_RUN && T.tm.state == 0) { T.dig_keep = 0; timer_set_view(V_SETUP, 0); }
     else if (T.view == V_SETUP && T.tm.state != 0) { T.dig_keep = 0; timer_set_view(V_RUN, 0); }
-    T.out = T.out_on ? 1.0f - bezier_ease(&EASE_ACCEL, m_clamp((nos_t - T.out_t0) / OUT_S, 0, 1)) : 0;
-    if (T.out_on && T.out <= 0) T.out_on = 0;
+    T.out = T.out_on ? 1.0f - m_clamp((nos_t - T.out_t0) / OUT_S, 0, 1) : 0;   /* linear */
+    if (T.out_on && nos_t - T.out_t0 >= OUT_S) T.out_on = 0;
+    if (T.unpress_at > 0 && nos_t >= T.unpress_at) { T.pressed = P_NONE; T.unpress_at = 0; }
     T.build = m_clamp((nos_t - T.build_t0) / (T.view == V_RUN ? 0.42f : 0.36f), 0, 1);
     if (T.view == V_RUN && T.tm.state != 0) {
         timer_load_digits(1);
@@ -480,84 +498,98 @@ static void timer_tick(float dt)
     }
 }
 
-static void timer_draw_setup(gfx_fb *fb, float b)
+/* pressed pills: C_SEC with black ink (the ui_button rule; C_SURF3 is invisible) */
+static void timer_draw_setup(gfx_fb *fb, float b, int pressed)
 {
-    if (b > 0) ui_title(fb, "TIMER", (1 - qz(m_clamp(b * 2, 0, 1), 6)) * 60);
     for (int i = 0; i < 6; i++) {
         float p = m_stagger(b, i, 7, 0.5f);
         if (p <= 0) continue;
         float cx = preset_cx(i), cy = preset_cy(i);
-        uint16_t fill = T.pressed == i ? C_SURF3 : C_SURF2;
-        ui_rrect(fb, cx - PILL_W / 2, cy - PILL_H / 2, PILL_W, PILL_H, PILL_H / 2, ui_dim(fill, qz(m_clamp(p * 2, 0, 1), 8)));
+        int pr = pressed == i;
+        ui_rrect(fb, cx - PILL_W / 2, cy - PILL_H / 2, PILL_W, PILL_H, PILL_H / 2,
+                 AL(ui_dim(pr ? C_SEC : C_SURF2, qz(m_clamp(p * 2, 0, 1), 8))));
         char t[4];
         snprintf(t, sizeof t, "%d", k_presets[i]);
-        dot_style st = { DOT_FONT_TALL, 4.4f, 3.5f, C_WHITE, 0, 1, 1 };
+        dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, AL(pr ? C_BG : C_WHITE), 0, 1, 1 };
         dot_text_anim(fb, &st, cx, cy - 27, t, 1, p, DOT_REVEAL_RANDOM, (unsigned)i);
-        if (p >= 0.6f) ui_label(fb, (int)cx, (int)cy + 31, "MIN", C_SEC, UI_CENTER);
+        if (p >= 0.6f) ui_label(fb, (int)cx, (int)cy + 31, "MIN", AL(pr ? C_BG : C_SEC), UI_CENTER);
     }
     float p = m_stagger(b, 6, 7, 0.5f);
     if (p > 0) {
-        uint16_t fill = T.pressed == P_CUSTOM ? C_SURF3 : C_SURF2;
+        int pr = pressed == P_CUSTOM;
         ui_rrect(fb, UI_CX - CUSTOM_W / 2, CUSTOM_CY - PILL_H / 2, CUSTOM_W, PILL_H, PILL_H / 2,
-                 ui_dim(fill, qz(m_clamp(p * 2, 0, 1), 8)));
-        if (p >= 0.5f) ui_label(fb, UI_CX, (int)CUSTOM_CY + 6, "CUSTOM", C_PRI, UI_CENTER);
+                 AL(ui_dim(pr ? C_SEC : C_SURF2, qz(m_clamp(p * 2, 0, 1), 8))));
+        if (p >= 0.5f) ui_label(fb, UI_CX, (int)CUSTOM_CY + 6, "CUSTOM", AL(pr ? C_BG : C_PRI), UI_CENTER);
     }
 }
 
-static void timer_draw_run(gfx_fb *fb, float b, float dig_b)
+/* dig_b: build of what the widget already showed (digits, total label) */
+static void timer_draw_run(gfx_fb *fb, float b, float dig_b, int pressed)
 {
     float lit = T.lit * ease_o(b);
-    if (b > 0) ui_title(fb, "TIMER", (1 - qz(m_clamp(b * 2, 0, 1), 6)) * 60);
-    /* ring: lit dots drain anticlockwise toward 12; the last 10 s tip turns red */
+    /* ring: lit dots drain anticlockwise toward 12. The last 10 s: a full red tip at the
+     * exact fractional angle, white dots behind it (a partially sized end dot blinked at
+     * 10 Hz on short timers); only the final dot's span shrinks it away. */
     if (T.last10) {
-        float fl = floorf(lit);
-        time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, fl, C_WHITE, C_LINE2);
-        float f = qz(lit - fl, 32);
-        float a = 6.2831853f * fl / 60.0f;     /* always recorded: a steady command count */
+        float tip = qz(fmaxf(lit - 1.0f, 0), 16);
+        time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, ceilf(tip), AL(C_WHITE), AL(C_LINE2));
+        float a = 6.2831853f * tip / 60.0f;
+        float d = (RING_D + 1.0f) * (lit >= 1 ? 1.0f : qz(gfx_fast_sqrt(fmaxf(lit, 0)), 8));
         dot_disc(fb, UI_CX + RING_R * gfx_fast_sin(a), UI_CY - RING_R * gfx_fast_cos(a),
-                 f > 0 ? RING_D * gfx_fast_sqrt(f) + 1.0f : 0.05f, C_RED);
+                 d > 0.05f ? d : 0.05f, AL(C_RED));        /* always recorded: a steady command count */
     } else
-        time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, lit, C_WHITE, C_LINE2);
+        time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, lit, AL(C_WHITE), AL(C_LINE2));
 
     /* label: the total, crossfading to [ PAUSED ] through the pause step */
     float pz = qz(T.pz, 6);
-    float lp = qz(m_clamp(b * 3 - 0.6f, 0, 1), 8);
+    float lp = qz(m_clamp(dig_b * 3 - 0.6f, 0, 1), 8);
     if (lp > 0) {
-        if (pz < 0.5f) ui_label(fb, UI_CX, 150, T.total_lbl, ui_dim(C_SEC, lp * (1 - pz * 2)), UI_CENTER);
-        else ui_state(fb, UI_CX, 150, "PAUSED", ui_dim(C_SEC, lp * (pz * 2 - 1)));
+        if (pz < 0.5f) ui_label(fb, UI_CX, 150, T.total_lbl, AL(ui_dim(C_SEC, lp * (1 - pz * 2))), UI_CENTER);
+        else ui_state(fb, UI_CX, 150, "PAUSED", AL(ui_dim(C_SEC, lp * (pz * 2 - 1))));
     }
     /* hero of 5-8 glyphs (MM:SS, H:MM:SS): the house pitch 8 */
-    dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, ui_mix(C_WHITE, C_SEC, pz), 0, 1, 1 };
-    dgm_draw(fb, &T.dig, &st, UI_CX, DIG_TOP, 0.28f, T.last10 ? 3 : 0, C_DIS, dig_b);
+    dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, AL(ui_mix(C_WHITE, C_SEC, pz)), 0, 1, 1 };
+    dgm_draw(fb, &T.dig, &st, UI_CX, DIG_TOP, 0.28f, T.last10 ? 3 : 0, AL(C_DIS), dig_b);
 
-    /* controls */
+    /* controls: pressed discs are C_SEC with black ink */
     float bp = m_clamp(b * 2.5f - 1.0f, 0, 1);
     if (bp <= 0) return;
     float k = qz(bp, 8);
     float lx = UI_CX - BTN_SIDE, rx = UI_CX + BTN_SIDE, sy = BTN_Y - 6;
-    ui_circle(fb, lx, sy, 40, ui_dim(T.pressed == P_CANCEL ? C_SURF3 : C_SURF2, k));
-    dot_icon(fb, DOT_ICON_CROSS, lx, sy, 2.6f, 2.1f, ui_dim(C_PRI, k));
-    uint16_t disc = T.pressed == P_PAUSE ? C_SEC : C_WHITE;
-    ui_circle(fb, UI_CX, BTN_Y, 46 * build_scale(bp), disc);
+    int pc = pressed == P_CANCEL, pa = pressed == P_ADD;
+    ui_circle(fb, lx, sy, 40, AL(ui_dim(pc ? C_SEC : C_SURF2, k)));
+    dot_icon(fb, DOT_ICON_CROSS, lx, sy, 2.6f, 2.1f, AL(pc ? C_BG : ui_dim(C_PRI, k)));
+    uint16_t disc = pressed == P_PAUSE ? C_SEC : C_WHITE;
+    ui_circle(fb, UI_CX, BTN_Y, 46 * build_scale(bp), AL(disc));
     /* pause <-> play: one icon fades into the disc, the other fades out of it */
     float ik = pz < 0.5f ? 1 - pz * 2 : pz * 2 - 1;
     if (k >= 1) dot_icon(fb, pz >= 0.5f ? DOT_ICON_PLAY : DOT_ICON_PAUSE, UI_CX + (pz >= 0.5f ? 2 : 0), BTN_Y,
-                         3.0f, 2.4f, ui_mix(disc, C_BG, ik));
-    ui_circle(fb, rx, sy, 40, ui_dim(T.pressed == P_ADD ? C_SURF3 : C_SURF2, k));
-    dot_style ps = { DOT_FONT_5X7, 2.8f, 2.3f, ui_dim(C_PRI, k), 0, 1, 0 };
+                         3.0f, 2.4f, AL(ui_mix(disc, C_BG, ik)));
+    ui_circle(fb, rx, sy, 40, AL(ui_dim(pa ? C_SEC : C_SURF2, k)));
+    dot_style ps = { DOT_FONT_5X7, 2.8f, 2.3f, AL(pa ? C_BG : ui_dim(C_PRI, k)), 0, 1, 0 };
     dot_text_a(fb, &ps, rx, sy - 17, "+1", 1);
-    ui_text(fb, UI_F_SMALL, (int)rx, (int)sy + 21, "MIN", ui_dim(C_SEC, k), UI_CENTER, 1);
+    ui_text(fb, UI_F_SMALL, (int)rx, (int)sy + 21, "MIN", AL(pa ? C_BG : ui_dim(C_SEC, k)), UI_CENTER, 1);
 }
 
-static void timer_draw_view(gfx_fb *fb, int v, float b, float dig_b)
+static void timer_draw_view(gfx_fb *fb, int v, float b, float dig_b, int pressed)
 {
-    if (v == V_SETUP) timer_draw_setup(fb, b);
-    else timer_draw_run(fb, b, dig_b);
+    if (v == V_SETUP) timer_draw_setup(fb, b, pressed);
+    else timer_draw_run(fb, b, dig_b, pressed);
 }
 static void timer_draw(gfx_fb *fb)
 {
-    if (T.out_on) { timer_draw_view(fb, T.prev, T.out, T.out); return; }
-    timer_draw_view(fb, T.view, T.build, T.dig_keep ? 1.0f : T.build);
+    /* both views are titled TIMER: the title builds on entry only */
+    float tb = T.title_keep || T.dig_keep ? 1.0f : T.build;
+    if (tb > 0) ui_title(fb, "TIMER", (1 - qz(m_clamp(tb * 2, 0, 1), 6)) * 60);
+    if (T.out_on) {
+        /* the old view leaves complete, at one flat alpha in 6 steps, the tapped control
+         * still pressed; the new one builds after it */
+        s_alpha = qz(T.out, 6);
+        timer_draw_view(fb, T.prev, 1, 1, T.out_pressed);
+        s_alpha = 1;
+        return;
+    }
+    timer_draw_view(fb, T.view, T.build, T.dig_keep ? 1.0f : T.build, T.pressed);
 }
 
 static int timer_hit(int x, int y)
@@ -580,12 +612,15 @@ extern const nos_screen scr_timer_pick;
 static int timer_input(const nos_input *in)
 {
     switch (in->type) {
-    case IN_DOWN: T.pressed = timer_hit(in->x, in->y); return T.pressed != P_NONE;
-    case IN_DRAG_START: T.pressed = P_NONE; return 0;
-    case IN_UP: T.pressed = P_NONE; return 0;
+    case IN_DOWN:
+        T.pressed = timer_hit(in->x, in->y); T.press_t0 = nos_t; T.unpress_at = 0;
+        return T.pressed != P_NONE;
+    case IN_DRAG_START: T.pressed = P_NONE; T.unpress_at = 0; return 0;
+    case IN_UP:
+        if (T.pressed != P_NONE) T.unpress_at = fmaxf(nos_t, T.press_t0 + PRESS_HOLD);
+        return 0;
     case IN_TAP: {
         int h = timer_hit(in->x, in->y);
-        T.pressed = P_NONE;
         if (h == P_NONE) return 0;
         if (h >= 0 && h < 6) {
             nos_feedback(FB_TAP);
@@ -621,7 +656,7 @@ const nos_screen scr_timer = { "TIMER", timer_enter, 0, timer_tick, timer_draw, 
 #define PK_CY   192.0f
 #define PK_DX   72.0f
 #define PK_BTN_Y ((float)UI_BTN_Y)
-static struct { float build_t0, build; int pressed; int target; int mins, secs; int init; } PK;
+static struct { float build_t0, build; int pressed; int target; int mins, secs; int init; float press_t0, unpress_at; } PK;
 enum { PKP_NONE = 0, PKP_START };
 
 static void pick_enter(void)
@@ -629,7 +664,7 @@ static void pick_enter(void)
     if (!PK.init) { PK.mins = 10; PK.secs = 0; PK.init = 1; }
     tdrum_setup(0, 0, 99, PK.mins, 64, 8, 4);
     tdrum_setup(1, 0, 59, PK.secs, 64, 8, 4);
-    PK.build_t0 = nos_t; PK.build = 0; PK.target = -1; PK.pressed = PKP_NONE;
+    PK.build_t0 = nos_enter_t(); PK.build = 0; PK.target = -1; PK.pressed = PKP_NONE; PK.unpress_at = 0;
 }
 static void pick_leave(void) { PK.mins = tdrum_value(0); PK.secs = tdrum_value(1); }
 static void pick_tick(float dt)
@@ -639,6 +674,7 @@ static void pick_tick(float dt)
     tdrum_tick(0, dt);
     tdrum_tick(1, dt);
     tm_poll();
+    if (PK.unpress_at > 0 && nos_t >= PK.unpress_at) { PK.pressed = PKP_NONE; PK.unpress_at = 0; }
     PK.build = m_clamp((nos_t - PK.build_t0) / 0.36f, 0, 1);
 }
 static int pick_secs(void) { return tdrum_value(0) * 60 + tdrum_value(1); }
@@ -657,7 +693,8 @@ static void pick_draw(gfx_fb *fb)
         float sc = build_scale(lp), w = UI_BTN_W * sc, h = UI_BTN_H * sc;
         uint16_t fill = !ok ? C_SURF : PK.pressed == PKP_START ? C_SEC : C_WHITE;
         ui_rrect(fb, UI_CX - w / 2, PK_BTN_Y - h / 2, w, h, h / 2, fill);
-        if (lp >= 1) ui_label(fb, UI_CX, (int)PK_BTN_Y + 6, "START", ok ? C_BG : C_DIS, UI_CENTER);
+        float ik = ink_k(lp);
+        if (ik > 0) ui_label(fb, UI_CX, (int)PK_BTN_Y + 6, "START", ui_mix(fill, ok ? C_BG : C_DIS, ik), UI_CENTER);
     }
 }
 static int pick_input(const nos_input *in)
@@ -666,7 +703,7 @@ static int pick_input(const nos_input *in)
         PK.target = -1; PK.pressed = PKP_NONE;
         if (tdrum_hit(0, in->x, in->y)) PK.target = 0;
         else if (tdrum_hit(1, in->x, in->y)) PK.target = 1;
-        else if (in_rect(in->x, in->y, UI_CX, PK_BTN_Y, UI_BTN_W + 8, 96)) PK.pressed = PKP_START;
+        else if (in_rect(in->x, in->y, UI_CX, PK_BTN_Y, UI_BTN_W + 8, 96)) { PK.pressed = PKP_START; PK.press_t0 = nos_t; PK.unpress_at = 0; }
         if (PK.target >= 0) return tdrum_input(PK.target, in);
         return PK.pressed != PKP_NONE;
     }
@@ -675,9 +712,12 @@ static int pick_input(const nos_input *in)
         if (in->type == IN_UP) PK.target = -1;
         return r;
     }
-    if (in->type == IN_DRAG_START || in->type == IN_UP) { PK.pressed = PKP_NONE; return 0; }
+    if (in->type == IN_DRAG_START) { PK.pressed = PKP_NONE; PK.unpress_at = 0; return 0; }
+    if (in->type == IN_UP) {
+        if (PK.pressed != PKP_NONE) PK.unpress_at = fmaxf(nos_t, PK.press_t0 + PRESS_HOLD);
+        return 0;
+    }
     if (in->type == IN_TAP && in_rect(in->x, in->y, UI_CX, PK_BTN_Y, UI_BTN_W + 8, 96)) {
-        PK.pressed = PKP_NONE;
         int s = pick_secs();
         if (s <= 0) { nos_feedback(FB_ERROR); return 1; }
         nos_feedback(FB_TAP);
@@ -692,12 +732,15 @@ const nos_screen scr_timer_pick = { "TIMER SET", pick_enter, pick_leave, pick_ti
 /* ================================================================ ringing */
 #define RG_BTN_Y 316.0f
 #define RG_BTN_W 124.0f
-static struct { float t0, build; int pressed; uint32_t total; int haptic_on; } RG;
+static struct {
+    float t0, build; int pressed; uint32_t total; int haptic_on; float press_t0, unpress_at;
+    int fire; float fire_at;     /* a quick tap acts once its press has shown PRESS_HOLD */
+} RG;
 enum { RGP_NONE = 0, RGP_STOP, RGP_ADD };
 
 static void ring_enter(void)
 {
-    RG.t0 = nos_t; RG.build = 0; RG.pressed = RGP_NONE;
+    RG.t0 = nos_enter_t(); RG.build = 0; RG.pressed = RGP_NONE; RG.unpress_at = 0; RG.fire = RGP_NONE;
     tm_t t; tm_get(&t); RG.total = t.total;
     /* the timer service runs the alarm haptics/sound (svc ringer); only the local
      * fallback (link-stub svc) buzzes from here */
@@ -713,10 +756,13 @@ static void ring_leave(void)
 {
     if (RG.haptic_on) { hal_haptic_stop(); hal_sfx_stop(); RG.haptic_on = 0; }
 }
+static void ring_act(int h);
 static void ring_tick(float dt)
 {
     tm_poll();
     RG.build = m_clamp((nos_t - RG.t0) / 0.4f, 0, 1);
+    if (RG.fire != RGP_NONE && nos_t >= RG.fire_at) { int h = RG.fire; RG.fire = RGP_NONE; ring_act(h); return; }
+    if (RG.unpress_at > 0 && nos_t >= RG.unpress_at) { RG.pressed = RGP_NONE; RG.unpress_at = 0; }
     nos_keep_awake();
     /* stop buzzing after a minute; the screen stays until dismissed */
     if (RG.haptic_on && nos_t - RG.t0 > 60.0f) { hal_haptic_stop(); RG.haptic_on = 0; }
@@ -730,12 +776,17 @@ static void ring_draw(gfx_fb *fb)
     dot_text_anim(fb, &st, UI_CX, 168, "00:00", 1, RG.build, DOT_REVEAL_CENTER, 3);
     float k = qz(m_clamp(RG.build * 2 - 0.6f, 0, 1), 8);
     if (k <= 0) return;
+    /* both build by scale steps at full colour; pressed = C_SEC with black ink */
     float lx = UI_CX - 6 - RG_BTN_W / 2, rx = UI_CX + 6 + RG_BTN_W / 2;
-    float sc = build_scale(k), w = RG_BTN_W * sc, h = UI_BTN_H * sc;
-    ui_rrect(fb, lx - w / 2, RG_BTN_Y - h / 2, w, h, h / 2, RG.pressed == RGP_STOP ? C_SEC : C_WHITE);
-    if (k >= 1) ui_label(fb, (int)lx, (int)RG_BTN_Y + 6, "STOP", C_BG, UI_CENTER);
-    ui_rrect(fb, rx - RG_BTN_W / 2, RG_BTN_Y - 44, RG_BTN_W, 88, 44, ui_dim(RG.pressed == RGP_ADD ? C_SURF3 : C_SURF2, k));
-    ui_label(fb, (int)rx, (int)RG_BTN_Y + 6, "+1 MIN", ui_dim(C_PRI, k), UI_CENTER);
+    float sc = build_scale(k), w = RG_BTN_W * sc, h = UI_BTN_H * sc, ik = ink_k(k);
+    uint16_t f1 = RG.pressed == RGP_STOP ? C_SEC : C_WHITE;
+    uint16_t f2 = RG.pressed == RGP_ADD ? C_SEC : C_SURF2, i2 = RG.pressed == RGP_ADD ? C_BG : C_PRI;
+    ui_rrect(fb, lx - w / 2, RG_BTN_Y - h / 2, w, h, h / 2, f1);
+    ui_rrect(fb, rx - w / 2, RG_BTN_Y - h / 2, w, h, h / 2, f2);
+    if (ik > 0) {
+        ui_label(fb, (int)lx, (int)RG_BTN_Y + 6, "STOP", ui_mix(f1, C_BG, ik), UI_CENTER);
+        ui_label(fb, (int)rx, (int)RG_BTN_Y + 6, "+1 MIN", ui_mix(f2, i2, ik), UI_CENTER);
+    }
 }
 static int ring_hit(int x, int y)
 {
@@ -749,22 +800,35 @@ static void ring_stop(void)
     ring_leave();
     nos_pop();
 }
+static void ring_act(int h)
+{
+    if (h == RGP_STOP) ring_stop();
+    else if (h == RGP_ADD) {
+        tm_cancel();
+        tm_start(60000);
+        ring_leave();
+        nos_pop();
+    }
+}
 static int ring_input(const nos_input *in)
 {
+    if (RG.fire != RGP_NONE) return 1;           /* leaving */
     switch (in->type) {
-    case IN_DOWN: RG.pressed = ring_hit(in->x, in->y); return 1;
-    case IN_UP: case IN_DRAG_START: RG.pressed = RGP_NONE; return 1;
+    case IN_DOWN: RG.pressed = ring_hit(in->x, in->y); RG.press_t0 = nos_t; RG.unpress_at = 0; return 1;
+    case IN_DRAG_START: RG.pressed = RGP_NONE; RG.unpress_at = 0; return 1;
+    case IN_UP:
+        if (RG.pressed != RGP_NONE) RG.unpress_at = fmaxf(nos_t, RG.press_t0 + PRESS_HOLD);
+        return 1;
     case IN_TAP: {
         int h = ring_hit(in->x, in->y);
-        RG.pressed = RGP_NONE;
-        if (h == RGP_STOP) { nos_feedback(FB_TAP); ring_stop(); }
-        else if (h == RGP_ADD) {
-            nos_feedback(FB_TAP);
-            tm_cancel();
-            tm_start(60000);
-            ring_leave();
-            nos_pop();
-        }
+        if (h == RGP_NONE) return 1;
+        nos_feedback(FB_TAP);
+        /* the pill stays pressed until the screen is gone; a tap quicker than the press
+         * hold waits out the rest of it (<= 2 frames) so the press always shows */
+        RG.pressed = h; RG.unpress_at = 0;
+        RG.fire_at = RG.press_t0 + PRESS_HOLD;
+        if (nos_t >= RG.fire_at) ring_act(h);
+        else RG.fire = h;
         return 1;
     }
     case IN_BTN: nos_feedback(FB_TAP); ring_stop(); return 1;
@@ -792,9 +856,15 @@ static struct {
     uint32_t sw_ms;
     int al_h, al_m, al_in;
     char lbl[24], al_lbl[24];
-    int flash; float flash_t;   /* quick circle tapped: its fill flashes */
+    int flash; float flash_t;   /* quick circle tapped: held pressed until the glance has left */
     int pressed;                /* quick circle under the finger, -1 none */
+    float press_t0, unpress_at;
+    int title_keep;             /* mode change between glances with the same title: it stays */
 } W = { .flash = -1, .pressed = -1 };
+static const char *wg_title(int mode)
+{
+    return mode == WG_SW ? "STOPWATCH" : mode == WG_ALARM ? "NEXT ALARM" : "TIMER";
+}
 
 static int wg_mode_now(void)
 {
@@ -810,13 +880,15 @@ static void wg_tick(float dt, int visible)
     tm_poll();
     tm_get(&W.tm);
     int m = wg_mode_now();
-    if (m != W.mode) {          /* the old glance departs (150 ms), then the new one builds */
+    if (m != W.mode) {          /* the old glance departs (150 ms, linear), then the new one builds */
+        W.title_keep = visible && !strcmp(wg_title(W.mode), wg_title(m));
         W.prev = W.mode; W.mode = m;
         W.out_on = visible; W.out_t0 = nos_t;
         W.t0 = nos_t + (visible ? OUT_S : 0);
     }
-    W.out = W.out_on ? 1.0f - bezier_ease(&EASE_ACCEL, m_clamp((nos_t - W.out_t0) / OUT_S, 0, 1)) : 0;
-    if (W.out_on && W.out <= 0) W.out_on = 0;
+    W.out = W.out_on ? 1.0f - m_clamp((nos_t - W.out_t0) / OUT_S, 0, 1) : 0;
+    if (W.out_on && nos_t - W.out_t0 >= OUT_S) W.out_on = 0;
+    if (W.unpress_at > 0 && nos_t >= W.unpress_at) { W.pressed = -1; W.unpress_at = 0; }
     W.build = m_clamp((nos_t - W.t0) / 0.4f, 0, 1);
     char b[16];
     if (W.mode == WG_TIMER) {
@@ -838,65 +910,76 @@ static void wg_tick(float dt, int visible)
         else snprintf(W.al_lbl, sizeof W.al_lbl, "IN %d MIN", W.al_in < 1 ? 1 : W.al_in);
     }
 }
-static void wg_shown(void) { W.t0 = nos_t; W.build = 0; W.out_on = 0; W.pressed = -1; }
+static void wg_shown(void) { W.t0 = nos_t; W.build = 0; W.out_on = 0; W.pressed = -1; W.unpress_at = 0; W.title_keep = 0; }
 
 static void wg_draw_mode(gfx_fb *fb, int mode, float b)
 {
     float k = qz(m_clamp(b * 2.5f - 0.5f, 0, 1), 8);
     if (b <= 0) return;
-    dot_style hs = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
+    dot_style hs = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, AL(C_WHITE), 0, 1, 1 };
     if (mode == WG_TIMER) {
-        ui_title(fb, "TIMER", (1 - k) * 60);
-        time_ring(fb, UI_CX, UI_CY, WG_RING_R, 60, 6, W.lit * ease_o(b), C_WHITE, C_LINE2);
+        time_ring(fb, UI_CX, UI_CY, WG_RING_R, 60, 6, W.lit * ease_o(b), AL(C_WHITE), AL(C_LINE2));
         /* same places as the app's run view, so opening it changes nothing that is shown */
-        if (W.tm.state == 2) ui_state(fb, UI_CX, 150, "PAUSED", ui_dim(C_SEC, k));
-        else ui_label(fb, UI_CX, 150, W.lbl, ui_dim(C_SEC, k), UI_CENTER);
-        hs.color = W.tm.state == 2 ? C_SEC : C_WHITE;
+        if (W.tm.state == 2) ui_state(fb, UI_CX, 150, "PAUSED", AL(ui_dim(C_SEC, k)));
+        else ui_label(fb, UI_CX, 150, W.lbl, AL(ui_dim(C_SEC, k)), UI_CENTER);
+        hs.color = AL(W.tm.state == 2 ? C_SEC : C_WHITE);
         dgm_draw(fb, &W.dig[WG_TIMER], &hs, UI_CX, DIG_TOP, 0.28f, 0, 0, b);
     } else if (mode == WG_SW) {
-        ui_title(fb, "STOPWATCH", (1 - k) * 60);
-        time_ring(fb, UI_CX, UI_CY, WG_RING_R, 60, 4, 60 * m_clamp(b * 1.5f, 0, 1), C_LINE2, 0);
+        time_ring(fb, UI_CX, UI_CY, WG_RING_R, 60, 4, 60 * m_clamp(b * 1.5f, 0, 1), AL(C_LINE2), 0);
         /* the second hand sweeps once a minute like the app's; white, not red: the home
          * pager owns the one red (unread dot) */
         if (k >= 1) {
             float a = 6.2831853f * (float)(W.sw_ms % 60000) / 60000.0f;
-            dot_disc(fb, UI_CX + WG_RING_R * gfx_fast_sin(a), UI_CY - WG_RING_R * gfx_fast_cos(a), 9, C_WHITE);
+            dot_disc(fb, UI_CX + WG_RING_R * gfx_fast_sin(a), UI_CY - WG_RING_R * gfx_fast_cos(a), 9, AL(C_WHITE));
         }
-        dot_style ts = { DOT_FONT_TALL, 5, 4, C_SEC, 0, 1, 1 };
+        /* tenths at the row pitch, bottoms aligned with the hero */
+        dot_style ts = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, AL(C_SEC), 0, 1, 1 };
         char tb[4];
         snprintf(tb, sizeof tb, ".%u", (unsigned)(W.sw_ms / 100 % 10));
         const dgm *dg = &W.dig[WG_SW];
         float w1 = dg_width(&hs, dg->cur), w2 = dg_width(&ts, tb), gap = 4;
         float x0 = floorf(UI_CX - (w1 + gap + w2) * 0.5f + 0.5f);
         dgm_draw(fb, dg, &hs, x0 + w1 * 0.5f, 197, 0.2f, 0, 0, b);
-        float ty = 197 + UI_HEROW_PITCH * 9 - 45;
+        float ty = floorf(197 + (UI_HEROW_PITCH - UI_LIST_PITCH) * 9 + 0.5f);
         if (b < 1) dot_text_anim(fb, &ts, x0 + w1 + gap, ty, tb, 0, b, DOT_REVEAL_RANDOM, 7);
         else dot_text(fb, &ts, x0 + w1 + gap, ty, tb);
     } else if (mode == WG_ALARM) {
-        ui_title(fb, "NEXT ALARM", (1 - k) * 60);
-        dot_icon_anim(fb, DOT_ICON_ALARM, UI_CX, 146, 3.0f, 2.4f, C_SEC, b, DOT_REVEAL_CENTER);
+        dot_icon_anim(fb, DOT_ICON_ALARM, UI_CX, 146, 3.0f, 2.4f, AL(C_SEC), b, DOT_REVEAL_CENTER);
         dgm_draw(fb, &W.dig[WG_ALARM], &hs, UI_CX, 190, 0.28f, 0, 0, b);
-        ui_label(fb, UI_CX, 304, W.al_lbl, ui_dim(C_PRI, k), UI_CENTER);
+        ui_label(fb, UI_CX, 304, W.al_lbl, AL(ui_dim(C_PRI, k)), UI_CENTER);
     } else {
-        ui_title(fb, "TIMER", (1 - k) * 60);
         for (int i = 0; i < 3; i++) {
             float p = m_stagger(b, i, 3, 0.6f);
             if (p <= 0) continue;
             float cx = UI_CX + (i - 1) * WQ_DX;
+            /* pressed (C_SEC, black ink) under the finger, and after a tap until the
+             * glance has left */
             int fl = W.pressed == i || (W.flash == i && nos_t - W.flash_t < 0.3f);
-            ui_circle(fb, cx, WQ_Y, WQ_R, ui_dim(fl ? C_SURF3 : C_SURF2, qz(m_clamp(p * 2, 0, 1), 8)));
+            ui_circle(fb, cx, WQ_Y, WQ_R, AL(ui_dim(fl ? C_SEC : C_SURF2, qz(m_clamp(p * 2, 0, 1), 8))));
             char nb[4];
             snprintf(nb, sizeof nb, "%d", k_wq[i]);
-            dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
+            dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, AL(fl ? C_BG : C_WHITE), 0, 1, 1 };
             dot_text_anim(fb, &st, cx, WQ_Y - 28, nb, 1, p, DOT_REVEAL_RANDOM, (unsigned)i);
-            if (p > 0.6f) ui_label(fb, (int)cx, (int)WQ_Y + 32, "MIN", C_SEC, UI_CENTER);
+            if (p > 0.6f) ui_label(fb, (int)cx, (int)WQ_Y + 32, "MIN", AL(fl ? C_BG : C_SEC), UI_CENTER);
         }
     }
 }
 static void wg_draw(gfx_fb *fb)
 {
-    if (W.out_on) wg_draw_mode(fb, W.prev, W.out);
-    else wg_draw_mode(fb, W.mode, W.build);
+    if (W.out_on) {
+        /* the old glance leaves complete at one flat alpha (6 steps); a title the next
+         * glance shares stays put */
+        float a = qz(W.out, 6);
+        if (W.title_keep) ui_title(fb, wg_title(W.prev), 0);
+        else ui_label(fb, UI_CX, UI_TITLE_Y, wg_title(W.prev), ui_dim(C_SEC, a), UI_CENTER);
+        s_alpha = a;
+        wg_draw_mode(fb, W.prev, 1);
+        s_alpha = 1;
+        return;
+    }
+    float k = W.title_keep ? 1.0f : qz(m_clamp(W.build * 2.5f - 0.5f, 0, 1), 8);
+    if (W.build > 0 || W.title_keep) ui_title(fb, wg_title(W.mode), (1 - k) * 60);
+    wg_draw_mode(fb, W.mode, W.build);
 }
 
 static void wg_tap(int x, int y)
@@ -922,10 +1005,14 @@ static void wg_tap(int x, int y)
 
 static void wg_press(int x, int y, int down)
 {
-    W.pressed = -1;
-    if (!down || W.mode != WG_QUICK || W.out_on) return;
+    if (!down) {                 /* release: the press shows >= 0.1 s */
+        if (W.pressed >= 0) W.unpress_at = fmaxf(nos_t, W.press_t0 + PRESS_HOLD);
+        return;
+    }
+    W.pressed = -1; W.unpress_at = 0;
+    if (W.mode != WG_QUICK || W.out_on) return;
     for (int i = 0; i < 3; i++)
-        if (in_circle(x, y, UI_CX + (i - 1) * WQ_DX, WQ_Y, WQ_R + 6)) W.pressed = i;
+        if (in_circle(x, y, UI_CX + (i - 1) * WQ_DX, WQ_Y, WQ_R + 6)) { W.pressed = i; W.press_t0 = nos_t; }
 }
 
 const nos_widget wg_timer = { "TIMER", wg_tick, wg_draw, wg_tap, wg_shown, wg_press };
