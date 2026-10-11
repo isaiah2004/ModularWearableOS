@@ -2,8 +2,9 @@
  *
  * Black; then every dot of the wordmark bursts out of the centre, scatters onto a loose
  * ring, and is pulled into its cell of a 5x7 dot-matrix "NOS". The red period clicks in
- * last (the screen's one red element), the mark holds, and the boot screen dissolves
- * away to reveal the face, which builds in underneath. Any touch or the button skips.
+ * last (the screen's one red element), the mark holds, then every dot shrinks away and
+ * the screen cuts to home, where the face's own dot build-in is the reveal (no
+ * crossfade / double exposure). Any touch or the button skips.
  *
  * Cost: ~50 dot stamps (mask blits) per frame; the screen repaints in full while the
  * dots fly (the damage boxes cover it) — a few ms on the device model. */
@@ -33,7 +34,8 @@ static const char *const k_glyph[3] = {
 #define T_BURST 0.32f      /* centre -> scatter ring */
 #define T_GATH  0.42f      /* scatter ring -> cell */
 #define T_RED   0.98f      /* the period clicks in */
-#define T_POP   1.30f      /* start the 0.3 s dissolve: ~1.6 s total */
+#define T_OUT   1.24f      /* the mark lets go: every dot shrinks away */
+#define T_POP   1.42f      /* cut to home; the face's own dot build-in is the reveal */
 
 typedef struct { float tx, ty, sx, sy, t0, t1; } particle;
 static particle *s_p;      /* PSRAM: MAXDOT particles */
@@ -84,8 +86,8 @@ static void finish(void)
 {
     if (s_popped) return;
     s_popped = 1;
-    sys_home_build_in();                   /* the face builds in under the dissolve */
-    nos_pop_with(TX_DISSOLVE);
+    sys_home_build_in();                   /* the face builds in from black, its own reveal */
+    nos_pop_with(TX_NONE);
 }
 
 static void boot_tick(float dt)
@@ -119,18 +121,22 @@ static int particle_at(const particle *p, float t, float *x, float *y, float *d)
 static void boot_draw(gfx_fb *fb)
 {
     float t = s_t;
+    /* exit: dots shrink to nothing (accelerating), so the glass is black before the face */
+    float out = 1.0f - bezier_ease(&EASE_ACCEL, m_clamp((t - T_OUT) / (T_POP - T_OUT), 0, 1));
+    out = floorf(out * 8.0f + 0.5f) / 8.0f;
+    if (out <= 0) return;
     for (int i = 0; i < s_n; i++) {
         float x, y, d;
         if (!particle_at(&s_p[i], t, &x, &y, &d)) continue;
         /* quarter-pixel positions keep the dot masks' phases (and damage) stable */
         x = floorf(x * 4.0f + 0.5f) * 0.25f;
         y = floorf(y * 4.0f + 0.5f) * 0.25f;
-        dot_disc(fb, x, y, d, C_WHITE);
+        dot_disc(fb, x, y, d * out, C_WHITE);
     }
     if (t >= T_RED) {                      /* the period: grows to size in 3 frames */
         float k = m_clamp((t - T_RED) / 0.10f, 0, 1);
         k = floorf(k * 3.0f + 0.5f) / 3.0f;
-        if (k > 0) dot_disc(fb, s_red_x, s_red_y, DOTD * k, C_RED);
+        if (k > 0) dot_disc(fb, s_red_x, s_red_y, DOTD * k * out, C_RED);
     }
 }
 

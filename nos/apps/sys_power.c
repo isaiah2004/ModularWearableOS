@@ -2,9 +2,9 @@
  *
  * Battery level as the hero (dot-matrix %, with its state underneath), then three large
  * pills in the thumb zone: Sleep, Restart, Power off. Power off is the destructive one:
- * red outline; the first tap arms it (fills red, "TAP AGAIN TO POWER OFF") for 3 s and
- * the second tap commits. Restart shows [ RESTARTING ] for a moment first so the user
- * sees it was taken. The host implements the actions (firmware nos_main.c / the sim). */
+ * red outline; the first tap arms it for 3 s ("TAP TO POWER OFF" in red, three red dots
+ * under it going out one per second) and the second tap commits. The tapped pill shows
+ * [ RESTARTING ] / [ POWERING OFF ] for a moment before the host acts. The host implements the actions (firmware nos_main.c / the sim). */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -21,7 +21,7 @@ extern void nos_host_power(int mode);      /* 0 sleep display, 1 restart, 2 powe
 #define BW   288.0f
 #define BH   72.0f
 static const float k_by[3] = { 222.0f, 306.0f, 390.0f };
-static const float k_bw[3] = { BW, BW, 236.0f };
+static const float k_bw[3] = { BW, BW, 256.0f };
 
 static struct {
     int pressed;            /* 1..3, 0 none */
@@ -70,10 +70,20 @@ static void p_draw(gfx_fb *fb)
         if (k <= 0) continue;
         float y = floorf(k_by[i] + (1 - k) * 18.0f + 0.5f);
         int pressed = P.pressed == i + 1;
+        const char *label = names[i];
+        if (P.pending == i) label = i == 1 ? "[ RESTARTING ]" : "[ POWERING OFF ]";
         if (i == 2) {
-            int armed = P.armed_t >= 0;
-            ui_button(fb, UI_CX, y, k_bw[i], BH, armed ? "TAP AGAIN" : names[i], armed ? BTN_RED : BTN_DANGER, pressed);
-        } else ui_button(fb, UI_CX, y, k_bw[i], BH, names[i], BTN_SECONDARY, pressed);
+            int armed = P.armed_t >= 0 && P.pending < 0;
+            if (armed) label = ui_text_width(UI_F_LABEL, "TAP TO POWER OFF", 2) <= k_bw[i] - 24 ? "TAP TO POWER OFF" : "TAP AGAIN";
+            /* destructive stays an outline (no large red fill); armed it carries red text
+             * and three dots under it that go out one per second */
+            ui_button(fb, UI_CX, y, k_bw[i], BH, label, BTN_DANGER, pressed || armed);
+            if (armed) {
+                int left = 3 - (int)floorf(nos_t - P.armed_t);
+                for (int d = 0; d < 3; d++)
+                    if (d < left) dot_disc(fb, UI_CX + (d - 1) * 14.0f, y + BH * 0.5f + 14, 6, C_RED);
+            }
+        } else ui_button(fb, UI_CX, y, k_bw[i], BH, label, BTN_SECONDARY, pressed);
     }
 }
 
@@ -100,13 +110,12 @@ static int p_input(const nos_input *in)
             nos_host_power(0);
         } else if (b == 2) {
             nos_feedback(FB_TAP);
-            nos_toast("[ Restarting ]");
-            P.pending = 1; P.pending_t = nos_t + 0.8f;
+            P.armed_t = -1;
+            P.pending = 1; P.pending_t = nos_t + 0.8f;      /* the pill says so first */
         } else if (b == 3) {
             if (P.armed_t < 0) { nos_feedback(FB_LIMIT); P.armed_t = nos_t; }
             else {
                 nos_feedback(FB_ERROR);
-                nos_toast("[ Powering off ]");
                 P.pending = 2; P.pending_t = nos_t + 0.8f;
             }
         } else P.armed_t = -1;

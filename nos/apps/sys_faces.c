@@ -5,7 +5,7 @@
  * velocity picks the page, a critically damped spring that never overshoots, a tick per
  * page. An "edit mode" frame sits on top: a thin rim at the edge of the glass, the face's
  * name in a pill and page dots. Tap or the button picks the face: the frame fades, the
- * picker cuts back to home and a newly chosen face builds in. Left-edge swipe cancels. */
+ * picker cuts back to home (the face stays live, no rebuild). Left-edge swipe cancels. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -18,7 +18,6 @@
 #include <math.h>
 #include <string.h>
 
-void sys_home_build_in(void);
 const face_ctx *sys_home_ctx(void);
 
 #define PAGE_W 466.0f
@@ -99,8 +98,16 @@ static void f_tick(float dt)
     }
 }
 
+#define EDIT_DIM (18.0f / 32.0f)    /* the live face recedes while it is being edited */
+
 static void f_draw(gfx_fb *fb)
 {
+    /* dim level: constant in edit mode (the dissolve in covers the change), back to full
+     * brightness in 4 steps as the frame fades on confirm. nos_dim records nothing, so the
+     * level is recorded as a full-screen command: a change repaints everything. */
+    float dk = EDIT_DIM;
+    if (F.chosen) dk = EDIT_DIM + (1.0f - EDIT_DIM) * floorf(m_clamp((nos_t - F.t_chosen) / 0.16f, 0, 1) * 4.0f) / 4.0f;
+    if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(0xd17u, dk));
     int xi = (int)lroundf(F.x);
     int s0 = (int)floorf(F.x / PAGE_W);
     for (int s = s0; s <= s0 + 1; s++) {
@@ -109,19 +116,23 @@ static void f_draw(gfx_fb *fb)
         if (ox <= -(int)PAGE_W || ox >= GFX_W) continue;
         gfx_fb sub;
         int x0 = ox < 0 ? 0 : ox, x1 = ox + (int)PAGE_W > GFX_W ? GFX_W : ox + (int)PAGE_W;
-        if (x1 > x0 && nos_subview(fb, &sub, x0, 0, x1, GFX_H, ox, 0) && nos_faces[s]->draw)
+        if (x1 > x0 && nos_subview(fb, &sub, x0, 0, x1, GFX_H, ox, 0) && nos_faces[s]->draw) {
             nos_faces[s]->draw(&sub, &F.c);
+            if (dk < 1.0f) nos_dim(&sub, dk);
+        }
     }
     /* edit-mode frame: a thin rim on the very edge of the glass (outside every face's own
      * tick/dot rings), the name pill and page dots; it fades in over the dissolve */
     float e = m_clamp((nos_t - F.t_enter) / 0.30f, 0, 1);
     if (F.chosen) e = m_clamp(e - (nos_t - F.t_chosen) / 0.16f, 0, 1);   /* fading out */
-    float k = floorf(e * 8.0f + 0.5f) / 8.0f;
+    /* the rim carries on from the 3/8 the long press charged it to on home */
+    float k = F.chosen ? floorf(e * 8.0f + 0.5f) / 8.0f : (3.0f + floorf(e * 5.0f + 0.5f)) / 8.0f;
     if (k > 0) gfx_ring(fb, UI_CX, UI_CY, UI_R - 3.5f, 3.0f, ui_dim(C_SEC, k));
     if (e >= 0.5f || (F.chosen && k > 0)) {
         const char *name = nos_faces[F.page]->name ? nos_faces[F.page]->name : "FACE";
         int w = ui_text_width(UI_F_LABEL, name, 2) + 44;
         if (w < 120) w = 120;
+        ui_rrect(fb, UI_CX - w / 2.0f - 6, PILL_Y - 6, (float)w + 12, 52, 26, C_BG);   /* keyline */
         ui_rrect(fb, UI_CX - w / 2.0f, PILL_Y, (float)w, 40, 20, ui_dim(C_WHITE, k));
         ui_label(fb, UI_CX, (int)(PILL_Y + 20 + UI_F_LABEL->ascent * 0.5f - 2), name, C_BG, UI_CENTER);
         /* page dots */
@@ -144,16 +155,15 @@ static void choose(void)
     nos_feedback(FB_SUCCESS);
 }
 
-/* The frame has faded: home shows exactly this face, so the pop is a cut (a dissolve
- * would composite two full faces for nothing: ~31 ms on the heaviest face). A new face
- * then builds in on home as the confirmation. */
+/* The frame has faded and the face is back at full brightness: home shows exactly this
+ * face, so the pop is an invisible cut (a dissolve would composite two full faces for
+ * nothing: ~31 ms on the heaviest face). The face is already live: no build-in. */
 static void finish(void)
 {
     int p = F.page;
     if (p != nos_prefs.face) {
         nos_prefs.face = (uint8_t)p;
         prefs_save();
-        sys_home_build_in();
     }
     nos_pop_with(TX_NONE);
 }

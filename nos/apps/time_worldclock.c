@@ -22,12 +22,15 @@ void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float li
 
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
 
-typedef struct { const char *name; int16_t off; } city;
+/* Standard offsets plus the city's daylight-saving rule. */
+enum { DST_NONE = 0, DST_EU, DST_US, DST_AU, DST_NZ, DST_EG };
+typedef struct { const char *name; int16_t off; uint8_t dst; } city;
 static const city k_city[] = {
-    { "Honolulu",    -600 }, { "Los Angeles", -480 }, { "New York",  -300 },
-    { "Sao Paulo",   -180 }, { "London",         0 }, { "Paris",       60 },
-    { "Cairo",        120 }, { "Dubai",        240 }, { "New Delhi",  330 },
-    { "Singapore",    480 }, { "Tokyo",        540 }, { "Sydney",     600 },
+    { "Honolulu",    -600, DST_NONE }, { "Los Angeles", -480, DST_US }, { "New York", -300, DST_US },
+    { "Sao Paulo",   -180, DST_NONE }, { "London",         0, DST_EU }, { "Paris",      60, DST_EU },
+    { "Cairo",        120, DST_EG   }, { "Dubai",        240, DST_NONE }, { "New Delhi", 330, DST_NONE },
+    { "Singapore",    480, DST_NONE }, { "Tokyo",        540, DST_NONE }, { "Sydney",    600, DST_AU },
+    { "Auckland",     720, DST_NZ   },
 };
 #define NCITY ((int)(sizeof k_city / sizeof k_city[0]))
 #define NFAV 4
@@ -51,6 +54,74 @@ static void fav_load(void)
 static void fav_save(void) { hal_store_save("nos_wc", &F, sizeof F); }
 static int fav_find(int c) { for (int i = 0; i < F.n; i++) if (F.idx[i] == c) return i; return -1; }
 
+/* ---- daylight saving, from the UTC instant ------------------------------------ */
+static int64_t days_civil(int y, int m, int d)      /* days since 1970-01-01 (Hinnant) */
+{
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int yoe = (int)(y - era * 400);
+    int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+static int year_of(int64_t z)
+{
+    z += 719468;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    int doe = (int)(z - era * 146097);
+    int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int mp = (5 * doy + 2) / 153;
+    int m = mp + (mp < 10 ? 3 : -9);
+    return (int)(yoe + era * 400) + (m <= 2);
+}
+static int wday(int64_t z) { return (int)(((z + 4) % 7 + 7) % 7); }   /* 0 = Sunday */
+/* day of the n-th weekday `wd` of month m (n = -1: the last one) */
+static int64_t nth_wd(int y, int m, int n, int wd)
+{
+    if (n > 0) {
+        int64_t d = days_civil(y, m, 1);
+        return d + (wd - wday(d) + 7) % 7 + 7 * (n - 1);
+    }
+    int64_t last = days_civil(m == 12 ? y + 1 : y, m == 12 ? 1 : m + 1, 1) - 1;
+    return last - (wday(last) - wd + 7) % 7;
+}
+/* local wall-clock time `sec` after midnight of `day`, in UTC seconds, at offset off_min */
+static int64_t at_local(int64_t day, int sec, int off_min) { return day * 86400 + sec - (int64_t)off_min * 60; }
+static int dst_active(const city *c, int64_t utc)
+{
+    int y = year_of(utc >= 0 ? utc / 86400 : (utc - 86399) / 86400), o = c->off;
+    int64_t a, b;
+    switch (c->dst) {
+    case DST_EU:      /* last Sun Mar 01:00 UTC .. last Sun Oct 01:00 UTC */
+        a = nth_wd(y, 3, -1, 0) * 86400 + 3600; b = nth_wd(y, 10, -1, 0) * 86400 + 3600;
+        return utc >= a && utc < b;
+    case DST_US:      /* 2nd Sun Mar 02:00 standard .. 1st Sun Nov 02:00 daylight */
+        a = at_local(nth_wd(y, 3, 2, 0), 7200, o); b = at_local(nth_wd(y, 11, 1, 0), 7200, o + 60);
+        return utc >= a && utc < b;
+    case DST_EG:      /* last Fri Apr 00:00 .. last Thu Oct 24:00 */
+        a = at_local(nth_wd(y, 4, -1, 5), 0, o); b = at_local(nth_wd(y, 10, -1, 4) + 1, 0, o + 60);
+        return utc >= a && utc < b;
+    case DST_AU:      /* southern: 1st Sun Oct 02:00 std .. 1st Sun Apr 03:00 daylight */
+        a = at_local(nth_wd(y, 10, 1, 0), 7200, o); b = at_local(nth_wd(y, 4, 1, 0), 10800, o + 60);
+        return utc >= a || utc < b;
+    case DST_NZ:      /* last Sun Sep 02:00 std .. 1st Sun Apr 03:00 daylight */
+        a = at_local(nth_wd(y, 9, -1, 0), 7200, o); b = at_local(nth_wd(y, 4, 1, 0), 10800, o + 60);
+        return utc >= a || utc < b;
+    default:
+        return 0;
+    }
+}
+/* UTC now: the trusted epoch, else the RTC's local time minus the configured zone */
+static int64_t utc_now(const hal_datetime *dt)
+{
+    uint64_t ep = hal_epoch_seconds();
+    if (ep) return (int64_t)ep;
+    return at_local(days_civil(dt->year, dt->month, dt->day), dt->hour * 3600 + dt->minute * 60 + dt->second,
+                    nos_prefs.tz_min);
+}
+static int city_off(int c, int64_t utc) { return k_city[c].off + (dst_active(&k_city[c], utc) ? 60 : 0); }
+
 /* ---- time maths ------------------------------------------------------------ */
 typedef struct { int h, m, s, dayrel, rel_min, wd; } ctime_t;
 static int local_offset_min(const hal_datetime *dt)
@@ -70,14 +141,15 @@ static void city_time(int c, ctime_t *o)
     hal_datetime dt;
     hal_get_datetime(&dt);
     int lo = local_offset_min(&dt);
-    int mins = dt.hour * 60 + dt.minute - lo + k_city[c].off;
+    int co = city_off(c, utc_now(&dt));
+    int mins = dt.hour * 60 + dt.minute - lo + co;
     int rel = 0;
     while (mins < 0) { mins += 1440; rel--; }
     while (mins >= 1440) { mins -= 1440; rel++; }
     o->h = mins / 60; o->m = mins % 60; o->s = dt.second;
     o->dayrel = rel;
     o->wd = ((dt.weekday + rel) % 7 + 7) % 7;
-    o->rel_min = k_city[c].off - lo;
+    o->rel_min = co - lo;
 }
 static void fmt_rel(char *b, int n, const ctime_t *t)
 {
@@ -116,14 +188,10 @@ static void wl_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
         ui_label(fb, UI_CX, (int)cy + 6, "EDIT CITIES", ui_dim(C_PRI, f), UI_CENTER);
         return;
     }
-    /* the card follows the circle at its centre line; content sits on fixed anchors so
-     * rows near the bezel are clipped by the glass, never squeezed into each other */
-    int cx0, cx1;
-    ui_row_span(cy, 28, &cx0, &cx1);
-    if (cx0 > UI_CX - 158) cx0 = UI_CX - 158;
-    if (cx1 < UI_CX + 158) cx1 = UI_CX + 158;
+    /* fixed-width card (the notification card: 344 wide, r 40, SURF2); content on fixed
+     * anchors, so rows near the bezel are clipped by the glass, never squeezed */
     const ctime_t *t = &WL.t[i];
-    ui_rrect(fb, (float)cx0, y + 4, (float)(cx1 - cx0), h - 8.0f, 36, ui_dim(pressed ? C_SURF2 : C_SURF, f));
+    ui_rrect(fb, UI_CX - 172.0f, y + 4, 344.0f, h - 8.0f, 40, ui_dim(pressed ? C_SURF3 : C_SURF2, f));
     char nm[24], rel[32], tm[12];
     upper(nm, sizeof nm, k_city[F.idx[i]].name);
     fmt_rel(rel, sizeof rel, t);
@@ -131,12 +199,12 @@ static void wl_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
     int day = is_day(t);
     float ax = UI_CX - 150.0f;
     dot_disc(fb, ax, cy - 12, 9, ui_dim(day ? C_WHITE : C_DIS, f));
-    if (!day) dot_disc(fb, ax, cy - 12, 5, pressed ? C_SURF2 : C_SURF);  /* hollow = night */
+    if (!day) dot_disc(fb, ax, cy - 12, 5, ui_dim(pressed ? C_SURF3 : C_SURF2, f));  /* hollow = night */
     ui_label(fb, (int)ax + 16, (int)cy - 5, nm, ui_dim(C_PRI, f), UI_LEFT);
     ui_label(fb, (int)ax + 16, (int)cy + 23, rel, ui_dim(C_SEC, f), UI_LEFT);
-    dot_style st = { DOT_FONT_TALL, 4.0f, 3.2f, ui_dim(day ? C_WHITE : C_PRI, f), 0, 1, 1 };
+    dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, ui_dim(day ? C_WHITE : C_PRI, f), 0, 1, 1 };
     float tw = (float)dot_text_width(&st, tm);
-    dot_text_anim(fb, &st, UI_CX + 152 - tw, cy - 18, tm, 0, p, DOT_REVEAL_RANDOM, (unsigned)i);
+    dot_text_anim(fb, &st, UI_VALUE_X - tw, cy - 20, tm, 0, p, DOT_REVEAL_RANDOM, (unsigned)i);
 }
 static void wl_tap(int i)
 {
@@ -144,7 +212,6 @@ static void wl_tap(int i)
     s_detail_city = F.idx[i];
     nos_push(&scr_wc_detail, TX_PUSH);
 }
-static float s_wl_seen = -10;
 static void wl_enter(void)
 {
     fav_load();
@@ -154,28 +221,28 @@ static void wl_enter(void)
     msc_jump(&s_list.sc, m_clamp(keep, s_list.sc.min, s_list.sc.max));
     s_list.bar_t = -10;
     WL.empty_pressed = 0;
-    if (nos_t - s_wl_seen >= 0.2f) { WL.t0 = nos_t; WL.build = 0; }   /* pop reveal: no rebuild */
+    if (!nos_revealed()) { WL.t0 = nos_t + UI_ENTRY_S * 0.55f; WL.build = 0; }   /* pop reveal: no rebuild */
     for (int i = 0; i < F.n; i++) city_time(F.idx[i], &WL.t[i]);
 }
 static void wl_tick(float dt)
 {
-    s_wl_seen = nos_t;
     if (s_list.n != F.n + 1) ui_list_set_n(&s_list, F.n + 1);
     for (int i = 0; i < F.n; i++) city_time(F.idx[i], &WL.t[i]);
     ui_list_tick(&s_list, dt);
     WL.build = m_clamp((nos_t - WL.t0) / 0.4f, 0, 1);
 }
-#define WL_EMPTY_BTN 334.0f
+#define WL_EMPTY_BTN ((float)UI_BTN_Y)
 static void wl_draw(gfx_fb *fb)
 {
     if (F.n == 0) {
         ui_title(fb, "WORLD CLOCK", 0);
-        dot_icon_anim(fb, DOT_ICON_GLOBE, UI_CX, 176, 5.0f, 4.0f, C_SEC, WL.build, DOT_REVEAL_CENTER);
-        float k = qz(m_clamp(WL.build * 2 - 0.5f, 0, 1), 8);
+        ui_absent(fb, DOT_ICON_GLOBE, "No cities", NULL, NULL, WL.build);
+        float k = m_clamp(WL.build * 2 - 0.6f, 0, 1);
         if (k <= 0) return;
-        ui_text(fb, UI_F_BODY, UI_CX, 266, "No cities", ui_dim(C_PRI, k), UI_CENTER, 0);
-        ui_rrect(fb, UI_CX - 100, WL_EMPTY_BTN - 44, 200, 88, 44, ui_dim(WL.empty_pressed ? C_SEC : C_WHITE, k));
-        ui_label(fb, UI_CX, (int)WL_EMPTY_BTN + 6, "ADD CITIES", C_BG, UI_CENTER);
+        /* primary button builds by scale steps at full colour (no grey fade-up) */
+        float sc = 0.72f + 0.28f * qz(k, 8), w = UI_BTN_W * sc, h = UI_BTN_H * sc;
+        ui_rrect(fb, UI_CX - w / 2, WL_EMPTY_BTN - h / 2, w, h, h / 2, WL.empty_pressed ? C_SEC : C_WHITE);
+        if (k >= 1) ui_label(fb, UI_CX, (int)WL_EMPTY_BTN + 6, "ADD CITIES", C_BG, UI_CENTER);
         return;
     }
     ui_title(fb, "WORLD CLOCK", ui_list_offset(&s_list));
@@ -184,7 +251,7 @@ static void wl_draw(gfx_fb *fb)
 static int wl_input(const nos_input *in)
 {
     if (F.n == 0) {
-        int hit = fabsf((float)(in->x - UI_CX)) < 104 && fabsf(in->y - WL_EMPTY_BTN) < 48;
+        int hit = fabsf((float)(in->x - UI_CX)) < UI_BTN_W / 2 + 4 && fabsf(in->y - WL_EMPTY_BTN) < 48;
         if (in->type == IN_DOWN) { WL.empty_pressed = hit; return hit; }
         if (in->type == IN_UP || in->type == IN_DRAG_START) { WL.empty_pressed = 0; return 0; }
         if (in->type == IN_TAP && hit) { WL.empty_pressed = 0; nos_feedback(FB_TAP); nos_push(&scr_wc_pick, TX_PUSH); return 1; }
@@ -214,10 +281,11 @@ static void pk_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
     if (pressed) ui_rrect(fb, (float)cx0, y + 4, (float)(cx1 - cx0), h - 8.0f, 32, ui_dim(C_SURF2, f));
     char nm[24], off[16];
     upper(nm, sizeof nm, k_city[i].name);
-    int o = k_city[i].off, a = o < 0 ? -o : o;
-    if (a % 60) snprintf(off, sizeof off, "UTC%c%d:%02d", o < 0 ? '-' : '+', a / 60, a % 60);
-    else if (o) snprintf(off, sizeof off, "UTC%c%d", o < 0 ? '-' : '+', a / 60);
-    else snprintf(off, sizeof off, "UTC");
+    hal_datetime dt;
+    hal_get_datetime(&dt);
+    int o = city_off(i, utc_now(&dt)), a = o < 0 ? -o : o;   /* UTC offset in force now */
+    if (a % 60) snprintf(off, sizeof off, "%c%d:%02d", o < 0 ? '-' : '+', a / 60, a % 60);
+    else snprintf(off, sizeof off, "%c%d", o < 0 ? '-' : '+', a / 60);
     ui_label(fb, UI_CX - 146, (int)cy + 6, nm, ui_dim(sel ? C_WHITE : C_SEC, f), UI_LEFT);
     float cx = UI_CX + 130.0f;
     ui_label(fb, (int)cx - 32, (int)cy + 6, off, ui_dim(C_DIS, f), UI_RIGHT);
@@ -304,14 +372,14 @@ static void dt_draw(gfx_fb *fb)
     int day = is_day(&D.t);
     float k = qz(m_clamp(b * 2 - 0.3f, 0, 1), 8);
     if (k > 0) {
+        /* title: the city with the list's day/night dot (filled = day, hollow = night) */
         int tw = ui_text_width(UI_F_LABEL, D.name, 2);
-        dot_icon(fb, day ? DOT_ICON_SUN : DOT_ICON_MOON, UI_CX - tw / 2.0f - 20, 64, 2.0f, 1.6f, ui_dim(C_SEC, k));
-        ui_label(fb, UI_CX + 11, 70, D.name, ui_dim(C_PRI, k), UI_CENTER);
-        /* bottom: digital time (primary) + offset from here (secondary) as one line */
-        int w1 = ui_text_width(UI_F_LABEL, D.tm, 2), w2 = ui_text_width(UI_F_LABEL, D.rel, 2);
-        int x = UI_CX - (w1 + 14 + w2) / 2;
-        ui_label(fb, x, 398, D.tm, ui_dim(C_PRI, k), UI_LEFT);
-        ui_label(fb, x + w1 + 14, 398, D.rel, ui_dim(C_SEC, k), UI_LEFT);
+        float dx = UI_CX - tw / 2.0f - 8;
+        dot_disc(fb, dx, 64, 9, ui_dim(day ? C_WHITE : C_DIS, k));
+        if (!day) dot_disc(fb, dx, 64, 5, C_BG);
+        ui_label(fb, UI_CX + 8, UI_TITLE_Y, D.name, ui_dim(C_SEC, k), UI_CENTER);
+        /* bottom: only the offset from here (the hands tell the time) */
+        ui_label(fb, UI_CX, 392, D.rel, ui_dim(C_SEC, k), UI_CENTER);
     }
     float ph = m_clamp(b * 1.6f - 0.3f, 0, 1);
     float ha = 6.2831853f * ((D.t.h % 12) + D.t.m / 60.0f) / 12.0f;
@@ -319,9 +387,10 @@ static void dt_draw(gfx_fb *fb)
     hand(fb, ma, 26, 140, 14, 8, C_PRI, ph);
     hand(fb, ha, 26, 98, 18, 11, C_WHITE, ph);
     if (ph > 0) dot_disc(fb, UI_CX, UI_CY, 14, C_WHITE);
-    if (b >= 1) {
+    float sk = qz(m_clamp((b - 0.7f) / 0.3f, 0, 1), 4);    /* the seconds dot grows in last */
+    if (sk > 0) {
         float sa = 6.2831853f * D.t.s / 60.0f;
-        dot_disc(fb, UI_CX + AR * time_sin(sa), UI_CY - AR * time_cos(sa), 10, C_RED);
+        dot_disc(fb, UI_CX + AR * time_sin(sa), UI_CY - AR * time_cos(sa), 10 * sk, C_RED);
     }
 }
 const nos_screen scr_wc_detail = { "CITY", dt_enter, 0, dt_tick, dt_draw, 0, 0 };

@@ -16,6 +16,7 @@
  * Internal RAM is nearly full on the device: the notification store, the line
  * buffer and the JSON tokens live in one PSRAM block (hal_big_alloc). */
 #include "svc.h"
+#include "svc_track.h"
 #include "gb.h"
 #include "nos.h"
 #include "hal.h"
@@ -715,6 +716,15 @@ static void alarm_ring(int i)
     s_ring_alarm = i;
     s_ring_alarm_t0 = hal_millis();
 }
+int svc_alarm_snoozed(int *idx, uint32_t *at_ms)
+{
+    if (s_snooze_idx < 0) return 0;
+    if (idx) *idx = s_snooze_idx;
+    if (at_ms) *at_ms = s_snooze_at;
+    return 1;
+}
+void svc_alarm_snooze_cancel(void) { s_snooze_idx = -1; }
+
 void svc_alarm_snooze(void)
 {
     if (s_ring_alarm < 0) return;
@@ -1164,6 +1174,7 @@ void svc_init(void)
 
 void svc_tick(float dt)
 {
+    svc_track_tick(dt);              /* GPS track recording runs with Navigate closed */
     (void)dt;
     uint32_t now = hal_millis();
     phone_tick(now);

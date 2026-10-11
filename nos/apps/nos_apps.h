@@ -39,6 +39,7 @@ typedef struct {
     void (*draw)(gfx_fb *fb);
     void (*tap)(int x, int y);              /* typically pushes the app (set nos_iris_x/y) */
     void (*shown)(void);                    /* page settled into view: start build-in */
+    void (*press)(int x, int y, int down);  /* optional: finger down (1) / released or cancelled (0), for pressed states */
 } nos_widget;
 extern const nos_widget wg_activity, wg_heart, wg_weather, wg_music, wg_timer;
 

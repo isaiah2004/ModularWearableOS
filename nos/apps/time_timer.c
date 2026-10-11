@@ -403,8 +403,8 @@ static const uint16_t k_presets[6] = { 1, 3, 5, 10, 15, 30 };
 #define PILL_H 88
 static float preset_cx(int i) { return UI_CX + (i % 3 - 1) * 128.0f; }
 static float preset_cy(int i) { return 170.0f + (i / 3) * 100.0f; }
-#define CUSTOM_CY 374.0f
-#define CUSTOM_W  196.0f
+#define CUSTOM_CY ((float)UI_BTN_Y)
+#define CUSTOM_W  ((float)UI_BTN_W)
 
 /* run view geometry */
 #define RING_R    211.0f
@@ -519,6 +519,7 @@ static void timer_draw_setup(gfx_fb *fb, float b)
 static void timer_draw_run(gfx_fb *fb, float b, float dig_b)
 {
     float lit = T.lit * ease_o(b);
+    if (b > 0) ui_title(fb, "TIMER", (1 - qz(m_clamp(b * 2, 0, 1), 6)) * 60);
     /* ring: lit dots drain anticlockwise toward 12; the last 10 s tip turns red */
     if (T.last10) {
         float fl = floorf(lit);
@@ -701,7 +702,7 @@ static int pick_input(const nos_input *in)
 const nos_screen scr_timer_pick = { "TIMER SET", pick_enter, pick_leave, pick_tick, pick_draw, pick_input, 0 };
 
 /* ================================================================ ringing */
-#define RG_BTN_Y 290.0f
+#define RG_BTN_Y 316.0f
 #define RG_BTN_W 124.0f
 static struct { float t0, build; int pressed; uint32_t total; int haptic_on; } RG;
 enum { RGP_NONE = 0, RGP_STOP, RGP_ADD };
@@ -734,11 +735,11 @@ static void ring_tick(float dt)
 }
 static void ring_draw(gfx_fb *fb)
 {
-    time_pulse_draw(fb, nos_t - RG.t0, 2);
+    time_pulse_draw(fb, nos_t - RG.t0, 1);   /* one ring: the title at y 70 stays clear */
     time_alert_dot(fb);
     ui_title(fb, "TIME'S UP", 0);
     dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
-    dot_text_anim(fb, &st, UI_CX, 150, "00:00", 1, RG.build, DOT_REVEAL_CENTER, 3);
+    dot_text_anim(fb, &st, UI_CX, 168, "00:00", 1, RG.build, DOT_REVEAL_CENTER, 3);
     float k = qz(m_clamp(RG.build * 2 - 0.6f, 0, 1), 8);
     if (k <= 0) return;
     float lx = UI_CX - 6 - RG_BTN_W / 2, rx = UI_CX + 6 + RG_BTN_W / 2;
@@ -787,9 +788,9 @@ const nos_screen scr_timer_ring = { "TIME'S UP", ring_enter, ring_leave, ring_ti
 
 /* ============================================================== widget */
 enum { WG_QUICK = 0, WG_TIMER, WG_SW, WG_ALARM };
-/* widget rings stay inside r 184: the home pager owns the top centre (unread dot,
- * y <= 36) and the bottom centre (page dots, y >= 424) */
-#define WG_RING_R 182.0f
+/* widget rings stay inside r 160: the home pager owns the top centre (unread dot,
+ * y <= 36) and the bottom centre (page dots, y >= 424), and the title sits at y 70 */
+#define WG_RING_R 158.0f
 static const uint16_t k_wq[3] = { 3, 5, 10 };
 #define WQ_Y  236.0f
 #define WQ_DX 124.0f
@@ -804,7 +805,8 @@ static struct {
     int al_h, al_m, al_in;
     char lbl[24], al_lbl[24];
     int flash; float flash_t;   /* quick circle tapped: its fill flashes */
-} W;
+    int pressed;                /* quick circle under the finger, -1 none */
+} W = { .flash = -1, .pressed = -1 };
 
 static int wg_mode_now(void)
 {
@@ -848,7 +850,7 @@ static void wg_tick(float dt, int visible)
         else snprintf(W.al_lbl, sizeof W.al_lbl, "IN %d MIN", W.al_in < 1 ? 1 : W.al_in);
     }
 }
-static void wg_shown(void) { W.t0 = nos_t; W.build = 0; W.out_on = 0; }
+static void wg_shown(void) { W.t0 = nos_t; W.build = 0; W.out_on = 0; W.pressed = -1; }
 
 static void wg_draw_mode(gfx_fb *fb, int mode, float b)
 {
@@ -893,7 +895,7 @@ static void wg_draw_mode(gfx_fb *fb, int mode, float b)
             float p = m_stagger(b, i, 3, 0.6f);
             if (p <= 0) continue;
             float cx = UI_CX + (i - 1) * WQ_DX;
-            int fl = W.flash == i && nos_t - W.flash_t < 0.3f;
+            int fl = W.pressed == i || (W.flash == i && nos_t - W.flash_t < 0.3f);
             ui_circle(fb, cx, WQ_Y, WQ_R, ui_dim(fl ? C_SURF3 : C_SURF2, qz(m_clamp(p * 2, 0, 1), 8)));
             char nb[4];
             snprintf(nb, sizeof nb, "%d", k_wq[i]);
@@ -930,4 +932,12 @@ static void wg_tap(int x, int y)
     else nos_open(&scr_timer, x, y);
 }
 
-const nos_widget wg_timer = { "TIMER", wg_tick, wg_draw, wg_tap, wg_shown };
+static void wg_press(int x, int y, int down)
+{
+    W.pressed = -1;
+    if (!down || W.mode != WG_QUICK || W.out_on) return;
+    for (int i = 0; i < 3; i++)
+        if (in_circle(x, y, UI_CX + (i - 1) * WQ_DX, WQ_Y, WQ_R + 6)) W.pressed = i;
+}
+
+const nos_widget wg_timer = { "TIMER", wg_tick, wg_draw, wg_tap, wg_shown, wg_press };

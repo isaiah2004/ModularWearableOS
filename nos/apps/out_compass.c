@@ -385,7 +385,7 @@ static void level_draw(gfx_fb *fb)
     else {
         char t[16];
         snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(tilt * 10 + 0.5f) / 10));
-        dot_style st = { DOT_FONT_5X7, 4.0f, 3.3f, C_PRI, 0, 1, 1 };
+        dot_style st = { DOT_FONT_TALL, 3.6f, 2.9f, C_PRI, 0, 1, 1 };   /* tall font: ring degree glyph */
         dot_text_a(fb, &st, UI_CX, 380, t, 1);
     }
 }

@@ -1,17 +1,22 @@
 /* sys_control.c — control centre (pulled down from the face, TX_DROP).
  *
- *   y  52   10:09 . 78%            (mono; briefly replaced by "WI-FI OFF" after a toggle)
+ *   y  56   10:09 . 78%            (mono; briefly "WI-FI OFF" / "BRIGHTNESS 60%")
  *   y 124   ( WIFI ) ( BT ) ( DND )
- *   y 218   ( TORCH ) ( AOD ) ( SOUND ) ( HAPTICS )
- *   y 312   ( LTE ) ( GPS ) ( RAISE ) ( SETTINGS )
- *   y 394   [=====brightness=====       ]
+ *   y 220   ( TORCH ) ( AOD ) ( SOUND ) ( HAPTICS )
+ *   y 316   ( LTE ) ( GPS ) ( RAISE ) ( SETTINGS )
+ *   y 392   * [][][][][][][][][][]     brightness in 10 segments
  *
- * Everything fits on the glass, so nothing scrolls: an upward drag always belongs to
- * the engine, which closes the sheet with the finger. Tiles: on = white disc with black
- * ink, off = C_SURF2 with white ink; the white grows out of the centre (or shrinks back)
- * on a snappy spring. Absent strap modules show a disabled tile and say why on tap.
- * The brightness slider follows the finger relative to where it was grabbed, ticks every
- * 10 % and drives the backlight live. */
+ * Tiles are r = 40 discs on a 96 px grid (16 px gaps). Everything fits on the glass, so
+ * nothing scrolls: an upward drag always belongs to the engine, which closes the sheet.
+ * Toggles: on = white disc + black ink, off = C_SURF2 + white ink; the fill morphs in
+ * quantised grey steps and the ink flips at the midpoint, where both read. Torch is a
+ * toggle too (the panel is the light: turning it on opens the torch, which turns it off
+ * again when it closes). Settings is an action, so it is drawn as an outlined disc.
+ * Absent strap modules show a disabled tile and say why on tap. The brightness bar follows
+ * the finger relative to where it was grabbed, ticks every 10 %, shows the % in the
+ * header and drives the backlight live. Pulled in by the finger, the sheet shows its
+ * content immediately (the sheet's own motion is the entrance); otherwise tiles build in
+ * row by row. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -26,13 +31,14 @@
 
 enum { T_WIFI = 0, T_BT, T_DND, T_TORCH, T_AOD, T_SOUND, T_HAPTIC, T_LTE, T_GPS, T_RAISE, T_SETTINGS, NT };
 
-#define TILE_R   43.0f
-#define PITCH_X  96.0f
+#define TILE_R   40.0f
+#define PITCH    96.0f
 #define HEAD_Y   56
-#define SL_Y     370.0f
-#define SL_H     50.0f
-#define SL_W     236.0f
-#define SL_X     (UI_CX - SL_W / 2)
+#define SL_Y     372.0f          /* segment bar top */
+#define SL_H     40.0f
+#define SL_X     128.0f
+#define SL_W     224.0f
+#define SL_ICON_X 104.0f
 
 /* Dim a neutral grey without the RGB565 rounding casts (keeps G = 2R, B = R). */
 static uint16_t gdim(uint16_t c, float k)
@@ -44,39 +50,51 @@ static uint16_t gdim(uint16_t c, float k)
     int v = (int)(r * k + 0.5f);
     return (uint16_t)(v << 11 | (v * 2) << 5 | v);
 }
+/* neutral grey of 8-bit level v */
+static uint16_t grey(int v)
+{
+    if (v >= 255) return C_WHITE;
+    if (v < 0) v = 0;
+    int r = (v * 31 + 127) / 255;
+    return (uint16_t)(r << 11 | (r * 2) << 5 | r);
+}
+
+#define ICON_VIBRATE (-1)        /* drawn locally: a body with buzz marks either side */
 
 static const struct { int icon; const char *name; uint32_t need; } k_tile[NT] = {
     [T_WIFI]     = { DOT_ICON_WIFI,     "Wi-Fi",     0 },
     [T_BT]       = { DOT_ICON_BT,       "Bluetooth", 0 },
-    [T_DND]      = { DOT_ICON_DND,      "Do not disturb", 0 },
+    [T_DND]      = { DOT_ICON_DND,      "DND",       0 },
     [T_TORCH]    = { DOT_ICON_TORCH,    "Torch",     0 },
-    [T_AOD]      = { DOT_ICON_EYE,      "Always on", 0 },
+    [T_AOD]      = { DOT_ICON_EYE,      "AOD",       0 },
     [T_SOUND]    = { DOT_ICON_SPEAKER,  "Sound",     EXT_SPEAKER },
-    [T_HAPTIC]   = { DOT_ICON_HAND,     "Haptics",   EXT_HAPTIC },
+    [T_HAPTIC]   = { ICON_VIBRATE,      "Haptics",   EXT_HAPTIC },
     [T_LTE]      = { DOT_ICON_SIGNAL,   "LTE",       EXT_LTE },
     [T_GPS]      = { DOT_ICON_PIN,      "GPS",       EXT_GPS },
-    [T_RAISE]    = { DOT_ICON_ARROW_UP, "Raise to wake", 0 },
+    [T_RAISE]    = { DOT_ICON_ARROW_UP, "Raise",     0 },
     [T_SETTINGS] = { DOT_ICON_SETTINGS, "Settings",  0 },
 };
 
 static struct {
-    mspring on[NT];          /* 0..1 white fill */
+    mspring on[NT];          /* 0..1 fill */
     int pressed;             /* tile under the finger, -1 none; NT = slider */
     int sl_drag;
-    float sl_v0, sl_val;     /* slider value at grab, live value 0..1 */
+    float sl_v0, sl_dx0, sl_val;   /* value and finger dx at grab, live value 0..1 */
     int sl_step;             /* last 10 % step (ticks) */
     float t_enter;
     char note[32];           /* "WI-FI OFF" */
     float note_t;
+    int note_hold;           /* keep the note up (slider being dragged) */
+    float torch_t;           /* torch tile turned on: open the torch shortly after */
     int bat, charging;
     char time[8];
 } C;
 
 static void tile_pos(int i, float *x, float *y)
 {
-    if (i < 3) { *x = UI_CX + (i - 1) * PITCH_X; *y = 124; }
-    else if (i < 7) { *x = UI_CX + (i - 3 - 1.5f) * PITCH_X; *y = 218; }
-    else { *x = UI_CX + (i - 7 - 1.5f) * PITCH_X; *y = 312; }
+    if (i < 3) { *x = UI_CX + (i - 1) * PITCH; *y = 124; }
+    else if (i < 7) { *x = UI_CX + (i - 3 - 1.5f) * PITCH; *y = 220; }
+    else { *x = UI_CX + (i - 7 - 1.5f) * PITCH; *y = 316; }
 }
 
 static int present(int i) { return !k_tile[i].need || (hal_ext_present() & k_tile[i].need); }
@@ -87,7 +105,7 @@ static int state(int i)
     case T_WIFI: return nos_prefs.wifi;
     case T_BT: return nos_prefs.ble;
     case T_DND: return nos_prefs.dnd;
-    case T_TORCH: return nos_prefs.torch;
+    case T_TORCH: return nos_prefs.torch || C.torch_t > 0;
     case T_AOD: return nos_prefs.aod;
     case T_SOUND: return nos_prefs.sound;
     case T_HAPTIC: return nos_prefs.haptics;
@@ -100,8 +118,12 @@ static int state(int i)
 
 static void set_note(const char *name, const char *st)
 {
-    snprintf(C.note, sizeof C.note, "%s%s%s", name, st ? " " : "", st ? st : "");
-    C.note_t = nos_t;
+    char b[32];
+    snprintf(b, sizeof b, "%s%s%s", name, st ? " " : "", st ? st : "");
+    float age = nos_t - C.note_t;
+    if (!C.note[0] || age > 1.6f) C.note_t = nos_t;          /* fade in only when not showing */
+    else if (age > 0.10f) C.note_t = nos_t - 0.10f;          /* already up: restart the hold */
+    snprintf(C.note, sizeof C.note, "%s", b);
 }
 
 static void toggle(int i)
@@ -124,7 +146,7 @@ static void toggle(int i)
     prefs_save();
     if (on) nos_feedback(FB_TOGGLE_ON);
     msp_to(&C.on[i], on ? 1.0f : 0.0f);
-    set_note(i == T_DND ? "DND" : i == T_RAISE ? "RAISE" : i == T_AOD ? "AOD" : k_tile[i].name, on ? "ON" : "OFF");
+    set_note(k_tile[i].name, on ? "ON" : "OFF");
 }
 
 static void apply_brightness(float v)
@@ -135,13 +157,24 @@ static void apply_brightness(float v)
     hal_set_backlight((uint8_t)(pct * 255 / 100));
 }
 
+static void note_brightness(void)
+{
+    char b[8];
+    snprintf(b, sizeof b, "%d%%", (int)lroundf(C.sl_val * 100.0f));
+    set_note("BRIGHTNESS", b);
+}
+
 static void c_enter(void)
 {
+    C.torch_t = 0;
     for (int i = 0; i < NT; i++) msp_init(&C.on[i], state(i) ? 1.0f : 0.0f, SPRING_SNAPPY);
     C.pressed = -1;
     C.sl_drag = 0;
+    C.note_hold = 0;
     C.sl_val = nos_prefs.brightness / 100.0f;
-    C.t_enter = nos_t;
+    if (nos_revealed()) return;            /* back from torch/settings: as it was */
+    /* the finger is revealing the sheet: show everything at once */
+    C.t_enter = nos_entered_by_finger() ? nos_t - 2.0f : nos_t;
     C.note[0] = 0;
 }
 
@@ -153,12 +186,19 @@ static void c_leave(void)
 
 static void c_tick(float dt)
 {
+    if (C.torch_t > 0 && nos_t - C.torch_t >= 0.16f) {     /* the tile has turned on */
+        float x, y;
+        tile_pos(T_TORCH, &x, &y);
+        C.torch_t = 0;
+        nos_open(&scr_torch, (int)x, (int)y);
+    }
     for (int i = 0; i < NT; i++) {
         float tgt = state(i) ? 1.0f : 0.0f;              /* follow changes made elsewhere */
         if (C.on[i].target != tgt) msp_to(&C.on[i], tgt);
         msp_step(&C.on[i], dt);
     }
     if (!C.sl_drag) C.sl_val = nos_prefs.brightness / 100.0f;
+    if (C.note_hold) C.note_t = nos_t - 0.10f;
     const svc_sys_t *s = svc_sys();
     C.bat = s->battery_pct > 0 ? s->battery_pct : hal_battery_percent();
     C.charging = s->charging;
@@ -176,6 +216,33 @@ static float tile_in(int i)
     return floorf(e * 16.0f + 0.5f) / 16.0f;
 }
 
+/* the haptics glyph: a body with buzz marks either side (11 x 9 cells) */
+static void draw_vibrate(gfx_fb *fb, float cx, float cy, float pitch, uint16_t ink)
+{
+    static const char art[9][12] = {
+        "...#####...",
+        ".#.#...#.#.",
+        "#..#...#..#",
+        ".#.#...#.#.",
+        "#..#...#..#",
+        ".#.#...#.#.",
+        "#..#...#..#",
+        ".#.#...#.#.",
+        "...#####...",
+    };
+    float d = pitch * 0.8f, x0 = cx - 5 * pitch, y0 = cy - 4 * pitch;
+    for (int r = 0; r < 9; r++)
+        for (int c = 0; c < 11; c++)
+            if (art[r][c] == '#') dot_disc(fb, x0 + c * pitch, y0 + r * pitch, d, ink);
+}
+
+static void tile_icon(gfx_fb *fb, int i, float x, float y, uint16_t ink)
+{
+    const float pitch = 4.0f;
+    if (k_tile[i].icon == ICON_VIBRATE) draw_vibrate(fb, x, y, pitch, ink);
+    else dot_icon(fb, k_tile[i].icon, x, y, pitch, pitch * 0.8f, ink);
+}
+
 static void draw_tile(gfx_fb *fb, int i)
 {
     float x, y;
@@ -184,25 +251,32 @@ static void draw_tile(gfx_fb *fb, int i)
     if (e <= 0) return;
     float r = TILE_R * (0.86f + 0.14f * e);
     int pressed = C.pressed == i;
-    float pitch = 4.2f;
     if (!present(i)) {
         ui_circle(fb, x, y, r, gdim(C_SURF, e));
-        dot_icon(fb, k_tile[i].icon, x, y, pitch, pitch * 0.8f, gdim(C_DIS, e));
+        tile_icon(fb, i, x, y, gdim(C_DIS, e));
         return;
     }
+    if (i == T_SETTINGS) {                 /* an action, not a state: outlined */
+        ui_circle(fb, x, y, r, gdim(pressed ? C_SEC : C_SURF2, e));
+        ui_circle_line(fb, x, y, r, 2.0f, gdim(pressed ? C_SEC : C_LINE2, e));
+        tile_icon(fb, i, x, y, pressed ? C_BG : gdim(C_PRI, e));
+        return;
+    }
+    /* fill morph: neutral grey steps from C_SURF2 (26) to white; the ink flips at the
+     * midpoint, where the fill is mid-grey and both inks read */
     float k = m_clamp(C.on[i].x, 0, 1);
-    k = floorf(k * 16.0f + 0.5f) / 16.0f;
-    ui_circle(fb, x, y, r, gdim(pressed ? C_SURF3 : C_SURF2, e));
-    if (k > 0) ui_circle(fb, x, y, r * k, gdim(pressed ? C_SEC : C_WHITE, e));
-    uint16_t ink = k >= 0.5f ? C_BG : gdim(C_PRI, e);
-    dot_icon(fb, k_tile[i].icon, x, y, pitch, pitch * 0.8f, ink);
+    k = floorf(k * 8.0f + 0.5f) / 8.0f;
+    int lv = (int)lroundf(26 + (255 - 26) * k);
+    if (pressed) lv = 153;                     /* pressed: C_SEC with dark ink (house style) */
+    ui_circle(fb, x, y, r, gdim(grey(lv), e));
+    tile_icon(fb, i, x, y, (k >= 0.5f || pressed) ? C_BG : gdim(C_PRI, e));
 }
 
 static void draw_header(gfx_fb *fb)
 {
     float age = nos_t - C.note_t;
-    if (C.note[0] && age < 1.6f) {                       /* the last toggle, then back */
-        float k = age < 1.3f ? 1.0f : 1.0f - (age - 1.3f) / 0.3f;
+    if (C.note[0] && age < 1.6f) {                       /* the last change, then back */
+        float k = age < 0.10f ? age / 0.10f : age < 1.3f ? 1.0f : 1.0f - (age - 1.3f) / 0.3f;
         k = floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f;
         if (k > 0) { ui_label(fb, UI_CX, HEAD_Y, C.note, gdim(C_PRI, k), UI_CENTER); return; }
     }
@@ -220,7 +294,10 @@ static void c_draw(gfx_fb *fb)
     float e = tile_in(NT - 1);
     if (e > 0) {
         float v = floorf(C.sl_val * 100.0f + 0.5f) / 100.0f;
-        ui_slider(fb, SL_X, SL_Y + (1 - e) * 8, SL_W, SL_H, v, DOT_ICON_BRIGHT);
+        float y = SL_Y + floorf((1 - e) * 8 + 0.5f);
+        int press = C.pressed == NT || C.sl_drag;
+        dot_icon(fb, DOT_ICON_BRIGHT, SL_ICON_X, y + SL_H * 0.5f, 2.4f, 1.9f, gdim(press ? C_PRI : C_SEC, e));
+        ui_segments(fb, SL_X, y, SL_W, SL_H, 10, v * 10.0f, gdim(C_WHITE, e), gdim(press ? C_LINE2 : C_SURF2, e));
     }
 }
 
@@ -232,11 +309,11 @@ static int tile_at(int x, int y)
         float dx = x - tx, dy = y - ty;
         if (dx * dx + dy * dy <= 48.0f * 48.0f) return i;   /* the 96 px cell */
     }
-    if (y >= SL_Y - 14 && y <= SL_Y + SL_H + 14 && x >= SL_X - 10 && x <= SL_X + SL_W + 10) return NT;
+    if (y >= SL_Y - 16 && y <= SL_Y + SL_H + 16 && x >= SL_ICON_X - 20 && x <= SL_X + SL_W + 12) return NT;
     return -1;
 }
 
-static void tap_tile(int i, int x, int y)
+static void tap_tile(int i)
 {
     float tx, ty;
     tile_pos(i, &tx, &ty);
@@ -245,10 +322,15 @@ static void tap_tile(int i, int x, int y)
         set_note(i == T_SOUND ? "NO SPEAKER" : i == T_HAPTIC ? "NO MOTOR" : i == T_LTE ? "NO LTE MODULE" : "NO GPS MODULE", 0);
         return;
     }
-    if (i == T_TORCH) { nos_open(&scr_torch, (int)tx, (int)ty); return; }
+    if (i == T_TORCH) {                    /* on: the tile fills, then the light opens */
+        if (C.torch_t > 0) return;
+        nos_feedback(FB_TOGGLE_ON);
+        C.torch_t = nos_t;
+        msp_to(&C.on[T_TORCH], 1.0f);
+        return;
+    }
     if (i == T_SETTINGS) { nos_open(&scr_settings, (int)tx, (int)ty); return; }
     toggle(i);
-    (void)x; (void)y;
 }
 
 static int c_input(const nos_input *in)
@@ -261,7 +343,10 @@ static int c_input(const nos_input *in)
         if (C.pressed == NT && in->axis == AXIS_X) {
             C.sl_drag = 1;
             C.sl_v0 = C.sl_val;
+            C.sl_dx0 = in->dx;                 /* absorb the slop: no jump when it locks */
             C.sl_step = (int)floorf(C.sl_val * 10.0f + 0.5f);
+            C.note_hold = 1;
+            note_brightness();
             return 1;
         }
         C.pressed = -1;
@@ -269,32 +354,47 @@ static int c_input(const nos_input *in)
     case IN_DRAG:
         if (!C.sl_drag) return 0;
         {
-            float v = m_clamp(C.sl_v0 + in->dx / (SL_W - SL_H), 0.05f, 1.0f);
+            float v = m_clamp(C.sl_v0 + (in->dx - C.sl_dx0) / SL_W, 0.05f, 1.0f);
             int step = (int)floorf(v * 10.0f + 0.5f);
             if (step != C.sl_step) { C.sl_step = step; nos_feedback(v <= 0.05f || v >= 1.0f ? FB_LIMIT : FB_TICK); }
             C.sl_val = v;
             apply_brightness(v);
+            note_brightness();
         }
         return 1;
     case IN_DRAG_END:
         if (!C.sl_drag) return 0;
         C.sl_drag = 0;
+        C.note_hold = 0;
         prefs_save();
         return 1;
+    case IN_LONG:
+        if (C.pressed == T_TORCH && present(T_TORCH)) {
+            float tx, ty;
+            tile_pos(T_TORCH, &tx, &ty);
+            C.pressed = -1;
+            nos_open(&scr_torch, (int)tx, (int)ty);
+            return 1;
+        }
+        return 0;
     case IN_TAP: {
         int i = tile_at(in->x, in->y);
         C.pressed = -1;
-        if (i == NT) {            /* tap on the track: jump there */
-            float v = m_clamp((in->x - SL_X - SL_H * 0.5f) / (SL_W - SL_H), 0.05f, 1.0f);
+        if (i == NT) {            /* tap on the bar: jump there */
+            float v = m_clamp((in->x - SL_X) / SL_W, 0.05f, 1.0f);
+            v = ceilf(v * 10.0f - 0.001f) / 10.0f;   /* to the tapped segment's end */
             C.sl_val = v;
             apply_brightness(v);
             prefs_save();
             nos_feedback(FB_TICK);
-        } else if (i >= 0) tap_tile(i, in->x, in->y);
+            note_brightness();
+        } else if (i >= 0) tap_tile(i);
         return 1;
     }
     case IN_UP:
         C.pressed = -1;
+        if (C.sl_drag) { C.sl_drag = 0; prefs_save(); }
+        C.note_hold = 0;
         return 1;
     default:
         return 0;

@@ -1,19 +1,21 @@
 /* face_matrix.c — MATRIX: the Phone (3) Glyph Matrix as a watch face.
  *
  * The whole face is one circular 25 x 25 dot grid (489 cells, pitch 17.6, dot 14) and
- * everything is drawn INTO it: HH over MM in 5x7 digits, the seconds as the outer
- * ring of cells filling clockwise through the minute (a brighter head cell), and a
- * slow sparkle of a few background cells breathing in and out. Cells have four
- * brightness levels (ghost, dim, mid, full) — no anti-aliasing, no other shapes.
+ * everything is drawn INTO it: HH over MM in 5x7 digits; the seconds as the outer
+ * ring of cells filling clockwise through the minute, moving only on the second (60
+ * head cells picked by nearest angle to i x 6 degrees; the 8 spare ring cells light
+ * with their neighbours); a slow, dim sparkle in the background away from the digits;
+ * the battery, when low or charging, as a 5-cell bar on row 22. Four brightness levels
+ * (ghost, dim, mid, full) — no anti-aliasing, no other shapes. The unread
+ * notification is the top centre cell turning into a small red dot.
  *
- * Cost: cell levels are computed in tick() into a 625-byte PSRAM array; draw()
- * records one damage command per run of 5 cells (bbox + hash of their levels), so a
- * changing cell repaints an 88 x 18 px box. Idle frames: the seconds head moves once
- * a second and ~3 sparkles step 4 levels each, all single-cell boxes.
- * Full redraw (pager): 489 mask stamps, ~11 ms on the cost model.
- * Build-in: a ripple runs out from the centre switching cells on, the digits light
- * behind it. Minute change: changed cells fade out/in through the levels, top row
- * first (a 6-frame scan). */
+ * Cost: cell levels are computed in tick() into a PSRAM array; draw() records one
+ * damage command per run of 5 cells (bbox + hash of their levels), so a changing cell
+ * repaints an 88 x 18 px box. Full redraw (pager): ~11 ms on the cost model.
+ * Motion: build-in = a ripple from the centre switches cells on, digits light behind it;
+ * wake from AOD = the AOD digit dots grow into the grid while the grid fades up (no
+ * blank frame); minute change = the ring drains backwards while the changed digit
+ * cells fade out/in through the levels, each line scanning from its top (6 frames). */
 #include "faces/face_kit.h"
 #include "nos.h"
 #include <string.h>
@@ -22,10 +24,14 @@
 #define CEN    12
 #define PITCH  17.6f
 #define DOTD   14.0f
+#define D_AOD  6.5f
 #define R_CELL 12.4f
 #define CHUNK  5
+#define DRAIN_S 0.20f
+#define BAT_ROW 22
 
-static const uint16_t k_lvl[5] = { 0x18C3 /* #1A1A1A ghost */, 0x4A69 /* #4D4D4D */,
+#define GHOST 0x18C3
+static const uint16_t k_lvl[5] = { GHOST /* #181818 */, 0x4A69 /* #4D4D4D */,
                                    0x9CD3 /* #999 */, 0xFFFF, 0x0000 };
 #define L_OFF 4   /* not drawn (build-in, before the ripple reaches it) */
 
@@ -44,21 +50,42 @@ static const uint8_t k_dig[10][7] = {
 };
 
 typedef struct {
-    uint8_t lvl[N * N];       /* current level per cell (k_lvl index) */
-    uint8_t mask[N * N];      /* 1 inside the circle, 2 = outer ring cell */
-    uint8_t ringpos[N * N];   /* ring cells: angular order 0..nring-1 */
-    uint8_t now[N * N], prev[N * N];   /* digit patterns: current / before the change */
-    int nring;
+    uint8_t  lvl[N * N];       /* current level per cell (k_lvl index) */
+    uint8_t  mask[N * N];      /* 1 inside the circle, 2 = outer ring cell */
+    uint16_t ang[N * N];       /* ring cells: clock angle, 0.1 degree */
+    int16_t  head[60];         /* ring cell lit as the head at second i */
+    uint8_t  now[N * N], prev[N * N];   /* digit patterns: current / before the change */
+    uint8_t  used[N * N];      /* scratch for the head assignment */
     int built;
 } mx_state;
 
 static mx_state *M;
 static float s_change_t = -100.0f;
 static int s_last_hm = -1;
+static float s_wake_k = 1.0f;          /* published by tick for draw */
 static uint8_t s_lo[N], s_hi[N];       /* first / one-past-last cell per row */
+static fk_wake s_w;
 
 static float cell_x(int c) { return UI_CX + (float)(c - CEN) * PITCH; }
 static float cell_y(int r) { return UI_CY + (float)(r - CEN) * PITCH; }
+
+/* clock angle of (dx, dy) in degrees, 12 o'clock = 0, clockwise (atan approximation) */
+static float clock_deg(float dx, float dy)
+{
+    float ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+    float mn = ax < ay ? ax : ay, mxv = ax > ay ? ax : ay;
+    float t = mxv > 0 ? mn / mxv : 0, t2 = t * t;
+    float q = t * (0.99997726f + t2 * (-0.33262347f + t2 * (0.19354346f + t2 * (-0.11643287f + t2 * (0.05265332f - t2 * 0.01172120f)))));
+    if (ay > ax) q = 1.5707963f - q;              /* angle of (ax, ay) from the x axis */
+    float th;                                      /* standard atan2(-dy, dx) */
+    if (dx >= 0 && dy <= 0) th = q;
+    else if (dx < 0 && dy <= 0) th = 3.1415927f - q;
+    else if (dx < 0) th = 3.1415927f + q;
+    else th = 6.2831853f - q;
+    float a = 1.5707963f - th;
+    if (a < 0) a += 6.2831853f;
+    return a * 57.29578f;
+}
 
 static void build(void)
 {
@@ -78,44 +105,31 @@ static void build(void)
         }
     }
     /* outer ring: inside cells with an outside 4-neighbour */
-    int idx[N * 4];
-    float ang[N * 4];
-    int n = 0;
     for (int r = 0; r < N; r++)
         for (int c = 0; c < N; c++) {
             if (!M->mask[r * N + c]) continue;
             int edge = r == 0 || c == 0 || r == N - 1 || c == N - 1 ||
                        !M->mask[(r - 1) * N + c] || !M->mask[(r + 1) * N + c] ||
                        !M->mask[r * N + c - 1] || !M->mask[r * N + c + 1];
-            if (!edge || n >= N * 4) continue;
+            if (!edge) continue;
             M->mask[r * N + c] = 2;
-            float dx = (float)(c - CEN), dy = (float)(r - CEN);
-            /* clockwise from 12 o'clock: atan2(dx, -dy) mapped to [0, 2pi) */
-            float a = 0;
-            {   /* cheap atan2 good to ~0.3 deg; only ordering matters */
-                float ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
-                float mn = ax < ay ? ax : ay, mxv = ax > ay ? ax : ay;
-                float t = mxv > 0 ? mn / mxv : 0, t2 = t * t;
-                float q = t * (0.99997726f + t2 * (-0.33262347f + t2 * (0.19354346f + t2 * (-0.11643287f + t2 * (0.05265332f - t2 * 0.01172120f)))));
-                if (ay > ax) q = 1.5707963f - q;          /* angle from the x axis */
-                /* q = angle of (ax, ay) from +x; convert to clock angle */
-                float th;                                  /* standard atan2(-dy, dx) */
-                if (dx >= 0 && dy <= 0) th = q;
-                else if (dx < 0 && dy <= 0) th = 3.1415927f - q;
-                else if (dx < 0) th = 3.1415927f + q;
-                else th = 6.2831853f - q;
-                a = 1.5707963f - th;                       /* 12 o'clock = 0, clockwise */
-                if (a < 0) a += 6.2831853f;
-            }
-            idx[n] = r * N + c; ang[n] = a; n++;
+            M->ang[r * N + c] = (uint16_t)(clock_deg((float)(c - CEN), (float)(r - CEN)) * 10.0f + 0.5f);
         }
-    for (int i = 1; i < n; i++) {                          /* insertion sort by angle */
-        int ki = idx[i]; float ka = ang[i]; int j = i - 1;
-        while (j >= 0 && ang[j] > ka) { ang[j + 1] = ang[j]; idx[j + 1] = idx[j]; j--; }
-        ang[j + 1] = ka; idx[j + 1] = ki;
+    /* one head cell per second: the free ring cell nearest i x 6 degrees */
+    uint8_t *used = M->used;
+    for (int i = 0; i < 60; i++) {
+        int best = -1, bd = 1 << 30;
+        for (int k = 0; k < N * N; k++) {
+            if (M->mask[k] != 2 || used[k]) continue;
+            int d = (int)M->ang[k] - i * 60;
+            if (d > 1800) d -= 3600;
+            if (d < -1800) d += 3600;
+            if (d < 0) d = -d;
+            if (d < bd) { bd = d; best = k; }
+        }
+        M->head[i] = (int16_t)best;
+        if (best >= 0) used[best] = 1;
     }
-    for (int i = 0; i < n; i++) M->ringpos[idx[i]] = (uint8_t)i;
-    M->nring = n;
     M->built = 1;
 }
 
@@ -129,7 +143,9 @@ static void pattern(uint8_t *out, int hour, int minute)
     const char *rows[2] = { hh, mm };
     for (int line = 0; line < 2; line++)
         for (int k = 0; k < 2; k++) {
-            const uint8_t *g = k_dig[rows[line][k] - '0'];
+            char ch = rows[line][k];
+            if (ch < '0' || ch > '9') continue;               /* 12 h blank: ghost cells */
+            const uint8_t *g = k_dig[ch - '0'];
             int c0 = k ? 13 : 7, r0 = line ? 13 : 5;
             for (int r = 0; r < 7; r++)
                 for (int c = 0; c < 5; c++)
@@ -146,10 +162,15 @@ static unsigned hsh(unsigned a, unsigned b)
     return h;
 }
 
+static int in_digit_zone(int r, int c) { return r >= 4 && r <= 20 && c >= 6 && c <= 18; }
+
 static void tick(const face_ctx *c, float dt)
 {
     build();
     fk_aod_update(c);
+    fk_wake_tick(&s_w, c);
+    fk_unread_tick(c);
+    s_wake_k = fk_wake_k(&s_w, c);
     if (!M) return;
     int hm = c->dt.hour * 60 + c->dt.minute;
     if (s_last_hm < 0) { pattern(M->now, c->dt.hour, c->dt.minute); memcpy(M->prev, M->now, N * N); }
@@ -160,10 +181,16 @@ static void tick(const face_ctx *c, float dt)
     }
     s_last_hm = hm;
 
-    float e = c->enter;
+    float e = fk_build(&s_w, c);
+    int calm = c->aod || s_wake_k < 1.0f;            /* no ring / sparkle / status */
     float since = c->t - s_change_t;
-    float secf = (float)c->dt.second + (float)c->dt.millis * 0.001f;
-    int head = (int)(secf / 60.0f * (float)M->nring);
+    int sec = c->dt.second;
+    int past10 = sec * 60;                            /* ring lit below this angle (0.1 deg) */
+    int head = M->head[sec];
+    if (since < DRAIN_S && sec == 0) {               /* the full ring drains backwards */
+        past10 = (int)(3600.0f * (1.0f - fk_mech(since / DRAIN_S)));
+        head = -1;
+    }
     float wave = e < 1.0f ? fk_ease(e / 0.8f) * (R_CELL + 3.0f) : 1e9f;
 
     for (int r = 0; r < N; r++)
@@ -172,23 +199,21 @@ static void tick(const face_ctx *c, float dt)
             uint8_t mk = M->mask[i];
             if (!mk) continue;
             int L = 0;
-            /* digits, with the minute-change scan */
+            /* digits, with the minute-change scan (each line from its own top row) */
             if (M->now[i] || M->prev[i]) {
                 if (M->now[i] == M->prev[i]) L = 3;
                 else {
-                    int step = (int)((since - (float)(r - 5) * 0.012f) * 30.0f);   /* frames */
+                    int r0 = r < 12 ? 5 : 13;
+                    int step = (int)((since - (float)(r - r0) * 0.012f) * 30.0f);
                     if (step < 0) step = 0;
                     if (step > 3) step = 3;
                     L = M->now[i] ? step : 3 - step;
                 }
             }
-            /* seconds ring */
-            if (mk == 2 && !c->aod) {
-                int p = M->ringpos[i];
-                if (p < head) L = 1;
-                else if (p == head) L = 3;
+            if (mk == 2 && !calm) {
+                if (i == head) L = 3;
+                else if ((int)M->ang[i] < past10) L = 1;
             }
-            /* build-in ripple: cells appear as the wave passes, crest bright */
             if (e < 1.0f) {
                 float dx = (float)(col - CEN), dy = (float)(r - CEN);
                 float dist = gfx_fast_sqrt(dx * dx + dy * dy);
@@ -201,33 +226,56 @@ static void tick(const face_ctx *c, float dt)
             }
             M->lvl[i] = (uint8_t)L;
         }
-    /* sparkle: 4 slots, each lights one background cell for 1.6 s (dim-mid-dim) */
-    if (e >= 1.0f && !c->aod) {
-        for (int j = 0; j < 4; j++) {
+    if (e >= 1.0f && !calm) {
+        /* sparkle: 3 slots, each breathes one background cell to the dim level */
+        for (int j = 0; j < 3; j++) {
             float tt = c->t + (float)j * 0.83f;
             int cyc = (int)(tt / 2.4f);
-            float ph = tt / 2.4f - (float)cyc;               /* 0..1 within the cycle */
-            if (ph > 0.66f) continue;                        /* rests a third of the time */
+            float ph = tt / 2.4f - (float)cyc;
+            if (ph > 0.5f) continue;
             unsigned h = hsh((unsigned)cyc * 7u + (unsigned)j, 0x5EEDu);
             int cell = (int)(h % (N * N));
-            if (M->mask[cell] != 1 || M->now[cell] || M->prev[cell]) continue;
-            float k = ph / 0.66f;                            /* 0..1 */
-            int L = k < 0.2f || k > 0.8f ? 1 : 2;
-            if (L > M->lvl[cell]) M->lvl[cell] = (uint8_t)L;
+            int r = cell / N, col = cell % N;
+            if (M->mask[cell] != 1 || in_digit_zone(r, col) || r >= BAT_ROW - 1) continue;
+            if (M->lvl[cell] < 1) M->lvl[cell] = 1;
+        }
+        /* battery: a 5-cell bar on row 22 when low or charging */
+        if (fk_status_shown(c)) {
+            int lit = (c->battery + 19) / 20;
+            if (lit < 1) lit = 1;
+            if (lit > 5) lit = 5;
+            for (int k = 0; k < 5; k++) {
+                int L = k < lit ? 3 : 1;
+                if (c->charging && k == lit - 1 && c->battery < 100) L = fk_blink(c->dt.millis) > 0.5f ? 3 : 2;
+                M->lvl[BAT_ROW * N + 10 + k] = (uint8_t)L;
+            }
         }
     }
+}
+
+/* per-cell look: level colour normally; during the wake morph the digit cells grow from
+ * the AOD dot and the grid fades up from black */
+static int cell_look(int i, float k, float *d, uint16_t *col)
+{
+    int L = M->lvl[i];
+    if (L == L_OFF) return 0;
+    if (k >= 1.0f) { *d = DOTD; *col = k_lvl[L]; return 1; }
+    if (M->now[i]) { *d = D_AOD + (DOTD - D_AOD) * k; *col = ui_mix(C_SEC, C_WHITE, k); return 1; }
+    if (k < 0.5f) return 0;
+    *d = DOTD; *col = ui_mix(C_BG, GHOST, (k - 0.25f) / 0.75f);
+    return 1;
 }
 
 static void draw(gfx_fb *fb, const face_ctx *c)
 {
     if (!M || !M->built) return;
+    float dx, dy;
+    fk_wake_off(&s_w, c, &dx, &dy);
     if (c->aod) {
-        float dx = (float)fk_aod_dx, dy = (float)fk_aod_dy;
         for (int r = 5; r < 20; r++) {
             int any = 0;
             for (int col = 7; col < 18; col++) any |= M->now[r * N + col];
             if (!any) continue;
-            /* one record per row of digits */
             if (fb->rec) {
                 unsigned h = gfx_hash_u(0xA0Du, (unsigned)r);
                 for (int col = 7; col < 18; col++) h = gfx_hash_u(h, M->now[r * N + col]);
@@ -237,33 +285,37 @@ static void draw(gfx_fb *fb, const face_ctx *c)
                 continue;
             }
             for (int col = 7; col < 18; col++)
-                if (M->now[r * N + col]) dot_disc(fb, cell_x(col) + dx, cell_y(r) + dy, 6.5f, C_SEC);
+                if (M->now[r * N + col]) dot_disc(fb, cell_x(col) + dx, cell_y(r) + dy, D_AOD, C_SEC);
         }
+        fk_unread(fb, c, C_SEC, C_BG, dx, dy - 2.2f);
         return;
     }
+    float k = s_wake_k;
     fk_view v;
     if (!fb->rec) fk_view_of(fb, &v);
     const float e = DOTD * 0.5f + 1.0f;
     for (int r = 0; r < N; r++) {
-        float y = cell_y(r);
+        float y = cell_y(r) + dy;
         if (!fb->rec && (y + e <= v.y0 || y - e >= v.y1)) continue;
         for (int c0 = s_lo[r]; c0 < s_hi[r]; c0 += CHUNK) {
             int c1 = c0 + CHUNK < s_hi[r] ? c0 + CHUNK : s_hi[r];
             if (fb->rec) {
                 unsigned h = gfx_hash_u(0x3A7Bu, (unsigned)(r * 64 + c0));
-                for (int col = c0; col < c1; col++) h = gfx_hash_u(h, M->lvl[r * N + col]);
-                gfx_rec_cmd(fb, (int)(cell_x(c0) - e), (int)(y - e), (int)(cell_x(c1 - 1) + e) + 1,
+                h = gfx_hash_f(gfx_hash_f(gfx_hash_f(h, k), dx), dy);
+                for (int col = c0; col < c1; col++) h = gfx_hash_u(h, M->lvl[r * N + col] | (M->now[r * N + col] << 4));
+                gfx_rec_cmd(fb, (int)(cell_x(c0) + dx - e), (int)(y - e), (int)(cell_x(c1 - 1) + dx + e) + 1,
                             (int)(y + e) + 1, h);
                 continue;
             }
-            if (cell_x(c1 - 1) + e <= v.x0 || cell_x(c0) - e >= v.x1) continue;
+            if (cell_x(c1 - 1) + dx + e <= v.x0 || cell_x(c0) + dx - e >= v.x1) continue;
             for (int col = c0; col < c1; col++) {
-                int L = M->lvl[r * N + col];
-                if (L == L_OFF) continue;
-                dot_disc(fb, cell_x(col), y, DOTD, k_lvl[L]);
+                float d; uint16_t cc;
+                if (cell_look(r * N + col, k, &d, &cc)) dot_disc(fb, cell_x(col) + dx, y, d, cc);
             }
         }
     }
+    /* the unread dot replaces the top centre cell (row 0 sits at y = 21.8) */
+    fk_unread(fb, c, C_RED, C_BG, dx, dy - 2.2f);
 }
 
 static const struct nos_screen *tap(int x, int y) { return 0; }

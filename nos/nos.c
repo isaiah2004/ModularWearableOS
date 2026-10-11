@@ -803,7 +803,19 @@ static int damage_add(int rects[][4], int *nr, const gfx_cmd *c)
     int box[4] = { c->x0, c->y0, c->x1, c->y1 };
     for (int r = 0; r < *nr; r++)
         if (rect_near(rects[r], box, MERGE_GAP)) { rect_union(rects[r], box); return 0; }
-    if (*nr >= MAXRECTS) return -1;
+    if (*nr >= MAXRECTS) {
+        /* out of rects: merge into the one that grows least, rather than giving up and
+         * repainting the whole screen (busy lists hit this ~14% of fling frames) */
+        int best = 0; long best_cost = -1;
+        for (int r = 0; r < *nr; r++) {
+            int u[4] = { rects[r][0], rects[r][1], rects[r][2], rects[r][3] };
+            rect_union(u, box);
+            long grow = (long)(u[2] - u[0]) * (u[3] - u[1]) - (long)(rects[r][2] - rects[r][0]) * (rects[r][3] - rects[r][1]);
+            if (best_cost < 0 || grow < best_cost) { best_cost = grow; best = r; }
+        }
+        rect_union(rects[best], box);
+        return 0;
+    }
     memcpy(rects[*nr], box, sizeof box);
     (*nr)++;
     return 0;

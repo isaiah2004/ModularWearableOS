@@ -71,6 +71,7 @@ static struct {
     uint32_t last_tick_ms;
     int prev_awake_ms;
     int covered;             /* another screen is on top */
+    int holding; float hold_t;   /* finger resting on the face: the edit rim charges */
     int inited;
 } H;
 
@@ -101,6 +102,14 @@ static float real_pos(void)
 }
 static int nearest_page(void) { return slot_page((int)floorf(H.x / PAGE_W + 0.5f)); }
 static int at_face(void) { return !H.dragging && !H.settling && H.x == 0.0f; }
+
+/* widget pressed states: the page under a resting finger hears down / up (or cancel) */
+static int s_press_pg;
+static void widget_press(int page, int x, int y, int down)
+{
+    if (!down) { if (s_press_pg >= 1 && k_wg[s_press_pg - 1]->press) k_wg[s_press_pg - 1]->press(x, y, 0); s_press_pg = 0; return; }
+    if (page >= 1 && k_wg[page - 1]->press) { k_wg[page - 1]->press(x, y, 1); s_press_pg = page; }
+}
 
 static void settle_to(float target, float v)
 {
@@ -169,6 +178,8 @@ static void home_enter(void)
 static void home_leave(void)
 {
     H.covered = 1;
+    H.holding = 0;
+    widget_press(0, 0, 0, 0);
     if (H.dragging || H.grabbed) pager_release(0);
 }
 
@@ -209,8 +220,9 @@ static void home_tick(float dt)
     int awake = nos_awake_ms();
     /* waking: the frame loop paused, AOD ended, or the screen-off timeout had passed */
     int woke = (!H.covered && now - H.last_tick_ms > 1500u) ||
-               (H.last_aod && !nos_aod) ||
                (H.prev_awake_ms > nos_prefs.sleep_s * 1000 + 500 && awake < 500);
+    /* out of AOD the time was on the glass a frame ago: no build-in from nothing */
+    if (H.last_aod && !nos_aod) woke = 0;
     if (nos_aod && !H.last_aod) {              /* AOD shows the face only */
         H.alias = 0; H.x = 0; H.settling = H.dragging = H.grabbed = 0;
         H.shown_page = 0; H.page = 0;
@@ -219,7 +231,8 @@ static void home_tick(float dt)
     H.last_aod = nos_aod;
     H.last_tick_ms = now;
     H.prev_awake_ms = awake;
-    if (nos_prefs.face != H.face_idx) { H.face_idx = nos_prefs.face; sys_home_build_in(); }
+    /* a face picked in the picker was already shown live and full size: no rebuild */
+    if (nos_prefs.face != H.face_idx) H.face_idx = nos_prefs.face;
 
     /* pager */
     if (H.settling) {
@@ -315,10 +328,20 @@ static void home_draw(gfx_fb *fb)
         draw_page(fb, slot_page(s), ox);
     }
     draw_dots(fb);
-    /* the unread dot: the face draws its own (face_ctx.unread); widget pages get this one */
-    if (H.c.unread > 0 && real_pos() > 0.5f) {
-        dot_disc(fb, UI_CX, 24, 20, C_BG);
-        dot_disc(fb, UI_CX, 24, 9, C_RED);
+    /* the unread dot: on page 0 the face draws its own (face_ctx.unread); widget pages get
+     * this red one, fading in with the slot offset as the face slides away */
+    if (H.c.unread > 0 && xi > 0) {
+        float k = floorf(m_clamp(H.x / PAGE_W, 0, 1) * 8.0f + 0.5f) / 8.0f;
+        if (k > 0) {
+            if (xi >= UI_CX + 14) dot_disc(fb, UI_CX, 24, 20, C_BG);   /* face clear: backdrop */
+            dot_disc(fb, UI_CX, 24, 9, ui_dim(C_RED, k));
+        }
+    }
+    /* a resting finger on the face charges the edit rim (the picker continues it) */
+    if (H.holding && xi == 0) {
+        float k = m_clamp((nos_t - H.hold_t - 0.15f) / 0.30f, 0, 1) * 3.0f;
+        k = floorf(k + 0.5f) / 8.0f;
+        if (k > 0) gfx_ring(fb, UI_CX, UI_CY, UI_R - 3.5f, 3.0f, gdim(C_SEC, k));
     }
 }
 
@@ -333,8 +356,15 @@ static int home_input(const nos_input *in)
         H.grabbed = 1;
         H.grab_x = H.x;
         H.grab_page = (int)floorf(H.x / PAGE_W + 0.5f);
+        H.holding = !H.was_moving && H.x == 0.0f;
+        H.hold_t = nos_t;
+        /* a settled widget page shows its pressed state */
+        if (!H.was_moving && !H.alias && H.x == (float)H.grab_page * PAGE_W)
+            widget_press(H.grab_page, in->x, in->y, 1);
         return 1;
     case IN_DRAG_START:
+        H.holding = 0;
+        widget_press(0, in->x, in->y, 0);           /* paging or a sheet: cancel */
         if (in->axis == AXIS_X) {
             H.dragging = 1;
             H.grab_x = H.x;
@@ -364,6 +394,8 @@ static int home_input(const nos_input *in)
         return 1;
     case IN_TAP: {
         int was = H.was_moving;
+        H.holding = 0;
+        widget_press(0, in->x, in->y, 0);
         if (H.grabbed) pager_release(0);
         if (was || H.x != (float)((int)floorf(H.x / PAGE_W + 0.5f)) * PAGE_W) return 1;
         int p = nearest_page();
@@ -377,6 +409,7 @@ static int home_input(const nos_input *in)
         return 1;
     }
     case IN_LONG:
+        H.holding = 0;
         if (nearest_page() == 0 && H.x < 1.0f && !H.was_moving) {
             H.grabbed = 0;
             nos_push(&scr_faces, TX_DISSOLVE);
@@ -386,15 +419,16 @@ static int home_input(const nos_input *in)
     case IN_UP:
         if (H.grabbed && !H.dragging) pager_release(0);
         H.grabbed = 0;
+        H.holding = 0;
+        widget_press(0, in->x, in->y, 0);
         return 1;
-    case IN_BTN:
+    case IN_BTN:                           /* dispatched on release, at once */
+        H.holding = 0;
         if (at_face()) nos_open(&scr_launcher, GFX_W, UI_CY);
         else { nos_feedback(FB_BACK); go_face(); }
         return 1;
-    case IN_BTN_LONG:
-        nos_push(&scr_power, TX_RISE);
-        return 1;
-    case IN_BTN_DOUBLE: {
+    case IN_BTN_DOUBLE: {                  /* e.g. pressed twice in an app: the first press
+                                              came home, the second reopens the last app */
         const nos_screen *s = sys_launcher_last();
         if (s) { nos_open(s, GFX_W, UI_CY); return 1; }
         return 0;

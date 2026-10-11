@@ -49,7 +49,7 @@ typedef struct {
 static struct {
     row_spr rows[MAXAPP];
     uint16_t lut[NLEV + 1][256];      /* grey index -> RGB565 at level/NLEV brightness */
-    uint16_t lut_press[256];          /* pressed: the disc lifts to C_SURF3 */
+    uint16_t lut_press[256];          /* pressed: the disc lifts to C_SEC */
     uint16_t scratch[320 * 64];       /* RGB565 canvas sprites are drawn on */
     int16_t  curve[GFX_H + 2 * (int)ROW_P];   /* x shift by |row centre - CY| */
 } *L;
@@ -93,9 +93,10 @@ static int ensure_tables(void)
     memset(L, 0, sizeof *L);
     for (int l = 0; l <= NLEV; l++)
         for (int i = 0; i < 256; i++) L->lut[l][i] = grey565((i * l + NLEV / 2) / NLEV);
-    /* disc fill grey (C_SURF2 = 26) -> C_SURF3 (42); ink above it scales into the rest */
+    /* disc fill grey (C_SURF2 = 26) -> C_SEC (153), the house pressed fill; the white
+     * ink above it scales into the rest and stays white */
     for (int i = 0; i < 256; i++)
-        L->lut_press[i] = grey565(i <= 26 ? i * 42 / 26 : 42 + (i - 26) * (255 - 42) / (255 - 26));
+        L->lut_press[i] = grey565(i <= 26 ? i * 153 / 26 : 153 + (i - 26) * (255 - 153) / (255 - 26));
     for (int y = 0; y < (int)(sizeof L->curve / sizeof L->curve[0]); y++) {
         float d = (float)y, r = (float)UI_R;
         L->curve[y] = (int16_t)(CURVE_K * (d < r ? r - sqrtf(r * r - d * d) : r) + 0.5f);
@@ -249,6 +250,14 @@ static int geo(int i, float xr, row_geo *g)
     /* build-in: rows arrive in waves outward from the focus, sliding in from the right */
     float e = (nos_t - S.t_enter - fabsf((float)i - xr / ROW_P) * (2.0f / NOS_FPS)) / 0.22f;
     e = bezier_ease(&EASE_DECEL, m_clamp(e, 0, 1));
+    /* keep the whole name inside the glass: on outer rows the bezel chord is shorter,
+     * so the row follows the curve less rather than cutting its name */
+    if (L->rows[i].ready) {
+        float ey = cy < UI_CY ? cy - 16 : cy + 16;           /* the name's outer edge */
+        int lim = UI_CX + ui_half_width(ey) - 20 - NAME_DX - L->rows[i].name_w;
+        if (g->ix > lim) g->ix = lim;
+        if (g->ix < ICON_X) g->ix = ICON_X;
+    }
     g->ix += (int)lroundf((1.0f - e) * 40.0f);
     f *= e;
     g->lev = (int)(f * NLEV + 0.5f);
@@ -346,6 +355,14 @@ static int l_input(const nos_input *in)
         S.pressed = -1;
         if (S.mode == M_DRAG) release(0);
         return 1;
+    case IN_BTN_DOUBLE: {                  /* button twice from the face: the last app */
+        const nos_screen *last = sys_launcher_last();
+        if (!last) return 0;
+        nos_iris_x = GFX_W; nos_iris_y = UI_CY;
+        nos_feedback(FB_OPEN);
+        nos_replace(last, TX_IRIS);
+        return 1;
+    }
     default:
         return 0;
     }

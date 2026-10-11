@@ -39,12 +39,10 @@ static void body_line(gfx_fb *fb, int y, const char *s, uint16_t c)
     ui_text_fit(fb, UI_F_BODY, UI_CX, y, s, c, UI_CENTER, x1 - x0);
 }
 
-static void absent(gfx_fb *fb, const char *title, int icon, const char *what, float build, float txt)
+static void absent(gfx_fb *fb, const char *title, const char *what, float build)
 {
     ui_title(fb, title, 0);
-    dot_icon_anim(fb, icon, UI_CX, 176, 7.0f, 5.6f, C_DIS, build, DOT_REVEAL_RAIN);
-    body_line(fb, 288, "Module not connected", ui_dim(C_PRI, txt));
-    body_line(fb, 322, what, ui_dim(C_SEC, txt));
+    ui_absent(fb, DOT_ICON_MIC, "Not connected", what, "MIC MODULE", build);
 }
 
 /* =========================================================== memo store ===== */
@@ -151,6 +149,7 @@ static struct {
     float t_play;
     uint32_t play_ms;
     int   real_play;             /* the HAL is actually playing it */
+    int   rec_lock;              /* a sideways drag while recording: rubber band only */
 } R = { .playing = -1 };
 
 static int on_page(int p) { return fabsf(R.px.x - p * PAGE_W) < PAGE_W; }
@@ -164,37 +163,54 @@ static void play_stop(void)
     R.real_play = 0;
 }
 
+#define MCARD_X0 53                 /* fixed card: 360 px wide, r 40 */
+#define MCARD_W  360
+
+/* "6 S" under a minute, else "2:07" (never confusable with a clock time) */
+static void fmt_len(char *b, int n, uint32_t ms)
+{
+    uint32_t s = (ms + 500) / 1000;
+    if (s < 60) snprintf(b, (size_t)n, "%u S", (unsigned)s);
+    else if (s < 3600) snprintf(b, (size_t)n, "%u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+    else snprintf(b, (size_t)n, "%u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
+}
+
 static void memo_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
 {
     if (!s_memos || i >= s_nmemo) return;
     const memo *m = &s_memos[i];
-    float st = q((nos_t - R.t_enter - 0.066f * i) / 0.2f, 4);
+    float st = q((nos_t - R.t_enter - 0.034f * (i < 6 ? i : 6)) / 0.15f, 4);
     float k = fade * st;
     if (k <= 0) return;
-    int cx0 = x0 + 4, cx1 = x1 - 4;
-    ui_rrect(fb, (float)cx0, (float)(y + 6), (float)(cx1 - cx0), (float)(h - 12), 32, ui_dim(pressed ? C_SURF2 : C_SURF, k));
+    ui_rrect(fb, (float)MCARD_X0, (float)(y + 4), (float)MCARD_W, (float)(h - 8), 40,
+             ui_dim(pressed ? C_LINE2 : C_SURF2, k));
     int playing = R.playing == i;
-    float bx = (float)cx0 + 42, by = (float)y + h * 0.5f;
-    ui_circle(fb, bx, by, 24, ui_dim(playing ? C_WHITE : C_SURF3, k));
+    float bx = (float)MCARD_X0 + 44, by = (float)y + h * 0.5f;
+    /* no speaker: the play buttons go quiet */
+    uint16_t disc = playing ? C_WHITE : R.spk ? C_SURF3 : C_SURF;
+    uint16_t ink = playing ? C_BG : R.spk ? C_PRI : C_DIS;
+    ui_circle(fb, bx, by, 24, ui_dim(disc, k));
     int icon = playing ? DOT_ICON_PAUSE : DOT_ICON_PLAY;
-    dot_icon(fb, icon, bx - (playing ? 0 : 2.2f), by, 2.4f, 1.9f, playing ? C_BG : ui_dim(C_PRI, k));
-    int tx = cx0 + 80;
-    ui_text_fit(fb, UI_F_BODY, tx, y + 44, m->name, ui_dim(C_PRI, k), UI_LEFT, cx1 - 24 - tx);
-    char d[16];
-    ui_fmt_dur(d, sizeof d, m->dur_ms, 0);
+    dot_icon(fb, icon, bx - (playing ? 0 : 2.2f), by, 2.4f, 1.9f, playing ? ink : ui_dim(ink, k));
+    int tx = MCARD_X0 + 84, tr = UI_VALUE_X;
+    ui_text_fit(fb, UI_F_BODY, tx, y + 38, m->name, ui_dim(C_PRI, k), UI_LEFT, tr - tx);
+    char len[16], b[40];
     if (playing && m->dur_ms) {
-        /* progress: 12 dots, filling one by one */
+        /* progress: 12 dots filling one by one, the elapsed time beside them */
         float p = m_clamp((float)R.play_ms / (float)m->dur_ms, 0, 1);
-        dot_bar(fb, (float)tx + 3, (float)(y + 68), 12, 11.0f, 6.0f, q(p, 12) * 12.0f, C_WHITE, C_LINE2);
+        dot_bar(fb, (float)tx + 3, (float)(y + 63), 12, 11.0f, 6.0f, q(p, 12) * 12.0f, C_WHITE, C_LINE2);
+        fmt_len(len, sizeof len, R.play_ms);
+        ui_label(fb, tr, y + 69, len, ui_dim(C_SEC, k), UI_RIGHT);
     } else {
         /* length, then the time if it was today, else the day */
-        char b[40], w[12];
+        char w[12];
         hal_datetime now;
         hal_get_datetime(&now);
         if (now.month == m->mo && now.day == m->d) ui_fmt_time(w, sizeof w, m->h, m->mi);
         else snprintf(w, sizeof w, "%d %s", m->d, ui_month3(m->mo));
-        snprintf(b, sizeof b, "%s  %s", d, w);
-        ui_text_fit(fb, UI_F_LABEL, tx, y + 74, b, ui_dim(C_DIS, k), UI_LEFT, cx1 - 24 - tx);
+        fmt_len(len, sizeof len, m->dur_ms);
+        snprintf(b, sizeof b, "%s \xB7 %s", len, w);
+        ui_text_fit(fb, UI_F_LABEL, tx, y + 69, b, ui_dim(C_DIS, k), UI_LEFT, tr - tx);
     }
 }
 
@@ -203,7 +219,7 @@ static void memo_tap(int i)
     if (!s_memos || i < 0 || i >= s_nmemo) return;
     if (R.playing == i) { play_stop(); return; }
     play_stop();
-    if (!R.spk) { nos_feedback(FB_ERROR); nos_toast("Speaker not connected"); return; }
+    if (!R.spk) { nos_feedback(FB_ERROR); nos_toast("No speaker module"); return; }
     int ok = hal_audio_play_file(s_memos[i].path);
 #ifdef ESP_PLATFORM
     if (!ok) { nos_feedback(FB_ERROR); nos_toast("Can't play this memo"); return; }
@@ -217,7 +233,7 @@ static void memo_tap(int i)
 /* --------------------------------------------------------------- enter */
 static void memo_enter(void)
 {
-    R.t_enter = nos_t;
+    R.t_enter = nos_t + 0.4f * 0.42f;      /* build from 40% of the opening iris */
     R.build = R.txt = 0;
     msp_init(&R.px, 0, SPRING_PAGE);
     R.page = 0;
@@ -233,7 +249,7 @@ static void memo_enter(void)
     R.meter = 0;
     memset(R.wave, 0, sizeof R.wave);
     memo_load();
-    if (!R.list_inited) { ui_list_init(&R.list, s_nmemo, 100, 104, memo_row, memo_tap); R.list_inited = 1; }
+    if (!R.list_inited) { ui_list_init(&R.list, s_nmemo, UI_ROW_H, 104, memo_row, memo_tap); R.list_inited = 1; }
     else ui_list_set_n(&R.list, s_nmemo);
     R.list.margin = 30;
     R.playing = -1;
@@ -309,8 +325,8 @@ static void memo_tick(float dt)
     uint32_t pres = hal_ext_present();
     R.mic = (pres & EXT_MIC) != 0;
     R.spk = (pres & EXT_SPEAKER) != 0;
-    R.build = q((nos_t - R.t_enter) / 0.36f, 32);
-    R.txt = q((nos_t - R.t_enter - 0.08f) / 0.2f, 4);
+    R.build = q((nos_t - R.t_enter) / UI_ENTRY_S, 32);
+    R.txt = nos_t >= R.t_enter ? 1.0f : 0.0f;
 
     /* pager */
     if (!R.dragging && msp_step(&R.px, dt)) {}
@@ -337,8 +353,8 @@ static void memo_tick(float dt)
         }
         R.meter_frame += frames;
         if (R.meter_frame >= 3) { R.meter_frame = 0; R.meter = R.db; }
-        /* the number: 4 Hz, with a digit morph */
-        if (nos_t - R.t_db >= 0.25f) {
+        /* the number: 1 Hz with a digit morph (the meter stays fast) */
+        if (nos_t - R.t_db >= 1.0f || !R.dbs[0]) {
             char b[8];
             int v = (int)lroundf(R.db);
             if (v < 0) v = 0;
@@ -349,10 +365,10 @@ static void memo_tick(float dt)
                 else R.dbs_prev[0] = 0;
                 memcpy(R.dbs, b, sizeof b);
                 R.t_db = nos_t;
-            } else R.t_db = nos_t - 0.2f;          /* re-check soon */
+            } else R.t_db = nos_t - 0.75f;         /* unchanged: look again in 0.25 s */
             R.db_shown = (float)v;
         }
-        R.db_morph = R.dbs_prev[0] ? q((nos_t - R.t_db) / 0.2f, 16) : 1.0f;
+        R.db_morph = R.dbs_prev[0] ? q((nos_t - R.t_db) / 0.28f, 16) : 1.0f;
     }
 
     /* recording clock */
@@ -418,7 +434,8 @@ static void wave_draw(gfx_fb *fb, float x, float cy, uint16_t on, uint16_t line,
 
 static void draw_recorder(gfx_fb *fb)
 {
-    if (!R.mic) { absent(fb, "RECORDER", DOT_ICON_MIC, "Add the mic strap to record", R.build, R.txt); return; }
+    if (!R.mic) { absent(fb, "RECORDER", "Add the mic strap to record voice memos", R.build); return; }
+    if (nos_t < R.t_enter) { ui_title(fb, "RECORDER", 0); return; }
     ui_title(fb, R.rec ? "RECORDING" : "RECORDER", 0);
     wave_draw(fb, UI_CX - WAVE_COLS * WAVE_PITCH * 0.5f, WAVE_CY, R.rec ? C_WHITE : C_DIS, C_LINE2, R.build);
 
@@ -436,10 +453,9 @@ static void draw_recorder(gfx_fb *fb)
     else ui_label(fb, UI_CX, 298, "TAP TO STOP", c2, UI_CENTER);
 
     /* record button: white ring, red dot <-> rounded square (EASE_MECH, 200 ms) */
-    float b = bezier_ease(&EASE_STANDARD, q((nos_t - R.t_enter - 0.06f) / 0.26f, 32));
-    if (b <= 0.01f) return;
-    ui_circle(fb, UI_CX, REC_CY, REC_R * b, R.pressed ? C_SURF3 : C_SURF2);
-    ui_circle_line(fb, UI_CX, REC_CY, REC_R * b, 3, C_LINE2);
+    const float b = 1.0f;
+    ui_circle(fb, UI_CX, REC_CY, REC_R, R.pressed ? C_LINE2 : C_SURF2);
+    ui_circle_line(fb, UI_CX, REC_CY, REC_R, 3, C_LINE2);
     float m = bezier_ease(&EASE_MECH, q((nos_t - R.t_rec) / 0.2f, 16));
     float k = R.rec ? m : 1.0f - m;                    /* 1 = square */
     float side = m_lerp(52.0f, 34.0f, k) * b, rad = m_lerp(26.0f, 8.0f, k) * b;
@@ -451,33 +467,35 @@ static void draw_memos(gfx_fb *fb)
 {
     if (!s_nmemo) {
         ui_title(fb, "MEMOS", 0);
-        dot_icon_anim(fb, DOT_ICON_MIC, UI_CX, 196, 7.0f, 5.6f, C_DIS, R.build, DOT_REVEAL_RAIN);
-        ui_state(fb, UI_CX, 300, "NO MEMOS", ui_dim(C_PRI, R.txt));
-        body_line(fb, 336, "Your recordings land here", ui_dim(C_SEC, R.txt));
+        ui_absent(fb, DOT_ICON_MIC, "No memos", "Your recordings land here", NULL, R.build);
         return;
     }
     ui_list_draw(fb, &R.list);
-    ui_title(fb, R.spk ? "MEMOS" : "MEMOS  /  NO SPEAKER", ui_list_offset(&R.list));
+    ui_title(fb, "MEMOS", ui_list_offset(&R.list));
+    if (!R.spk) {   /* list footer, under the last card */
+        int fy = R.list.top + s_nmemo * R.list.row_h + 34 - (int)floorf(ui_list_offset(&R.list) + 0.5f);
+        if (fy < GFX_H - 20) ui_state(fb, UI_CX, fy, "NO SPEAKER", C_DIS);
+    }
 }
 
 static void draw_noise(gfx_fb *fb)
 {
-    if (!R.mic) { absent(fb, "NOISE", DOT_ICON_SPEAKER, "Add the mic strap to measure", R.build, R.txt); return; }
+    if (!R.mic) { absent(fb, "NOISE", "Add the mic strap to measure noise levels", R.build); return; }
     ui_title(fb, "NOISE", 0);
     int risk = R.db_shown >= 85.0f;
     dot_style st = { DOT_FONT_TALL, 11.0f, 8.8f, C_WHITE, 0, 1, 1 };
     const char *s = R.dbs[0] ? R.dbs : "--";
     if (R.dbs_prev[0] && R.db_morph < 1) dot_text_morph(fb, &st, UI_CX, 104, R.dbs_prev, s, 1, R.db_morph);
     else dot_text(fb, &st, UI_CX - dot_text_width(&st, s) * 0.5f, 104, s);
-    ui_label(fb, UI_CX, 236, "DB", ui_dim(C_SEC, R.txt), UI_CENTER);
+    ui_text(fb, UI_F_LABEL, UI_CX, 236, "dB", ui_dim(C_SEC, R.txt), UI_CENTER, 2);
 
-    /* meter: 24 dots x 5 dB; white to 85, amber beyond */
+    /* meter: 24 dots x 5 dB; white to 85, red beyond (over-limit: the screen's one red) */
     const int n = 24, nsafe = 17;
     const float pitch = 12.0f, d = 8.0f;
     float x0 = UI_CX - pitch * (n - 1) * 0.5f;
     float lit = floorf(m_clamp(R.meter, 0, 120) / 5.0f + 0.5f) * q(R.build, 16);
     dot_bar(fb, x0, 272, nsafe, pitch, d, lit < nsafe ? lit : nsafe, C_PRI, C_LINE2);
-    dot_bar(fb, x0 + nsafe * pitch, 272, n - nsafe, pitch, d, lit > nsafe ? lit - nsafe : 0, C_AMBER, C_LINE2);
+    dot_bar(fb, x0 + nsafe * pitch, 272, n - nsafe, pitch, d, lit > nsafe ? lit - nsafe : 0, C_RED, C_LINE2);
 
     const char *lab, *line;
     int v = (int)R.db_shown;
@@ -485,7 +503,7 @@ static void draw_noise(gfx_fb *fb)
     else if (v < 70) { lab = "MODERATE";     line = "Normal conversation"; }
     else if (v < 85) { lab = "LOUD";         line = "Busy street traffic"; }
     else             { lab = "HEARING RISK"; line = "Limit your exposure"; }
-    if (risk) ui_state(fb, UI_CX, 318, lab, C_AMBER);
+    if (risk) ui_state(fb, UI_CX, 318, lab, C_RED);
     else ui_label(fb, UI_CX, 318, lab, ui_dim(C_PRI, R.txt), UI_CENTER);
     body_line(fb, 356, line, ui_dim(C_SEC, R.txt));
 }
@@ -503,7 +521,7 @@ static void memo_draw(gfx_fb *fb)
         else if (pg == 1) draw_memos(&sub);
         else draw_noise(&sub);
     }
-    if (!R.rec) ui_page_dots(fb, UI_CX, DOTS_Y, NPAGES, R.px.x / PAGE_W);
+    if (!R.rec) ui_page_dots(fb, UI_CX, UI_DOTS_Y, NPAGES, R.px.x / PAGE_W);
 }
 
 /* --------------------------------------------------------------- input */
@@ -526,9 +544,11 @@ static int memo_input(const nos_input *in)
         R.pressed = 0;
         if (in->axis == AXIS_X) {
             if (R.page == 1) ui_list_input(&R.list, in);            /* cancels its press */
-            if (R.rec) return 1;                                   /* stay put while recording */
-            R.dragging = 1;
-            R.grab_x = R.px.x;
+            if (R.rec) { R.rec_lock = 1; R.grab_x = R.px.x; nos_feedback(FB_LIMIT); }   /* stay, but show it */
+            else {
+                R.dragging = 1;
+                R.grab_x = R.px.x;
+            }
             /* fallthrough into the first move */
         } else {
             if (R.page == 1 && settled && s_nmemo) return ui_list_input(&R.list, in);
@@ -536,6 +556,11 @@ static int memo_input(const nos_input *in)
         }
         /* fallthrough */
     case IN_DRAG:
+        if (R.rec_lock) {
+            float d = -in->dx;
+            msp_set(&R.px, R.grab_x + (d > 0 ? 1.0f : -1.0f) * m_clamp(rubber_band(fabsf(d), PAGE_W), 0, 20));
+            return 1;
+        }
         if (R.dragging) {
             float x = R.grab_x - in->dx, max = (NPAGES - 1) * PAGE_W;
             if (x < 0) x = -rubber_band(-x, PAGE_W);
@@ -546,6 +571,7 @@ static int memo_input(const nos_input *in)
         if (R.page == 1) return ui_list_input(&R.list, in);
         return 0;
     case IN_DRAG_END:
+        if (R.rec_lock) { R.rec_lock = 0; msp_kick(&R.px, R.page * PAGE_W, 0); return 1; }
         if (R.dragging) {
             R.dragging = 0;
             float v = -in->vx;
@@ -578,6 +604,7 @@ static int memo_input(const nos_input *in)
         return 1;
     case IN_UP:
         R.pressed = 0;
+        if (R.rec_lock) { R.rec_lock = 0; msp_kick(&R.px, R.page * PAGE_W, 0); }
         if (R.page == 1 && s_nmemo) ui_list_input(&R.list, in);
         return 1;
     default:

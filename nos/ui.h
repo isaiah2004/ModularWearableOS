@@ -34,7 +34,7 @@
 #define C_RED_D   0xB083   /* #B01319 pressed red */
 #define C_GREEN   0x4CEB   /* #4A9E5C success (sparingly) */
 #define C_AMBER   0xD548   /* #D4A843 warning (sparingly) */
-#define C_GHOST   0x18E3   /* unlit dot-matrix cells */
+#define C_GHOST   0x18C3   /* unlit dot-matrix cells (neutral #181818) */
 
 /* ---- geometry ---- */
 #define UI_CX 233

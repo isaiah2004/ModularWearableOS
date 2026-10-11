@@ -58,7 +58,12 @@ void  fk_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, int lit,
  * Call fk_wake_tick() in tick. While a wake morph runs (about 0.2 s), fk_build()
  * reports 1 so the face skips its build-in, fk_wake_k() steps 0.25 -> 1 (4 quantised
  * steps; 0 in AOD), and fk_wake_off() slides the AOD drift back to 0. */
-typedef struct { int last_aod; float t0; int active; int dx, dy; } fk_wake;
+typedef struct { int last_aod; float t0; int active; int dx, dy;
+                 uint32_t last_ms; float last_enter; int skip; } fk_wake;
+/* fk_wake also suppresses a build-in restarted while the face never left the glass
+ * (ticked within the last 200 ms of wall time, e.g. returning from the face picker):
+ * fk_build() then reports 1 and fk_wake_skip() is true. */
+int   fk_wake_skip(const fk_wake *w);
 void  fk_wake_tick(fk_wake *w, const face_ctx *c);
 float fk_build(const fk_wake *w, const face_ctx *c);   /* effective build-in progress */
 float fk_wake_k(const fk_wake *w, const face_ctx *c);
@@ -89,6 +94,9 @@ int   fk_stext(gfx_fb *fb, const fk_sfont *sf, int x, int y, const char *s, uint
  * f / sf is used. p 0..1 (EASE_MECH applied inside). ---- */
 void  fk_roll(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
               int cap, char from, char to, float p, uint16_t col);
+/* same, with a per-glyph x nudge for the outgoing / incoming glyph (optical bearings) */
+void  fk_roll2(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
+               int cap, char from, char to, int nx_from, int nx_to, float p, uint16_t col);
 
 /* once-a-second blink envelope (0..1) from the millisecond clock: grows in 100 ms,
  * holds to 500 ms, shrinks by 600 ms; 4 steps each way */
@@ -96,6 +104,11 @@ float fk_blink(int ms);
 
 /* glyph metrics of a baked font (0 if missing) */
 const font_glyph *fk_glyph(const font_t *f, unsigned code);
+
+/* complication hit tests with press rects (face_ext.h) */
+const struct nos_screen *face_split_hit(int x, int y, int r[4]);
+const struct nos_screen *face_segment_hit(int x, int y, int r[4]);
+const struct nos_screen *face_inverted_hit(int x, int y, int r[4]);
 
 /* A tap at (x, y) inside the circle of radius r around (cx, cy)? */
 static inline int fk_in(int x, int y, float cx, float cy, float r)

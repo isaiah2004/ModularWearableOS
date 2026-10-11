@@ -2,16 +2,20 @@
  *
  * Three concentric rings of 60 square-ended segments (6 px thick, 3 px parallel
  * gaps) at r = 215 / 196 / 177: steps, kcal and active minutes against their goals.
- * Lit segments white, empty #222, a second lap past the goal continues in red. In
- * the centre the time in the grotesk display face, the date above, and the three
- * values below as mono caps.
+ * Lit segments white, empty #2A2A2A; past its goal the steps ring continues in red
+ * (the other rings stay full white, so there is one red element). In the centre the
+ * time in the grotesk hero face at ~74 px cap, the date (or the battery while low /
+ * charging) above, and the three values below with mono caps labels.
+ * Build-in: from the fill shown last time to now (never a stale replay); wake from
+ * AOD: the AOD step dots grow and the outlined time fills in.
  *
  * The rings are cached: they live in four quadrant sprites (PSRAM) and a segment is
  * re-rasterised into its quadrant only when its colour changes (a few per hour), so
  * a full redraw (pager slide) is four blits, and the build-in — segments lighting one
  * by one clockwise — costs a handful of segment rasters per frame plus the blit of the
  * quadrant that changed. Without PSRAM it falls back to drawing segments directly.
- * Tap anywhere on the rings or values: the Activity app. */
+ * Tap anywhere on the rings or values: the Activity app. The time is nf_hero scaled to
+ * 0.66 once into PSRAM masks (fk_sfont); changed digits roll at the minute. */
 #include "faces/face_kit.h"
 #include "nos.h"
 #include "svc.h"
@@ -58,7 +62,9 @@ static void seg_geom(int ring, int i, seg_geo *g)
 
 static uint16_t seg_color(int ring, int i, float fill)
 {
-    if (fill >= (float)NSEG + (float)i + 1.0f) return C_RED;   /* second lap */
+    /* a second lap continues in red on the steps ring only (one red element); the
+     * other rings simply stay full white past their goal */
+    if (ring == 0 && fill >= (float)NSEG + (float)i + 1.0f) return C_RED;
     if (fill >= (float)i + 1.0f) return C_WHITE;
     return COL_OFF;
 }
@@ -150,12 +156,36 @@ static void cache_update(void)
         }
 }
 
-static void enter(void) { for (int r = 0; r < NRING; r++) s_shown[r] = 0; }
+static fk_sfont s_font;                     /* nf_hero at 0.66: an ~74 px cap time */
+static fk_wake  s_w;
+static fk_morph s_tm;
+static int      s_cold = 1;                 /* sprites hold nothing yet */
+static float    s_from[NRING];
+
+#define T_SCALE 0.66f
+#define Y_T     (UI_CY + 21)                /* time baseline: the date-time-values group centres on UI_CY */
+#define Y_DATE  (Y_T - 74 - 24)
+#define Y_VAL   (Y_T + 46)
+#define Y_LAB   (Y_T + 70)
+
+static void enter(void)
+{
+    /* the sprites still show the last visit's fill: animate from there, never from 0
+     * over stale arcs ("what you walked since you last looked") */
+    for (int r = 0; r < NRING; r++) s_from[r] = s_shown[r];
+    s_tm.init = 0;
+}
 
 static void tick(const face_ctx *c, float dt)
 {
     fk_aod_update(c);
+    fk_wake_tick(&s_w, c);
+    fk_unread_tick(c);
     cache_init();
+    fk_sfont_build(&s_font, UI_F_HERO, T_SCALE);
+    char tb[8];
+    ui_fmt_time(tb, sizeof tb, c->dt.hour, c->dt.minute);
+    fk_morph_tick(&s_tm, tb, c->t);
     const svc_activity_t *a = svc_activity();
     int steps = c->steps > 0 ? c->steps : a->steps;
     int goal = c->step_goal > 0 ? c->step_goal : a->goal > 0 ? a->goal : 8000;
@@ -166,17 +196,37 @@ static void tick(const face_ctx *c, float dt)
     float vals[3] = { (float)steps, kcal, (float)act };
     for (int r = 0; r < NRING; r++) {
         float f = vals[r] / goals[r] * NSEG;
-        if (f > 2 * NSEG) f = 2 * NSEG;
+        float cap = r == 0 ? 2.0f * NSEG : (float)NSEG;
+        if (f > cap) f = cap;
         s_target[r] = (float)(int)f;                          /* whole segments */
     }
-    if (c->aod) return;
-    float e = c->enter;
+    if (G && G->ok && s_cold) {
+        /* first use: the whole empty track, once, before anything is blitted */
+        for (int r = 0; r < NRING; r++) s_shown[r] = s_from[r] = 0;
+        for (int r = 0; r < NRING; r++)
+            for (int i = 0; i < NSEG; i++) {
+                int q = quad_of(i);
+                seg_raster(G->q[q].px, G->q[q].w, qx(q), qy(q), G->q[q].w, G->q[q].h, r, i, COL_OFF);
+                G->drawn[r][i] = COL_OFF;
+            }
+        for (int q = 0; q < 4; q++) G->key[q] += 97;
+        s_cold = 0;
+    }
+    if (c->aod) { cache_update(); return; }
+    float e = fk_build(&s_w, c);
     for (int r = 0; r < NRING; r++) {
-        if (e < 1.0f) s_shown[r] = (float)(int)(s_target[r] * fk_ease(m_clamp((e - 0.08f * (float)r) / 0.75f, 0, 1)));
-        else if (s_shown[r] < s_target[r]) {                  /* live gains: one segment per frame */
-            s_shown[r] += 1.0f;
-            if (s_shown[r] > s_target[r]) s_shown[r] = s_target[r];
-        } else s_shown[r] = s_target[r];
+        if (e < 1.0f) {
+            float q = fk_ease(m_clamp((e - 0.08f * (float)r) / 0.75f, 0, 1));
+            s_shown[r] = (float)(int)(s_from[r] + (s_target[r] - s_from[r]) * q + 0.5f);
+        } else if (s_shown[r] != s_target[r]) {               /* live changes land within 0.4 s */
+            float d = s_target[r] - s_shown[r];
+            float ad = d < 0 ? -d : d;
+            float step = (float)(int)(ad / 12.0f + 0.999f);
+            if (step < 1.0f) step = 1.0f;
+            if (step > ad) step = ad;
+            s_shown[r] += d > 0 ? step : -step;
+        }
+        s_from[r] = e < 1.0f ? s_from[r] : s_shown[r];
     }
     cache_update();
 }
@@ -187,41 +237,55 @@ static void fmt_k(char *b, int n, int v)
     else snprintf(b, (size_t)n, "%d", v);
 }
 
-static void centre(gfx_fb *fb, const face_ctx *c, uint16_t tcol, uint16_t lcol, int dx, int dy, int aod)
+static int red_used(void) { return s_shown[0] > NSEG; }
+
+/* the time in the scaled hero face; changed digits roll (k < 1: outline filling in) */
+static void draw_time(gfx_fb *fb, const face_ctx *c, float k, float dx, float dy)
 {
-    char b[24];
-    ui_fmt_time(b, sizeof b, c->dt.hour, c->dt.minute);
-    int asc = UI_F_DISPLAY->ascent;
-    int ty = UI_CY + (int)(asc * 0.36f) - 14 + dy;            /* optical centre, slightly high */
-    if (aod) fk_text_outline(fb, UI_F_DISPLAY, UI_CX + dx, ty, b, tcol, UI_CENTER, 0, 1);
-    else ui_text(fb, UI_F_DISPLAY, UI_CX + dx, ty, b, tcol, UI_CENTER, 0);
-    snprintf(b, sizeof b, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
-    ui_label(fb, UI_CX + dx, ty - asc - 26, b, lcol, UI_CENTER);
-    if (aod) {
-        char v[16]; fmt_k(v, sizeof v, s_val[0]);
-        snprintf(b, sizeof b, "%s STEPS", v);
-        ui_label(fb, UI_CX + dx, ty + 54, b, lcol, UI_CENTER);
+    if (!s_font.ok) return;
+    int w = fk_stext_width(&s_font, s_tm.to);
+    int x = UI_CX - w / 2 + (int)dx, y = Y_T + (int)dy;
+    if (k < 1.0f) {
+        static const signed char o[4][2] = { {-1,0},{1,0},{0,-1},{0,1} };
+        uint16_t line = ui_mix(C_SEC, C_WHITE, k);
+        for (int j = 0; j < 4; j++) fk_stext(fb, &s_font, x + o[j][0], y + o[j][1], s_tm.to, line, UI_LEFT);
+        fk_stext(fb, &s_font, x, y, s_tm.to, ui_mix(C_BG, C_WHITE, k), UI_LEFT);
         return;
     }
-    /* three values: STP / KCAL / MIN */
-    static const char *lab[3] = { "STP", "KCAL", "MIN" };
-    const int xs[3] = { UI_CX - 84, UI_CX, UI_CX + 84 };
-    for (int k = 0; k < 3; k++) {
-        char v[16]; fmt_k(v, sizeof v, s_val[k]);
-        ui_text(fb, UI_F_BODY, xs[k], ty + 58, v, C_PRI, UI_CENTER, 0);
-        ui_text(fb, UI_F_SMALL, xs[k], ty + 82, lab[k], C_DIS, UI_CENTER, 0);
+    float p = fk_morph_p(&s_tm, c->t, 0.30f);
+    if (p >= 1.0f || strlen(s_tm.from) != strlen(s_tm.to)) {
+        fk_stext(fb, &s_font, x, y, s_tm.to, C_WHITE, UI_LEFT);
+        return;
+    }
+    for (int i = 0; s_tm.to[i]; i++) {
+        char one[2] = { s_tm.to[i], 0 };
+        int cw = fk_stext_width(&s_font, one);
+        fk_roll(fb, 0, &s_font, x, y, cw, s_font.cap, s_tm.from[i], s_tm.to[i], p, C_WHITE);
+        x += cw;
     }
 }
 
 static void draw(gfx_fb *fb, const face_ctx *c)
 {
-    if (c->aod) {
-        /* the steps ring as small dots for the lit segments only, time outlined */
-        int dx = fk_aod_dx, dy = fk_aod_dy;
+    char b[24];
+    float dx, dy;
+    fk_wake_off(&s_w, c, &dx, &dy);
+    float k = fk_wake_k(&s_w, c);
+    float e = fk_build(&s_w, c);
+    if (c->aod || k < 1.0f) {
+        /* AOD: the steps ring as small dots for the lit segments only, time outlined;
+         * the wake morph grows the dots and fills the time */
         int lit = (int)s_target[0];
         if (lit > NSEG) lit = NSEG;
-        if (lit > 0) fk_ring(fb, UI_CX + dx, UI_CY + dy, k_r[0], NSEG, 3.0f, lit, C_DIS, 0);
-        centre(fb, c, C_SEC, C_DIS, dx, dy, 1);
+        if (lit > 0) fk_ring(fb, UI_CX + dx, UI_CY + dy, k_r[0], NSEG, 3.0f + 3.0f * k, lit,
+                             ui_mix(C_DIS, C_WHITE, k), 0);
+        draw_time(fb, c, k, dx, dy);
+        snprintf(b, sizeof b, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
+        ui_label(fb, UI_CX + (int)dx, Y_DATE + (int)dy, b, ui_mix(C_DIS, C_SEC, k), UI_CENTER);
+        char v[16]; fmt_k(v, sizeof v, s_val[0]);
+        snprintf(b, sizeof b, "%s STEPS", v);
+        ui_label(fb, UI_CX + (int)dx, Y_VAL + (int)dy, b, ui_mix(C_DIS, C_BG, k), UI_CENTER);
+        fk_unread(fb, c, C_PRI, C_BG, dx, dy + 74.0f);
         return;
     }
     if (G && G->ok) {
@@ -235,14 +299,37 @@ static void draw(gfx_fb *fb, const face_ctx *c)
             if (sh > NSEG) fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)(sh - NSEG), C_RED, 0);
         }
     }
-    centre(fb, c, C_WHITE, C_SEC, 0, 0, 0);
+    float la = e >= 1.0f ? 1.0f : (float)(int)(fk_ease(e * 1.4f) * 4.0f) / 4.0f;
+    draw_time(fb, c, 1.0f, 0, 0);
+    /* the date row; the battery takes it over while low or charging */
+    if (fk_status_shown(c)) fk_status(fb, c, UI_CX, Y_DATE, ui_dim(C_SEC, la), UI_CENTER);
+    else {
+        snprintf(b, sizeof b, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
+        ui_label(fb, UI_CX, Y_DATE, b, ui_dim(C_SEC, la), UI_CENTER);
+    }
+    /* three values: STP / KCAL / MIN (columns balanced for a wide left value) */
+    static const char *lab[3] = { "STP", "KCAL", "MIN" };
+    const int xs[3] = { UI_CX - 88, UI_CX, UI_CX + 80 };
+    for (int i = 0; i < 3; i++) {
+        char v[16]; fmt_k(v, sizeof v, s_val[i]);
+        ui_text(fb, UI_F_BODY, xs[i], Y_VAL, v, ui_dim(C_PRI, la), UI_CENTER, 0);
+        ui_label(fb, xs[i], Y_LAB, lab[i], ui_dim(C_DIS, la), UI_CENTER);
+    }
+    fk_unread(fb, c, red_used() ? C_PRI : C_RED, C_BG, 0, 74.0f);   /* y 98: inside the rings */
 }
 
-static const struct nos_screen *tap(int x, int y)
+/* press rect of the complication under (x, y) */
+const struct nos_screen *face_segment_hit(int x, int y, int r[4])
 {
     float dx = (float)x - UI_CX, dy = (float)y - UI_CY, d2 = dx * dx + dy * dy;
-    if (d2 >= 160.0f * 160.0f || (y > UI_CY + 30 && y < UI_CY + 140)) return &scr_activity;
+    if (d2 >= 160.0f * 160.0f) { if (r) { r[0] = r[1] = r[2] = r[3] = 0; } return &scr_activity; }
+    if (y > Y_VAL - 30 && y < Y_LAB + 16) {
+        if (r) { r[0] = UI_CX - 140; r[1] = Y_VAL - 30; r[2] = UI_CX + 140; r[3] = Y_LAB + 14; }
+        return &scr_activity;
+    }
     return 0;
 }
+
+static const struct nos_screen *tap(int x, int y) { return face_segment_hit(x, y, 0); }
 
 const nos_face face_segment = { "SEGMENT", enter, tick, draw, tap };

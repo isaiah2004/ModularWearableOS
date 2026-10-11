@@ -2,6 +2,7 @@
  * and the small helpers the faces share (face_kit.h). Owned by the faces team. */
 #include "faces/face.h"
 #include "faces/face_kit.h"
+#include "faces/face_ext.h"
 #include "nos.h"
 #include "prefs.h"
 #include <string.h>
@@ -171,8 +172,15 @@ void fk_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, int lit,
 
 /* ---- wake from AOD ---------------------------------------------------------------- */
 #define WAKE_S 0.20f
+int fk_wake_skip(const fk_wake *w) { return w->skip; }
 void fk_wake_tick(fk_wake *w, const face_ctx *c)
 {
+    uint32_t now = hal_millis();
+    if (!c->aod && !w->last_aod && c->enter < w->last_enter && now - w->last_ms < 200u)
+        w->skip = 1;                                   /* rebuilt without ever leaving the glass */
+    if (c->enter >= 1.0f || c->aod) w->skip = 0;
+    w->last_enter = c->enter;
+    w->last_ms = now;
     if (c->aod) {
         shift_for(c->dt.hour * 60 + c->dt.minute, &w->dx, &w->dy);
         w->active = 0;
@@ -185,14 +193,15 @@ void fk_wake_tick(fk_wake *w, const face_ctx *c)
 }
 float fk_build(const fk_wake *w, const face_ctx *c)
 {
-    return (w->active && !c->aod) ? 1.0f : c->enter;
+    return ((w->active || w->skip) && !c->aod) ? 1.0f : c->enter;
 }
 float fk_wake_k(const fk_wake *w, const face_ctx *c)
 {
     if (c->aod) return 0.0f;
     if (!w->active) return 1.0f;
-    float k = fk_ease((c->t - w->t0 + 1.0f / 30.0f) / WAKE_S);
-    return (float)(int)(k * 4.0f + 0.999f) / 4.0f;        /* 0.25, 0.5, 0.75, 1 */
+    /* six frames, four quantised steps (0.25, 0.5, 0.75, 1), linear so every step shows */
+    float k = m_clamp((c->t - w->t0 + 1.0f / 30.0f) / WAKE_S, 0, 1);
+    return (float)(int)(k * 4.0f + 0.999f) / 4.0f;
 }
 void fk_wake_off(const fk_wake *w, const face_ctx *c, float *dx, float *dy)
 {
@@ -359,15 +368,20 @@ static void roll_draw(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, in
 void fk_roll(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
              int cap, char from, char to, float p, uint16_t col)
 {
-    if (p >= 1.0f || from == to) { roll_draw(fb, f, sf, x, base, to, col); return; }
+    fk_roll2(fb, f, sf, x, base, cell_w, cap, from, to, 0, 0, p, col);
+}
+void fk_roll2(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
+              int cap, char from, char to, int nx_from, int nx_to, float p, uint16_t col)
+{
+    if (p >= 1.0f || from == to) { roll_draw(fb, f, sf, x + nx_to, base, to, col); return; }
     gfx_fb sub;
     int top = base - cap - 6, bot = base + 6;
     if (!nos_subview(fb, &sub, x - 4 + fb->ox, top + fb->oy, x + cell_w + 4 + fb->ox, bot + fb->oy, 0, 0)) return;
     float e = fk_mech(p);
     int span = bot - top;
     int dy = (int)(e * (float)span + 0.5f);
-    roll_draw(&sub, f, sf, x, base - dy, from, col);
-    roll_draw(&sub, f, sf, x, base + span - dy, to, col);
+    roll_draw(&sub, f, sf, x + nx_from, base - dy, from, col);
+    roll_draw(&sub, f, sf, x + nx_to, base + span - dy, to, col);
 }
 
 float fk_blink(int ms)
@@ -376,4 +390,22 @@ float fk_blink(int ms)
     if (ms < 500) return 1.0f;
     if (ms < 600) return 1.0f - (float)((ms - 500) / 25 + 1) * 0.25f;
     return 0.0f;
+}
+
+/* ---- extras for home (face_ext.h) ------------------------------------------------- */
+int nos_face_style(const nos_face *f)
+{
+    if (f == &face_inverted) return FACE_LIGHT | FACE_FULL_BLEED;
+    if (f == &face_matrix || f == &face_segment || f == &face_glyph || f == &face_life) return FACE_FULL_BLEED;
+    return 0;
+}
+const struct nos_screen *nos_face_press_rect(const nos_face *f, int x, int y, int r[4])
+{
+    int tmp[4] = { 0, 0, 0, 0 };
+    if (!r) r = tmp;
+    r[0] = r[1] = r[2] = r[3] = 0;
+    if (f == &face_split) return face_split_hit(x, y, r);
+    if (f == &face_segment) return face_segment_hit(x, y, r);
+    if (f == &face_inverted) return face_inverted_hit(x, y, r);
+    return f && f->tap ? f->tap(x, y) : 0;
 }

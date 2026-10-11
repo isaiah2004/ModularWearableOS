@@ -103,11 +103,17 @@ static void dgm_draw(gfx_fb *fb, const dgm *m, const dot_style *st, float x, flo
 
 /* ============================================================ screen */
 #define RING_R   211.0f
-#define BTN_Y    350.0f
-#define BTN_W    140.0f
-#define BTN_DX   78.0f
+/* the standard button pair (UI_BTN_PAIR_*), raised from y 372 to 354 so the pills stay
+ * clear of the bezel track the second hand runs on */
+#define BTN_Y    354.0f
+#define BTN_W    ((float)UI_BTN_PAIR_W)
+#define BTN_LX   ((float)UI_BTN_PAIR_X0)
+#define BTN_RX   ((float)UI_BTN_PAIR_X1)
 #define LIST_Y0  194.0f
-#define LIST_Y1  300.0f
+#define LIST_Y1  292.0f
+#define LAP_X0   (UI_ROW_X0 + 8)
+#define LAP_X1   (UI_ROW_X1 - 8)
+#define STEP_S   0.15f
 #define ROW_H    36.0f
 #define DIG_Y_SOLO 186.0f
 #define DIG_Y_LAPS 100.0f
@@ -125,6 +131,10 @@ static struct {
     int dragging;
     int best, worst;             /* lap numbers (1-based), 0 = none */
     char cur_lbl[16], cur_time[16];
+    float dim;                   /* 0 running/idle .. 1 stopped: 150 ms colour step */
+    svc_stopwatch_t ghost;       /* laps that are fading out after RESET */
+    char lt[8], rt[8], lt0[8], rt0[8];   /* button labels, and the ones fading out */
+    float lab_t0;
 } S;
 
 static void fmt_lap(char *b, int n, uint32_t ms)
@@ -168,14 +178,27 @@ static void sw_snapshot(int morph)
     }
 }
 
+static void sw_labels(const char **lt, const char **rt)
+{
+    int idle = !S.sw.running && !S.sw.elapsed_ms;
+    *lt = S.sw.running || idle ? "LAP" : "RESET";
+    *rt = S.sw.running ? "STOP" : idle ? "START" : "RESUME";
+}
+
 static float s_seen = -10;
 static void sw_enter(void)
 {
     sw_poll();
     S.pressed = BP_NONE;
     if (nos_t - s_seen < 0.2f) return;          /* revealed by a pop: already on screen */
-    S.t0 = nos_t; S.build = 0;
+    S.t0 = nos_t + UI_ENTRY_S * 0.55f; S.build = 0;    /* iris: build from ~40% */
     sw_snapshot(0);
+    const char *lt, *rt;
+    sw_labels(&lt, &rt);
+    snprintf(S.lt, sizeof S.lt, "%s", lt); snprintf(S.rt, sizeof S.rt, "%s", rt);
+    memcpy(S.lt0, S.lt, sizeof S.lt); memcpy(S.rt0, S.rt, sizeof S.rt);
+    S.lab_t0 = -10;
+    S.dim = (!S.sw.running && S.sw.elapsed_ms) ? 1.0f : 0.0f;
     msp_init(&S.lay, S.sw.nlaps ? 100.0f : 0.0f, SPRING_PAGE);   /* percent */
     msp_init(&S.ins, 0, SPRING_SNAPPY);
     msc_init(&S.sc, 0, list_max(), 0);
@@ -187,7 +210,9 @@ static void sw_tick(float dt)
     s_seen = nos_t;
     sw_poll();
     int prev_laps = S.sw.nlaps;
+    svc_stopwatch_t before = S.sw;
     sw_snapshot(1);
+    if (prev_laps && !S.sw.nlaps) S.ghost = before;     /* RESET: the old rows fade out */
     if (S.sw.nlaps != prev_laps) {
         msp_to(&S.lay, S.sw.nlaps ? 100.0f : 0.0f);
         if (S.sw.nlaps > prev_laps && prev_laps > 0) { S.ins.x = -ROW_H; S.ins.v = 0; msp_to(&S.ins, 0); }
@@ -198,6 +223,15 @@ static void sw_tick(float dt)
     msp_step(&S.ins, dt);
     msc_step(&S.sc, dt);
     S.build = m_clamp((nos_t - S.t0) / 0.4f, 0, 1);
+    float tgt = (!S.sw.running && S.sw.elapsed_ms) ? 1.0f : 0.0f, st = dt / STEP_S;
+    S.dim = S.dim < tgt ? fminf(tgt, S.dim + st) : fmaxf(tgt, S.dim - st);
+    const char *lt, *rt;
+    sw_labels(&lt, &rt);
+    if (strcmp(lt, S.lt) || strcmp(rt, S.rt)) {
+        memcpy(S.lt0, S.lt, sizeof S.lt); memcpy(S.rt0, S.rt, sizeof S.rt);
+        snprintf(S.lt, sizeof S.lt, "%s", lt); snprintf(S.rt, sizeof S.rt, "%s", rt);
+        S.lab_t0 = nos_t;
+    }
     if (S.sw.running) nos_keep_awake();
 }
 
@@ -210,7 +244,8 @@ static void draw_list(gfx_fb *fb)
     float k = qz(m_clamp(S.lay.x / 100.0f * 1.6f - 0.6f, 0, 1), 8);
     if (k <= 0) return;
     float off = floorf(S.sc.x + 0.5f) - floorf(S.ins.x + 0.5f);
-    int n = S.sw.nlaps;
+    const svc_stopwatch_t *sw = S.sw.nlaps ? &S.sw : &S.ghost;   /* after RESET: the old rows */
+    int n = sw->nlaps, ghost = !S.sw.nlaps;
     for (int r = 0; r <= n; r++) {
         float y = LIST_Y0 + r * ROW_H - off;          /* row top */
         if (y + ROW_H <= LIST_Y0 || y >= LIST_Y1) continue;
@@ -219,59 +254,55 @@ static void draw_list(gfx_fb *fb)
         float e = fminf(yc - LIST_Y0, LIST_Y1 - yc) / (ROW_H * 0.7f);
         float f = qz(m_clamp(e, 0, 1), 8) * k;
         if (f <= 0) continue;
-        int x0, x1;
-        ui_row_span(yc, 64, &x0, &x1);
+        int x0 = LAP_X0, x1 = LAP_X1;        /* one x for every row: no drift along the circle */
         int base = (int)(yc + 6);
         char lb[16], tb[16];
         uint16_t lc = C_SEC, tc = C_SEC;
-        if (r == 0) {
+        if (r == 0 && !ghost) {
             snprintf(lb, sizeof lb, "%s", S.cur_lbl);
             snprintf(tb, sizeof tb, "%s", S.cur_time);
             lc = C_PRI; tc = C_PRI;
+        } else if (r == 0) {
+            continue;
         } else {
             int i = n - r + 1;                       /* lap number, newest first */
             snprintf(lb, sizeof lb, "LAP %02d", i);
-            fmt_lap(tb, sizeof tb, lap_ms(&S.sw, i));
-            if (i == S.best) { lc = C_SEC; tc = C_WHITE; }
-            else if (i == S.worst) { lc = C_DIS; tc = C_DIS; }
+            fmt_lap(tb, sizeof tb, lap_ms(sw, i));
+            if (!ghost && i == S.best) { lc = C_SEC; tc = C_WHITE; }
+            else if (!ghost && i == S.worst) { lc = C_DIS; tc = C_DIS; }
             else { lc = C_DIS; tc = C_SEC; }
         }
         ui_label(&sub, x0, base, lb, ui_dim(lc, f), UI_LEFT);
         ui_label(&sub, x1, base, tb, ui_dim(tc, f), UI_RIGHT);
-        if (r == 0 && n > 0) {                      /* hairline under the live row */
-            int hx0, hx1;
-            ui_row_span(y + ROW_H, 70, &hx0, &hx1);
-            gfx_fill_rect(&sub, hx0, (int)(y + ROW_H) - 1, hx1 - hx0, 2, ui_dim(C_LINE, f));
-        }
+        if (r == 0 && n > 0)                         /* hairline under the live row */
+            gfx_fill_rect(&sub, x0, (int)(y + ROW_H) - 1, x1 - x0, 2, ui_dim(C_LINE, f));
     }
 }
 
 static void sw_draw(gfx_fb *fb)
 {
     float b = S.build;
-    /* bezel: a dim 60-dot track and the red second-hand dot (smooth, once per second) */
+    /* bezel: a dim 60-dot track and the red second hand, sweeping once a minute
+     * (1.2 deg = 4.4 px per frame: smooth, never strobing); it stops when stopped */
     time_ring(fb, UI_CX, UI_CY, RING_R, 60, 4, 60.0f * m_clamp(b * 1.5f, 0, 1), C_LINE2, 0);
     if (b > 0.3f) {
-        float ph = (float)(S.sw.elapsed_ms % 1000) / 1000.0f;
-        for (int t = 2; t >= 0; t--) {
-            if (t && !S.sw.running) continue;
-            float a = 6.2831853f * (ph - t * 0.012f);
-            float d = t == 0 ? 10.0f : t == 1 ? 7.0f : 5.0f;
-            uint16_t c = t == 0 ? C_RED : ui_dim(C_RED, t == 1 ? 0.55f : 0.3f);
-            dot_disc(fb, UI_CX + RING_R * time_sin(a), UI_CY - RING_R * time_cos(a), d, c);
-        }
+        float a = 6.2831853f * (float)(S.sw.elapsed_ms % 60000) / 60000.0f;
+        float d = 10.0f * qz(m_clamp((b - 0.3f) * 3, 0, 1), 4);
+        dot_disc(fb, UI_CX + RING_R * time_sin(a), UI_CY - RING_R * time_cos(a), d, C_RED);
     }
     ui_title(fb, "STOPWATCH", 0);
 
     /* digits: mm:ss (TALL, pitch 8) + .t (pitch 5), tabular, centred as one group */
-    int hours = strlen(S.dig.cur) > 5;
-    float pitch = hours ? 6.0f : 8.0f;
-    uint16_t dc = (!S.sw.running && S.sw.elapsed_ms) ? C_PRI : C_WHITE;
-    dot_style st = { DOT_FONT_TALL, pitch, pitch * 0.8f, dc, 0, 1, 1 };
+    float pitch = UI_HEROW_PITCH;
+    float dk = qz(S.dim, 6);
+    dot_style st = { DOT_FONT_TALL, pitch, pitch * 0.8f, ui_mix(C_WHITE, C_SEC, dk), 0, 1, 1 };
     dot_style ts = { DOT_FONT_TALL, 5, 4, C_SEC, 0, 1, 1 };
     float w1 = dg_width(&st, S.dig.cur), w2 = dg_width(&ts, S.tenths), gap = 4;
     float x0 = floorf(UI_CX - (w1 + gap + w2) * 0.5f + 0.5f);
-    float top = dig_top() + (hours ? 9 : 0);
+    float top = dig_top();
+    /* stopped (no laps shown): [ PAUSED ] above the digits, like the timer */
+    float pk = dk * (1 - m_clamp(S.lay.x / 50.0f, 0, 1));
+    if (pk > 0.01f) ui_state(fb, UI_CX, 150, "PAUSED", ui_dim(C_SEC, qz(pk, 6)));
     dgm_draw(fb, &S.dig, &st, x0, top, 0.2f, b);
     float ty = top + pitch * 9 - 45;
     if (b < 1) dot_text_anim(fb, &ts, x0 + w1 + gap, ty, S.tenths, 0, b, DOT_REVEAL_RANDOM, 9);
@@ -279,25 +310,30 @@ static void sw_draw(gfx_fb *fb)
 
     draw_list(fb);
 
-    /* buttons */
+    /* buttons: full colour from the start (scale steps, no grey fade-up); labels
+     * crossfade when the state changes */
     float k = qz(m_clamp(b * 2.5f - 1.0f, 0, 1), 8);
     if (k <= 0) return;
     int idle = !S.sw.running && !S.sw.elapsed_ms;
-    const char *lt = S.sw.running || idle ? "LAP" : "RESET";
-    const char *rt = S.sw.running ? "STOP" : idle ? "START" : "RESUME";
-    float lx = UI_CX - BTN_DX, rx = UI_CX + BTN_DX;
-    ui_rrect(fb, lx - BTN_W / 2, BTN_Y - 44, BTN_W, 88, 44,
-             ui_dim(idle ? C_SURF : S.pressed == BP_LEFT ? C_SURF3 : C_SURF2, k));
-    ui_label(fb, (int)lx, (int)BTN_Y + 6, lt, ui_dim(idle ? C_DIS : C_PRI, k), UI_CENTER);
-    ui_rrect(fb, rx - BTN_W / 2, BTN_Y - 44, BTN_W, 88, 44, ui_dim(S.pressed == BP_RIGHT ? C_SEC : C_WHITE, k));
-    ui_label(fb, (int)rx, (int)BTN_Y + 6, rt, C_BG, UI_CENTER);
+    float sc = 0.72f + 0.28f * k, w = BTN_W * sc, h = UI_BTN_H * sc;
+    ui_rrect(fb, BTN_LX - w / 2, BTN_Y - h / 2, w, h, h / 2,
+             idle ? C_SURF : S.pressed == BP_LEFT ? C_SURF3 : C_SURF2);
+    ui_rrect(fb, BTN_RX - w / 2, BTN_Y - h / 2, w, h, h / 2, S.pressed == BP_RIGHT ? C_SEC : C_WHITE);
+    if (k < 1) return;
+    float lp = m_clamp((nos_t - S.lab_t0) / STEP_S, 0, 1);
+    float la = qz(lp < 0.5f ? 1 - lp * 2 : lp * 2 - 1, 4);
+    int lch = lp < 1 && strcmp(S.lt0, S.lt) != 0, rch = lp < 1 && strcmp(S.rt0, S.rt) != 0;
+    const char *lt = lch && lp < 0.5f ? S.lt0 : S.lt, *rt = rch && lp < 0.5f ? S.rt0 : S.rt;
+    uint16_t lc = idle ? C_DIS : C_PRI, lbg = idle ? C_SURF : C_SURF2;
+    ui_label(fb, (int)BTN_LX, (int)BTN_Y + 6, lt, lch ? ui_mix(lbg, lc, la) : lc, UI_CENTER);
+    ui_label(fb, (int)BTN_RX, (int)BTN_Y + 6, rt, rch ? ui_mix(C_WHITE, C_BG, la) : C_BG, UI_CENTER);
 }
 
 static int sw_hit(int x, int y)
 {
     if (fabsf(y - BTN_Y) > 50) return BP_NONE;
-    if (fabsf(x - (UI_CX - BTN_DX)) <= BTN_W / 2 + 4) return BP_LEFT;
-    if (fabsf(x - (UI_CX + BTN_DX)) <= BTN_W / 2 + 4) return BP_RIGHT;
+    if (fabsf(x - BTN_LX) <= BTN_W / 2 + 4) return BP_LEFT;
+    if (fabsf(x - BTN_RX) <= BTN_W / 2 + 4) return BP_RIGHT;
     return BP_NONE;
 }
 

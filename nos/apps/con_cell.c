@@ -180,7 +180,7 @@ static void cell_draw(gfx_fb *fb)
     ui_title(fb, "CELLULAR", 0);
     uint16_t c1 = ui_dim(C_PRI, L.txt), c2 = ui_dim(C_SEC, L.txt), c3 = ui_dim(C_DIS, L.txt);
     if (L.st == LS_ABSENT) {
-        ui_absent(fb, DOT_ICON_SIGNAL, "Not connected", "Add the LTE strap to text from anywhere, no phone needed",
+        ui_absent(fb, DOT_ICON_SIGNAL, "Not connected", "Add the LTE strap to text without your phone",
                   "LTE MODULE", L.build);
         return;
     }

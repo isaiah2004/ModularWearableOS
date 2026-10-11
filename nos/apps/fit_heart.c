@@ -584,7 +584,7 @@ static void draw_absent(gfx_fb *fb, float oy, float k)
     gfx_fb sub;
     if (!nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, (int)oy)) return;
     float p = H.prev_mode < 0 ? m_clamp((H.t - T_BUILD0) / 0.4f, 0, 1) : k;
-    ui_absent(&sub, DOT_ICON_HEART, "Not connected", "Add the heart rate strap to measure BPM and SpO2.",
+    ui_absent(&sub, DOT_ICON_HEART, "Not connected", "Add the strap to measure BPM and SpO2.",
               "HEART RATE MODULE", p);
 }
 
@@ -622,7 +622,8 @@ static void draw_live(gfx_fb *fb, float oy, float k, int out)
     if (bp < 1) dot_text_anim(fb, &st, UI_CX, 150 + oy, b, 1, bp, DOT_REVEAL_RANDOM, 11);
     else if (!out && H.bpm_morph < 1) { fmt_bpm(a, sizeof a, H.bpm_prev); dot_text_morph(fb, &st, UI_CX, 150 + oy, a, b, 1, qz(H.bpm_morph, 16.0f)); }
     else dot_text_a(fb, &st, UI_CX, 150 + oy, b, 1);
-    float kl = out ? k : qz(m_clamp((H.lock_t - 0.1f) / 0.2f, 0, 1), 8.0f) * k;
+    /* labels arrive once [ MEASURING ] and its meter have gone (0.2 s) */
+    float kl = out ? k : qz(m_clamp((H.lock_t - 0.2f) / 0.15f, 0, 1), 8.0f) * k;
     ui_label(fb, UI_CX, (int)(266 + oy), "BPM", ui_dim(C_SEC, kl), UI_CENTER);
     int spo2 = out ? H.prev_spo2 : H.spo2;
     if (spo2 > 0) {

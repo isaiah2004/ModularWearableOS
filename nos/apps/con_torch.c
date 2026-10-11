@@ -28,6 +28,7 @@ static struct {
     float t0;              /* dissolve start (nos_t), < 0 = waiting for the transition */
     int   started;
     float hint;            /* hint label alpha 0..1 (quantised) */
+    int   hint_i;          /* 0 = tap hint, 1 = drag hint */
     float t_enter;
     int   dragging;
     float drag_level0;
@@ -77,9 +78,9 @@ static float q16(float x) { return floorf(m_clamp(x, 0, 1) * 16.0f + 0.5f) / 16.
 static void torch_tick(float dt)
 {
     nos_keep_awake();
-    /* the light comes on part-way through the opening iris: the iris edge and the
-     * dissolve together read as one soft switch-on, never a white flash */
-    if (!T.started && (!nos_transitioning() || nos_t - T.t_enter >= 0.16f)) {
+    /* the dissolve starts with the opening iris: the iris edge and the dither read as
+     * one soft switch-on, with no black beat and never a white flash */
+    if (!T.started) {
         T.started = 1;
         T.t0 = nos_t;
         set_bl(backlight_for(T.mode, T.level[T.mode]));
@@ -89,9 +90,11 @@ static void torch_tick(float dt)
         T.p = q16(bezier_ease(&EASE_STANDARD, m_clamp(p, 0, 1)));
         if (T.p >= 1) T.from = T.to;
     }
-    /* hint: in after the light is up, out after HINT_S */
+    /* hints, once per visit: the tap, then the drag (4-step fades) */
     float age = nos_t - T.t_enter;
-    float h = m_clamp((age - 0.35f) / 0.2f, 0, 1) * (1.0f - m_clamp((age - HINT_S) / 0.3f, 0, 1));
+    T.hint_i = age < HINT_S + 0.3f ? 0 : 1;
+    float a0 = T.hint_i ? HINT_S + 0.45f : 0.35f;
+    float h = m_clamp((age - a0) / 0.2f, 0, 1) * (1.0f - m_clamp((age - a0 - HINT_S + 0.35f) / 0.3f, 0, 1));
     T.hint = floorf(h * 4.0f + 0.5f) / 4.0f;
     float g = T.dragging ? 1.0f : 1.0f - m_clamp((nos_t - T.t_gauge - 0.6f) / 0.25f, 0, 1);
     T.gauge = floorf(g * 4.0f + 0.5f) / 4.0f;
@@ -138,8 +141,9 @@ static void torch_draw(gfx_fb *fb)
     uint16_t ink = T.mode ? 0x3000 : 0xA514;        /* #300000 / #A0A0A0 */
     if (T.gauge > 0) {
         float lv = T.level[T.mode];
-        uint16_t on = ui_mix(bg, T.mode ? 0x1000 : C_LINE2, T.gauge);
-        uint16_t off = ui_mix(bg, T.mode ? 0x5000 : 0xD69A, T.gauge);
+        /* red mode: black lit dots on a darker-red track, black figures */
+        uint16_t on = ui_mix(bg, T.mode ? C_BG : C_LINE2, T.gauge);
+        uint16_t off = ui_mix(bg, T.mode ? 0x3800 : 0xD69A, T.gauge);
         const float pitch = 16, d = 9;
         float x0 = UI_CX - pitch * (GAUGE_N - 1) * 0.5f;
         dot_bar(fb, x0, 392, GAUGE_N, pitch, d, lv * GAUGE_N + 0.001f, on, off);
@@ -153,10 +157,10 @@ static void torch_draw(gfx_fb *fb)
             b[i++] = (char)('0' + pct % 10);
             b[i++] = '%'; b[i] = 0;
         }
-        ui_label(fb, UI_CX, 366, b, ui_mix(bg, ink == 0x3000 ? 0x1000 : C_DIS, T.gauge), UI_CENTER);
+        ui_label(fb, UI_CX, 366, b, ui_mix(bg, T.mode ? C_BG : C_DIS, T.gauge), UI_CENTER);
     } else if (T.hint > 0) {
-        ui_label(fb, UI_CX, 404, T.mode ? "TAP FOR WHITE" : "TAP FOR RED LIGHT",
-                 ui_mix(bg, ink, T.hint), UI_CENTER);
+        const char *h = T.hint_i ? "DRAG TO DIM" : T.mode ? "TAP FOR WHITE" : "TAP FOR RED LIGHT";
+        ui_label(fb, UI_CX, 404, h, ui_mix(bg, T.mode ? C_BG : ink, T.hint), UI_CENTER);
     }
 }
 

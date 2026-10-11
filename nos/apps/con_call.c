@@ -21,8 +21,11 @@
 
 #define RING_R     214.0f
 #define RING_N     60
-#define BTN_Y      330.0f
-#define BTN_R      50.0f
+#define BTN_Y      326.0f
+#define BTN_R      44.0f     /* 88 px, the OS button size */
+#define LABEL_Y    396
+#define NAME_W     340
+#define MORPH_S    0.25f     /* button rearrangement between states */
 #define BTN_DX     82.0f
 #define LAP_S      1.6f      /* comet lap incl. a short rest */
 #define LAP_RUN_S  1.2f
@@ -47,6 +50,9 @@ static struct {
     int   popped;
     float txt;
     int   sec;              /* seconds of the current minute (active) */
+    int   prev_st;          /* state before the last change (for the morph) */
+    int   lines;            /* caller name lines (1-2) */
+    char  l1[40], l2[40];
 } C;
 
 static float q(float x, float n) { return floorf(m_clamp(x, 0, 1) * n + 0.5f) / n; }
@@ -60,6 +66,7 @@ static void copy_caller(const svc_call_t *c)
 static void go(int st)
 {
     if (C.st == st) return;
+    C.prev_st = C.st;
     C.st = st;
     C.t_state = nos_t;
     if (st == CS_ACTIVE) {
@@ -69,15 +76,46 @@ static void go(int st)
     }
 }
 
+/* The caller's name, wrapped into at most two title lines of NAME_W. */
+static void wrap_name(void)
+{
+    const char *name = C.name[0] ? C.name : C.number[0] ? C.number : "Unknown caller";
+    char l1[40];
+    snprintf(l1, sizeof l1, "%s", name);
+    C.l2[0] = 0;
+    C.lines = 1;
+    if (ui_text_width(UI_F_TITLE, l1, 0) <= NAME_W) { memcpy(C.l1, l1, sizeof l1); return; }
+    /* break at the last space (or after a hyphen) that fits; the rest is line 2 */
+    int n = (int)strlen(l1), cut = -1;
+    for (int i = 1; i < n; i++)
+        if (l1[i] == ' ' || l1[i] == '-') {
+            char t[40];
+            int k = l1[i] == '-' ? i + 1 : i;
+            memcpy(t, l1, (size_t)k); t[k] = 0;
+            if (ui_text_width(UI_F_TITLE, t, 0) <= NAME_W) cut = k; else break;
+        }
+    if (cut < 0) { memcpy(C.l1, l1, sizeof l1); return; }
+    memcpy(C.l1, l1, (size_t)cut); C.l1[cut] = 0;
+    int c2 = cut;
+    while (c2 > 0 && C.l1[c2 - 1] == ' ') C.l1[--c2] = 0;
+    const char *r = name + cut;
+    while (*r == ' ') r++;
+    snprintf(C.l2, sizeof C.l2, "%s", r);
+    C.lines = 2;
+}
+
 static void call_enter(void)
 {
     const svc_call_t *c = svc_call();
     memset(&C, 0, sizeof C);
-    C.t_enter = C.t_state = nos_t;
+    /* the screen rises in; the build starts part-way so it is seen */
+    C.t_enter = nos_t + 0.12f;
+    C.t_state = nos_t - 10.0f;
     C.comet = -1;
     C.lap = -1;
     copy_caller(c);
-    C.st = c->state == 2 ? CS_ACTIVE : c->state == 1 ? CS_INCOMING : CS_ENDED;
+    wrap_name();
+    C.st = C.prev_st = c->state == 2 ? CS_ACTIVE : c->state == 1 ? CS_INCOMING : CS_ENDED;
     if (C.st == CS_ACTIVE) { C.t0_ms = c->t0_ms ? c->t0_ms : hal_millis(); }
 }
 
@@ -95,17 +133,17 @@ static void call_tick(float dt)
     nos_keep_awake();
     const svc_call_t *c = svc_call();
     copy_caller(c);
-    C.build = q((nos_t - C.t_enter) / 0.36f, 32);
-    /* words fade in on entry and again when the call ends (the layout changes) */
-    float tin = (nos_t - C.t_enter - 0.1f) / 0.2f, tend = C.st == CS_ENDED ? (nos_t - C.t_state) / 0.2f : 1.0f;
-    C.txt = q(tin < tend ? tin : tend, 4);
+    C.build = q((nos_t - C.t_enter) / UI_ENTRY_S, 32);
+    C.txt = nos_t >= C.t_enter ? 1.0f : 0.0f;    /* words arrive with the build at full ink */
+    wrap_name();
 
     /* follow the phone: it may answer, hang up or reject on its own */
     if (C.st == CS_INCOMING && c->state == 2) go(CS_ACTIVE);
-    else if ((C.st == CS_INCOMING || C.st == CS_ACTIVE) && c->state == 0 && nos_t - C.t_state > 0.3f) go(CS_ENDED);
+    else if (!C.popped && (C.st == CS_INCOMING || C.st == CS_ACTIVE) && c->state == 0 && nos_t - C.t_state > 0.3f) go(CS_ENDED);
 
     if (C.st == CS_INCOMING) {
         float t = nos_t - C.t_enter;
+        if (t < 0) t = 0;
         int lap = (int)(t / LAP_S);
         float ph = t - lap * LAP_S;
         C.comet = ph < LAP_RUN_S ? (int)(ph / LAP_RUN_S * RING_N) : -1;
@@ -154,57 +192,81 @@ static void draw_ring(gfx_fb *fb)
     }
 }
 
-static void round_button(gfx_fb *fb, float cx, float r, int red, int icon, int pressed, const char *label, uint16_t lc)
+static void round_button(gfx_fb *fb, float cx, float r, int red, int icon, int pressed, float icon_p)
 {
     if (r < 1) return;
     uint16_t fill = red ? (pressed ? C_RED_D : C_RED) : (pressed ? C_SEC : C_WHITE);
     ui_circle(fb, cx, BTN_Y, r, fill);
-    float pitch = 4.6f * (r / BTN_R);
-    dot_icon(fb, icon, cx, BTN_Y, pitch, pitch * 0.8f, red ? C_WHITE : C_BG);
-    ui_label(fb, (int)cx, 410, label, lc, UI_CENTER);
+    float pitch = 4.2f * (r / BTN_R);
+    dot_icon_anim(fb, icon, cx, BTN_Y, pitch, pitch * 0.8f, red ? C_WHITE : C_BG, icon_p, DOT_REVEAL_CENTER);
 }
 
-static void draw_caller(gfx_fb *fb, int y_name, uint16_t c1, uint16_t c2)
+/* Name block: the same place in every state of the call. */
+static int number_y(void) { return C.lines == 2 ? 200 : 186; }
+static void draw_caller(gfx_fb *fb, uint16_t c1, uint16_t c2)
 {
-    const char *name = C.name[0] ? C.name : C.number[0] ? C.number : "Unknown caller";
-    int x0, x1;
-    ui_row_span((float)y_name, 40, &x0, &x1);
-    ui_text_fit(fb, UI_F_TITLE, UI_CX, y_name, name, c1, UI_CENTER, x1 - x0);
-    if (C.name[0] && C.number[0])
-        ui_text(fb, UI_F_LABEL, UI_CX, y_name + 36, C.number, c2, UI_CENTER, 2);
+    int y = C.lines == 2 ? 134 : 150;
+    ui_text(fb, UI_F_TITLE, UI_CX, y, C.l1, c1, UI_CENTER, 0);
+    if (C.lines == 2) ui_text_fit(fb, UI_F_TITLE, UI_CX, y + 32, C.l2, c1, UI_CENTER, NAME_W);
+    if (C.name[0] && C.number[0] && strcmp(C.name, C.number))
+        ui_text(fb, UI_F_LABEL, UI_CX, number_y(), C.number, c2, UI_CENTER, 2);
 }
 
 static void call_draw(gfx_fb *fb)
 {
     draw_ring(fb);
-    uint16_t c1 = ui_dim(C_PRI, C.txt), c2 = ui_dim(C_SEC, C.txt), c3 = ui_dim(C_DIS, C.txt);
-    float b = bezier_ease(&EASE_STANDARD, C.build);
+    if (nos_t < C.t_enter) return;
+    uint16_t c1 = ui_dim(C_PRI, C.txt), c2 = ui_dim(C_SEC, C.txt);
+    /* m: 0..1 through the change from prev_st to st (rigid slides, 4-step crossfades) */
+    float m = bezier_ease(&EASE_STANDARD, q((nos_t - C.t_state) / MORPH_S, 16));
+    float mf = q(m, 4);
+    const char *title = C.st == CS_INCOMING ? "INCOMING CALL" : C.st == CS_ACTIVE ? "ON PHONE" : "CALL";
+    if (mf >= 1) ui_title(fb, title, 0);
+    else ui_label(fb, UI_CX, UI_TITLE_Y, title, ui_dim(C_SEC, mf), UI_CENTER);
+    int ended = C.st == CS_ENDED;
+    draw_caller(fb, ended ? ui_mix(c1, C_SEC, mf) : c1, ended ? ui_mix(c2, C_DIS, mf) : c2);
+    float ib = q((nos_t - C.t_enter) / UI_ENTRY_S, 32);
+    int hy = number_y() + 22;                    /* the hero slot under the number */
+    dot_style st = { DOT_FONT_TALL, 5.5f, 4.4f, C_WHITE, 0, 1, 1 };
+
     switch (C.st) {
-    case CS_INCOMING: {
-        ui_title(fb, "INCOMING CALL", 0);
-        draw_caller(fb, 180, c1, c2);
-        ui_label(fb, UI_CX, 258, "ON PHONE", c3, UI_CENTER);
-        /* buttons grow in, decline two frames ahead of accept */
-        float bd = bezier_ease(&EASE_STANDARD, q((nos_t - C.t_enter) / 0.26f, 32));
-        float ba = bezier_ease(&EASE_STANDARD, q((nos_t - C.t_enter - 0.066f) / 0.26f, 32));
-        round_button(fb, UI_CX - BTN_DX, BTN_R * bd, 1, DOT_ICON_CROSS, C.pressed == P_DECLINE, "DECLINE", c2);
-        round_button(fb, UI_CX + BTN_DX, BTN_R * ba, 0, DOT_ICON_PHONE, C.pressed == P_ACCEPT, "ACCEPT", c2);
+    case CS_INCOMING:
+        ui_label(fb, UI_CX, hy + 22, "ANSWERS ON PHONE", ui_dim(C_DIS, C.txt), UI_CENTER);
+        round_button(fb, UI_CX - BTN_DX, BTN_R, 1, DOT_ICON_CROSS, C.pressed == P_DECLINE, ib);
+        round_button(fb, UI_CX + BTN_DX, BTN_R, 0, DOT_ICON_PHONE, C.pressed == P_ACCEPT, ib);
+        ui_label(fb, (int)(UI_CX - BTN_DX), LABEL_Y, "DECLINE", c2, UI_CENTER);
+        ui_label(fb, (int)(UI_CX + BTN_DX), LABEL_Y, "ACCEPT", c2, UI_CENTER);
         break;
-    }
     case CS_ACTIVE: {
-        ui_title(fb, "ON PHONE", 0);
-        draw_caller(fb, 128, c1, c2);
-        dot_style st = { DOT_FONT_TALL, 7.0f, 5.6f, C_WHITE, 0, 1, 1 };
-        if (C.dur_prev[0] && C.morph < 1) dot_text_morph(fb, &st, UI_CX, 194, C.dur_prev, C.dur, 1, C.morph);
-        else dot_text_a(fb, &st, UI_CX, 194, C.dur, 1);
-        round_button(fb, UI_CX, BTN_R * b, 1, DOT_ICON_CROSS, C.pressed == P_END, "END", c2);
+        /* from incoming: decline slides to the centre and becomes End, accept folds away */
+        int from_in = C.prev_st == CS_INCOMING && m < 1;
+        /* sequential crossfade: the old words leave in the first half, the new arrive in the second */
+        float fout = q(1.0f - 2.0f * m, 4), fin = q(2.0f * m - 1.0f, 4);
+        st.color = ui_dim(C_WHITE, from_in ? fin : 1.0f);
+        if (C.dur_prev[0] && C.morph < 1) dot_text_morph(fb, &st, UI_CX, (float)hy, C.dur_prev, C.dur, 1, C.morph);
+        else if (!from_in || fin > 0) dot_text_a(fb, &st, UI_CX, (float)hy, C.dur[0] ? C.dur : "00:00", 1);
+        if (from_in) {
+            if (fout > 0) {
+                ui_label(fb, UI_CX, hy + 22, "ANSWERS ON PHONE", ui_dim(C_DIS, fout), UI_CENTER);
+                ui_label(fb, (int)(UI_CX + BTN_DX), LABEL_Y, "ACCEPT", ui_dim(C_SEC, fout), UI_CENTER);
+                ui_label(fb, (int)(UI_CX - BTN_DX), LABEL_Y, "DECLINE", ui_dim(C_SEC, fout), UI_CENTER);
+            }
+            round_button(fb, UI_CX + BTN_DX + 40 * m, BTN_R * (1 - m), 0, DOT_ICON_PHONE, 0, 1);
+        }
+        float cx = from_in ? m_lerp(UI_CX - BTN_DX, UI_CX, m) : UI_CX;
+        round_button(fb, cx, BTN_R, 1, DOT_ICON_CROSS, C.pressed == P_END, from_in ? 1 : ib);
+        if (!from_in || fin > 0) ui_label(fb, UI_CX, LABEL_Y, "END", ui_dim(C_SEC, from_in ? fin : 1.0f), UI_CENTER);
         break;
     }
     default: {
-        ui_title(fb, "CALL", 0);
-        draw_caller(fb, 190, ui_dim(C_SEC, C.txt), ui_dim(C_DIS, C.txt));
-        ui_state(fb, UI_CX, 290, "CALL ENDED", c1);
-        if (C.dur[0]) ui_text(fb, UI_F_LABEL, UI_CX, 326, C.dur, c2, UI_CENTER, 2);
+        /* ended: the timer stays where it was, greyed; End folds away into the state */
+        st.color = ui_mix(C_WHITE, C_SEC, mf);
+        if (C.dur[0]) dot_text_a(fb, &st, UI_CX, (float)hy, C.dur, 1);
+        if (m < 1) {
+            round_button(fb, UI_CX, BTN_R * (1 - m), 1, DOT_ICON_CROSS, 0, 1);
+            ui_label(fb, UI_CX, LABEL_Y, "END", ui_dim(C_SEC, 1 - mf), UI_CENTER);
+        }
+        ui_state(fb, UI_CX, (int)BTN_Y + 6, "CALL ENDED", ui_dim(C_PRI, mf));
         break;
     }
     }

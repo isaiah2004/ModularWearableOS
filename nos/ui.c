@@ -52,6 +52,14 @@ uint16_t ui_mix(uint16_t a, uint16_t b, float t)
     int ra = (a >> 11) * 255 / 31, ga = ((a >> 5) & 63) * 255 / 63, ba = (a & 31) * 255 / 31;
     int rb = (b >> 11) * 255 / 31, gb = ((b >> 5) & 63) * 255 / 63, bb = (b & 31) * 255 / 31;
     int r = ra + (int)lroundf((rb - ra) * t), g = ga + (int)lroundf((gb - ga) * t), bl = ba + (int)lroundf((bb - ba) * t);
+    /* two neutral greys always mix to a neutral grey: one 5-bit level, green = 2x
+     * (truncating each channel separately leaves g one step high: a green cast) */
+    int na = (a >> 11) == (a & 31) && (((a >> 5) & 63) >> 1) == (a & 31);
+    int nb = (b >> 11) == (b & 31) && (((b >> 5) & 63) >> 1) == (b & 31);
+    if (na && nb) {
+        int l5 = (r * 31 + 127) / 255;
+        return (uint16_t)(l5 << 11 | (l5 * 2) << 5 | l5);
+    }
     return GFX_RGB(r, g, bl);
 }
 uint16_t ui_dim(uint16_t c, float k) { return ui_mix(0, c, k); }
@@ -448,7 +456,7 @@ void ui_button(gfx_fb *fb, float cx, float cy, float w, float h, const char *lab
     case BTN_RED:       fill = pressed ? C_RED_D : C_RED; ink = C_WHITE; break;
     case BTN_DANGER:    fill = pressed ? C_SURF2 : C_BG; ink = C_RED; break;
     case BTN_GHOST:     fill = pressed ? C_SURF2 : C_BG; ink = C_PRI; break;
-    default:            fill = pressed ? C_SURF3 : C_SURF2; ink = C_PRI; break;
+    default:            fill = pressed ? C_SEC : C_SURF2; ink = pressed ? C_BG : C_PRI; break;   /* C_SURF3 is invisible on the panel */
     }
     if (kind == BTN_DANGER || kind == BTN_GHOST) {
         if (pressed) ui_rrect(fb, cx - w / 2, cy - h / 2, w, h, h / 2, fill);
@@ -461,8 +469,8 @@ void ui_button(gfx_fb *fb, float cx, float cy, float w, float h, const char *lab
 
 void ui_icon_button(gfx_fb *fb, float cx, float cy, float r, int icon, int on, int pressed)
 {
-    uint16_t fill = on ? (pressed ? C_SEC : C_WHITE) : (pressed ? C_SURF3 : C_SURF2);
-    uint16_t ink = on ? C_BG : C_PRI;
+    uint16_t fill = on ? (pressed ? C_SEC : C_WHITE) : (pressed ? C_SEC : C_SURF2);
+    uint16_t ink = on || pressed ? C_BG : C_PRI;
     gfx_fill_circle(fb, cx, cy, r, fill);
     float pitch = r * 0.16f;
     if (pitch < 2.5f) pitch = 2.5f;

@@ -1,12 +1,17 @@
 /* out_baro.c — Barometer / altimeter / local climate (BME280 on the strap), outdoor team.
  *
  * Three pages in a horizontal pager (SCR_HDRAG; back swipe from the left edge):
- *   1 PRESSURE  hPa in dot-matrix, 3 h trend arrow, 24 h dot chart with the "now"
- *               column in red; storm warning (amber) when it falls > 3 hPa in 3 h.
- *   2 ALTITUDE  metres, sea-level reference, CALIBRATE -> picker (drag / - +) or
- *               "Use GPS" when the GPS has a 3D fix.
+ *   1 PRESSURE  hPa in dot-matrix, 3 h trend, 24 h dot chart whose "now" column is
+ *               topped by the screen's one red dot; a storm warning (red) when it falls
+ *               > 3 hPa in 3 h.
+ *   2 ALTITUDE  metres, sea-level reference, CALIBRATE pushes the sea-level picker
+ *               (scr_baro_cal: drag / - + with auto-repeat, Use GPS when the GPS has a
+ *               3D fix, Set; back = cancel).
  *   3 LOCAL     temperature + humidity, labelled as a strap sensor.
- * Sensors are read in tick() into statics; draw() only reads them. */
+ * Sensors are read in tick() into statics; draw() only reads them. Live values change
+ * at most once a second, with a digit morph.
+ *
+ * Sim preview knob: NOS_STORM=1 (sim builds only) forces a -3.6 hPa / 3 h trend. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -25,6 +30,7 @@
 #define NHIST  144
 #define NCOL   24
 #define CROWS  7
+#define IRIS_LAG 0.17f
 
 /* ------------------------------------------------------------- pager */
 typedef struct { mspring sp; int n, page, dragging; float x0; } pager;
@@ -67,7 +73,6 @@ static int pg_input(pager *p, const nos_input *in)
     default: return 0;
     }
 }
-/* returns 1 when the page index changed */
 static int pg_tick(pager *p, float dt)
 {
     msp_step(&p->sp, dt);
@@ -80,27 +85,40 @@ static int pg_tick(pager *p, float dt)
 static float pg_pos(const pager *p) { return floorf(p->sp.x + 0.5f); }
 
 /* ------------------------------------------------------------- morphing value */
-typedef struct { char cur[16], prev[16]; float t0; } mval;
-static void mv_set(mval *m, const char *s)
+typedef struct { char cur[16], prev[16]; float t0, dur; } mval;
+static void mv_set(mval *m, const char *s, float dur)
 {
     if (!strcmp(m->cur, s)) return;
     if (strlen(m->cur) == strlen(s) && m->cur[0]) { strcpy(m->prev, m->cur); m->t0 = nos_t; }
     else { strcpy(m->prev, s); m->t0 = -10; }
+    m->dur = dur;
     snprintf(m->cur, sizeof m->cur, "%s", s);
-}
-/* degree mark: a 3x3 ring of dots hung right of a centred number */
-static void deg_mark(gfx_fb *fb, float x, float y, float pitch, float p, uint16_t col)
-{
-    /* the tall font's ring degree glyph, set one cell right of the digits */
-    dot_style s = { DOT_FONT_TALL, pitch, pitch * 0.8f, col, 0, 1, 0 };
-    dot_text_anim(fb, &s, x - pitch * 0.3f, y - pitch * 0.4f, "\xB0", 0, p, DOT_REVEAL_RANDOM, 2u);
 }
 static void mv_draw(gfx_fb *fb, const dot_style *st, float x, float y, const mval *m, float build)
 {
     if (build < 1.0f) { dot_text_anim(fb, st, x, y, m->cur, 1, build, DOT_REVEAL_RANDOM, 3u); return; }
-    float p = (nos_t - m->t0) / 0.28f;
+    float p = (nos_t - m->t0) / m->dur;
     if (p < 1.0f) dot_text_morph(fb, st, x, y, m->prev, m->cur, 1, p);
     else dot_text_a(fb, st, x, y, m->cur, 1);
+}
+
+/* ------------------------------------------------------------- buttons
+ * Pressed = C_SEC fill with dark ink (readable on the panel); disabled = C_SURF with
+ * C_DIS ink; `k` 0..1 fades a disabled button into its enabled look (8 steps). */
+static void btn(gfx_fb *fb, float cx, float cy, float w, const char *label, int primary, int pressed, float k)
+{
+    k = floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f;
+    uint16_t fill, ink;
+    if (pressed) { fill = C_SEC; ink = C_BG; }
+    else if (primary) { fill = ui_mix(C_SURF, C_WHITE, k); ink = ui_mix(C_DIS, C_BG, k); }
+    else { fill = ui_mix(C_SURF, C_SURF2, k); ink = ui_mix(C_DIS, C_PRI, k); }
+    ui_rrect(fb, cx - w / 2, cy - UI_BTN_H / 2, w, UI_BTN_H, UI_BTN_H / 2, fill);
+    ui_label(fb, (int)cx, (int)(cy + UI_F_LABEL->ascent * 0.5f - 2), label, ink, UI_CENTER);
+}
+static void round_btn(gfx_fb *fb, float cx, float cy, float r, int icon, int pressed)
+{
+    gfx_fill_circle(fb, cx, cy, r, pressed ? C_SEC : C_SURF2);
+    dot_icon(fb, icon, cx, cy, 4.0f, 3.2f, pressed ? C_BG : C_PRI);
 }
 
 /* ------------------------------------------------------------- state */
@@ -109,6 +127,7 @@ static struct {
     hal_env env;
     float *hist; int nhist;
     float hist_t;            /* nos_t of the last history read */
+    float val_t;             /* nos_t of the last displayed-value refresh (1 Hz) */
     uint8_t cols[NCOL];
     int ncols;
     float lo, hi;            /* chart range */
@@ -116,27 +135,15 @@ static struct {
     int storm;
     float sea;               /* derived sea-level reference */
     pager pg;
-    float build_t[NPAGE];
+    float t0;                /* entry build start */
     mval m_hpa, m_alt, m_temp;
-    /* calibration picker */
-    int cal;
-    float cal_v, cal_v0, cal_build_t;
-    int cal_drag;
-    int gps_ok; float gps_alt;
     int pressed;             /* control id under the finger */
+    float press_until;       /* pressed state shows >= 3 frames */
     float saved_t;
+    int inited;
 } B;
 
 enum { P_NONE = 0, P_CAL, P_MINUS, P_PLUS, P_GPS, P_SET };
-
-static void draw_absent(gfx_fb *fb, const char *title, int icon, const char *what, const char *part)
-{
-    ui_title(fb, title, 0);
-    dot_icon(fb, icon, UI_CX, 176, 6.0f, 4.8f, C_DIS);
-    ui_text(fb, UI_F_TITLE, UI_CX, 276, "Not connected", C_PRI, UI_CENTER, 0);
-    ui_text_wrap(fb, UI_F_BODY, UI_CX, 316, 330, 30, 2, what, C_SEC, UI_CENTER);
-    ui_label(fb, UI_CX, 404, part, C_DIS, UI_CENTER);
-}
 
 static float alt_from(float p, float p0)
 {
@@ -148,6 +155,17 @@ static float sea_from(float p, float alt)
     float k = 1.0f - alt / 44330.0f;
     if (k <= 0.05f) k = 0.05f;
     return p / powf(k, 5.255f);
+}
+
+static int storm_knob(void)
+{
+#ifndef ESP_PLATFORM
+    static int k = -1;
+    if (k < 0) { const char *e = getenv("NOS_STORM"); k = e && *e == '1'; }
+    return k;
+#else
+    return 0;
+#endif
 }
 
 static void read_history(void)
@@ -191,55 +209,55 @@ static void read_history(void)
         float now = B.valid ? B.env.pressure_hpa : B.hist[B.nhist - 1];
         B.d3h = now - B.hist[B.nhist - 1 - 18];
     } else B.d3h = 0;
+    if (storm_knob()) { B.have3h = 1; B.d3h = -3.6f; }
     B.storm = B.have3h && B.d3h < -3.0f;
+}
+
+static void fmt1(char *o, int n, float v) { snprintf(o, (size_t)n, "%.1f", (double)(floorf(v * 10.0f + 0.5f) / 10.0f)); }
+
+static void refresh_values(void)
+{
+    char t[16];
+    B.sea = sea_from(B.env.pressure_hpa, B.env.altitude_m);
+    fmt1(t, sizeof t, B.env.pressure_hpa); mv_set(&B.m_hpa, t, 0.28f);
+    snprintf(t, sizeof t, "%d", (int)lroundf(B.env.altitude_m)); mv_set(&B.m_alt, t, 0.28f);
+    snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(B.env.temp_c * 10.0f + 0.5f) / 10.0f)); mv_set(&B.m_temp, t, 0.28f);
 }
 
 static void baro_enter(void)
 {
+    if (nos_revealed() && B.inited) {        /* back from the picker: no rebuild */
+        B.hist_t = -100; B.val_t = -100;
+        return;
+    }
     int keep = B.pg.n ? B.pg.page : 0;
     float *h = B.hist;
     memset(&B, 0, sizeof B);
     B.hist = h;
+    B.inited = 1;
     pg_init(&B.pg, NPAGE, keep);
-    for (int i = 0; i < NPAGE; i++) B.build_t[i] = nos_t;
-    B.hist_t = -100;
+    B.t0 = nos_t + IRIS_LAG;
+    B.hist_t = -100; B.val_t = -100;
     B.saved_t = -100;
 }
-
-static void baro_leave(void)
-{
-    if (B.cal) hal_gps_enable(0);
-}
-
-static void fmt1(char *o, int n, float v) { snprintf(o, (size_t)n, "%.1f", (double)(floorf(v * 10.0f + 0.5f) / 10.0f)); }
 
 static void baro_tick(float dt)
 {
     B.present = (hal_ext_present() & EXT_ENV) != 0;
     B.valid = B.present && hal_env_get(&B.env) && B.env.valid;
     if (B.valid && nos_t - B.hist_t > 5.0f) { read_history(); B.hist_t = nos_t; }
-    if (B.valid) {
-        B.sea = sea_from(B.env.pressure_hpa, B.env.altitude_m);
-        char t[16];
-        fmt1(t, sizeof t, B.env.pressure_hpa); mv_set(&B.m_hpa, t);
-        snprintf(t, sizeof t, "%d", (int)lroundf(B.env.altitude_m)); mv_set(&B.m_alt, t);
-        snprintf(t, sizeof t, "%.1f", (double)(floorf(B.env.temp_c * 10.0f + 0.5f) / 10.0f)); mv_set(&B.m_temp, t);
-    }
+    if (B.valid && nos_t - B.val_t >= 1.0f) { refresh_values(); B.val_t = nos_t; }
     pg_tick(&B.pg, dt);
-    if (B.cal) {
-        hal_gps g;
-        B.gps_ok = hal_gps_get(&g) && g.valid && g.fix3d;
-        B.gps_alt = g.alt_m;
-    }
+    if (B.pressed && nos_t > B.press_until && B.press_until > 0) { B.pressed = 0; B.press_until = 0; }
 }
 
 /* ------------------------------------------------------------- pages */
-static float build_of(int page) { return m_clamp((nos_t - B.build_t[page]) / 0.36f, 0, 1); }
+static float build_of(void) { return m_clamp((nos_t - B.t0) / UI_ENTRY_S, 0, 1); }
 
 static void page_pressure(gfx_fb *fb)
 {
     ui_title(fb, "BAROMETER", 0);
-    float b = build_of(0);
+    float b = build_of();
     /* trend row */
     char t[40];
     int icon; const char *word;
@@ -248,7 +266,7 @@ static void page_pressure(gfx_fb *fb)
     else if (B.d3h < -1.0f) { icon = DOT_ICON_ARROW_DOWN; word = "FALLING"; }
     else { icon = DOT_ICON_ARROW_RIGHT; word = "STEADY"; }
     if (B.storm) {
-        ui_state(fb, UI_CX, 118, "STORM WARNING", C_AMBER);
+        ui_state(fb, UI_CX, 118, "STORM WARNING", C_RED);          /* the screen's one red */
     } else {
         if (B.have3h) snprintf(t, sizeof t, "%s %+.1f / 3H", word, (double)B.d3h);
         else snprintf(t, sizeof t, "%s", word);
@@ -258,9 +276,9 @@ static void page_pressure(gfx_fb *fb)
         ui_label(fb, x + (icon ? 24 : 0), 118, t, C_SEC, UI_LEFT);
     }
     /* hero */
-    dot_style st = { DOT_FONT_TALL, 8.0f, 6.4f, C_WHITE, 0, 1, 1 };
+    dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
     mv_draw(fb, &st, UI_CX, 142, &B.m_hpa, b);
-    ui_label(fb, UI_CX, 242, "HPA", C_SEC, UI_CENTER);
+    ui_text(fb, UI_F_LABEL, UI_CX, 242, "hPa", C_SEC, UI_CENTER, 2);
     /* 24 h chart */
     const float pitch = 10.0f, d = 7.0f;
     float x0 = UI_CX - NCOL * pitch * 0.5f, y0 = 272;
@@ -270,163 +288,67 @@ static void page_pressure(gfx_fb *fb)
     }
     uint8_t v[NCOL];
     for (int i = 0; i < NCOL; i++) v[i] = (uint8_t)(B.cols[i] * m_clamp(b * 1.6f - i * 0.02f, 0, 1));
-    dot_columns(fb, x0, y0, NCOL - 1, CROWS, pitch, d, v, C_PRI, C_LINE);
-    dot_columns(fb, x0 + (NCOL - 1) * pitch, y0, 1, CROWS, pitch, d, v + NCOL - 1, C_RED, C_LINE);
-    ui_text(fb, UI_F_SMALL, (int)x0, 368, "-24H", C_DIS, UI_LEFT, 1);
-    ui_text(fb, UI_F_SMALL, (int)(x0 + NCOL * pitch), 368, "NOW", C_DIS, UI_RIGHT, 1);
+    dot_columns(fb, x0, y0, NCOL, CROWS, pitch, d, v, C_PRI, C_LINE);
+    /* "now": only the top lit dot of the last column is red (white while a storm
+     * warning holds the red) */
+    int cells = (v[NCOL - 1] * CROWS + 127) / 255;
+    if (cells > 0) {
+        float cx = x0 + (NCOL - 1) * pitch + pitch * 0.5f, cy = y0 + (CROWS - cells) * pitch + pitch * 0.5f;
+        dot_disc(fb, cx, cy, d + 1.0f, B.storm ? C_WHITE : C_RED);
+    }
+    ui_label(fb, (int)x0, 370, "-24H", C_DIS, UI_LEFT);
+    ui_label(fb, (int)(x0 + NCOL * pitch), 370, "NOW", C_DIS, UI_RIGHT);
 }
 
 static void page_altitude(gfx_fb *fb)
 {
     ui_title(fb, "ALTITUDE", 0);
-    float b = build_of(1);
-    dot_style st = { DOT_FONT_TALL, 10.0f, 8.0f, C_WHITE, 0, 1, 1 };
+    float b = build_of();
+    dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
     mv_draw(fb, &st, UI_CX, 118, &B.m_alt, b);
-    ui_label(fb, UI_CX, 242, "METRES", C_SEC, UI_CENTER);
+    ui_label(fb, UI_CX, 228, "METRES", C_SEC, UI_CENTER);
     char t[40];
-    if (nos_t - B.saved_t < 1.6f) ui_state(fb, UI_CX, 296, "SAVED", C_PRI);
+    if (nos_t - B.saved_t < 1.6f) ui_state(fb, UI_CX, 284, "SAVED", C_PRI);
     else {
-        snprintf(t, sizeof t, "SEA LEVEL %.1f HPA", (double)(floorf(B.sea * 10 + 0.5f) / 10));
-        ui_label(fb, UI_CX, 296, t, C_DIS, UI_CENTER);
+        snprintf(t, sizeof t, "SEA LEVEL %.1f", (double)(floorf(B.sea * 10 + 0.5f) / 10));
+        ui_label_unit(fb, UI_CX, 284, t, "hPa", C_DIS, UI_CENTER);
     }
-    ui_button(fb, UI_CX, 360, 196, 60, "Calibrate", BTN_SECONDARY, B.pressed == P_CAL);
+    btn(fb, UI_CX, UI_BTN_Y, UI_BTN_W, "Calibrate", 0, B.pressed == P_CAL, 1);
 }
 
 static void page_local(gfx_fb *fb)
 {
     ui_title(fb, "LOCAL", 0);
-    float b = build_of(2);
-    dot_style st = { DOT_FONT_TALL, 9.0f, 7.2f, C_WHITE, 0, 1, 1 };
-    mv_draw(fb, &st, UI_CX, 114, &B.m_temp, b);
-    deg_mark(fb, UI_CX + dot_text_width(&st, B.m_temp.cur) * 0.5f + st.pitch * 1.3f, 114 + st.pitch * 0.4f, st.pitch, b, C_WHITE);
-    ui_label(fb, UI_CX, 228, "TEMPERATURE", C_SEC, UI_CENTER);
-    /* humidity as 20 dots */
+    float b = build_of();
+    /* the number and its degree are centred as a group; the unit sits under it */
+    dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
+    mv_draw(fb, &st, UI_CX, 118, &B.m_temp, b);
+    ui_label(fb, UI_CX, 222, nos_prefs.units_metric ? "TEMPERATURE C" : "TEMPERATURE F", C_SEC, UI_CENTER);
+    /* humidity as 20 whole dots (5% each) */
     float h = m_clamp(B.env.humidity, 0, 100);
     const float pitch = 14.0f;
-    dot_bar(fb, UI_CX - 9.5f * pitch, 288, 20, pitch, 8.0f, h / 5.0f * b, C_PRI, C_LINE2);
+    dot_bar(fb, UI_CX - 9.5f * pitch, 284, 20, pitch, 8.0f, floorf(h / 5.0f + 0.5f) * b, C_PRI, C_LINE2);
     char t[24];
     snprintf(t, sizeof t, "HUMIDITY %d%%", (int)lroundf(h));
-    ui_label(fb, UI_CX, 330, t, C_SEC, UI_CENTER);
-    ui_label(fb, UI_CX, 392, "STRAP SENSOR", C_DIS, UI_CENTER);
-}
-
-/* ------------------------------------------------------------- calibration picker */
-#define CAL_MIN 870.0f
-#define CAL_MAX 1085.0f
-#define CAL_BTN_Y 374
-static void cal_draw(gfx_fb *fb)
-{
-    ui_title(fb, "SEA LEVEL", 0);
-    float b = m_clamp((nos_t - B.cal_build_t) / 0.3f, 0, 1);
-    char t[24];
-    fmt1(t, sizeof t, B.cal_v);
-    dot_style st = { DOT_FONT_TALL, 7.0f, 5.6f, C_WHITE, 0, 1, 1 };
-    dot_text_anim(fb, &st, UI_CX, 106, t, 1, b, DOT_REVEAL_RANDOM, 9u);
-    ui_label(fb, UI_CX, 198, "HPA", C_SEC, UI_CENTER);
-    ui_icon_button(fb, UI_CX - 66, 252, 34, DOT_ICON_MINUS, 0, B.pressed == P_MINUS);
-    ui_icon_button(fb, UI_CX + 66, 252, 34, DOT_ICON_PLUS, 0, B.pressed == P_PLUS);
-    snprintf(t, sizeof t, "ALTITUDE %d M", (int)lroundf(alt_from(B.env.pressure_hpa, B.cal_v)));
-    ui_label(fb, UI_CX, 320, t, C_DIS, UI_CENTER);
-    if (B.gps_ok) {
-        ui_button(fb, UI_CX - 80, CAL_BTN_Y, 150, 60, "Use GPS", BTN_SECONDARY, B.pressed == P_GPS);
-        ui_button(fb, UI_CX + 80, CAL_BTN_Y, 150, 60, "Set", BTN_PRIMARY, B.pressed == P_SET);
-    } else
-        ui_button(fb, UI_CX, CAL_BTN_Y, 196, 60, "Set", BTN_PRIMARY, B.pressed == P_SET);
-}
-
-static int cal_hit(int x, int y)
-{
-    if (abs(y - 252) < 46 && abs(x - (UI_CX - 66)) < 48 && x < UI_CX) return P_MINUS;
-    if (abs(y - 252) < 46 && abs(x - (UI_CX + 66)) < 48 && x >= UI_CX) return P_PLUS;
-    if (abs(y - CAL_BTN_Y) < 44) {
-        if (B.gps_ok) return x < UI_CX ? (x > UI_CX - 160 ? P_GPS : 0) : (x < UI_CX + 160 ? P_SET : 0);
-        return abs(x - UI_CX) < 100 ? P_SET : 0;
-    }
-    return 0;
-}
-
-static void cal_open(void)
-{
-    B.cal = 1;
-    B.cal_v = floorf((B.sea > 0 ? B.sea : 1013.25f) * 10.0f + 0.5f) / 10.0f;
-    B.cal_build_t = nos_t;
-    hal_gps_enable(1);
-    nos_invalidate();
-}
-static void cal_close(int save)
-{
-    if (save) {
-        hal_env_set_sea_level(B.cal_v);
-        B.saved_t = nos_t;
-        nos_feedback(FB_SUCCESS);
-    }
-    B.cal = 0;
-    B.build_t[1] = nos_t;
-    hal_gps_enable(0);
-    nos_invalidate();
-}
-static void cal_step(float d)
-{
-    float v = floorf((B.cal_v + d) * 10.0f + 0.5f) / 10.0f;
-    if (v < CAL_MIN || v > CAL_MAX) { nos_feedback(FB_LIMIT); v = m_clamp(v, CAL_MIN, CAL_MAX); }
-    else nos_feedback(FB_TICK);
-    B.cal_v = v;
-}
-
-static int cal_input(const nos_input *in)
-{
-    switch (in->type) {
-    case IN_DOWN: B.pressed = cal_hit(in->x, in->y); return 1;
-    case IN_UP: B.pressed = 0; return 1;
-    case IN_TAP: {
-        int h = cal_hit(in->x, in->y);
-        if (h == P_MINUS) cal_step(-0.1f);
-        else if (h == P_PLUS) cal_step(0.1f);
-        else if (h == P_GPS) {
-            B.cal_v = floorf(sea_from(B.env.pressure_hpa, B.gps_alt) * 10.0f + 0.5f) / 10.0f;
-            nos_feedback(FB_TAP);
-        } else if (h == P_SET) cal_close(1);
-        return 1;
-    }
-    case IN_LONG: {
-        int h = cal_hit(in->x, in->y);
-        if (h == P_MINUS) cal_step(-1.0f);
-        else if (h == P_PLUS) cal_step(1.0f);
-        return 1;
-    }
-    case IN_DRAG_START:
-        if (in->axis != AXIS_Y) return 0;
-        B.cal_drag = 1; B.cal_v0 = B.cal_v; B.pressed = 0;
-        return 1;
-    case IN_DRAG: {
-        if (!B.cal_drag) return 0;
-        /* 8 px per 0.1 hPa, finger up = higher */
-        float v = B.cal_v0 + floorf(-in->dy / 8.0f) * 0.1f;
-        v = m_clamp(floorf(v * 10.0f + 0.5f) / 10.0f, CAL_MIN, CAL_MAX);
-        if (fabsf(v - B.cal_v) > 0.05f) { B.cal_v = v; nos_feedback(FB_TICK); }
-        return 1;
-    }
-    case IN_DRAG_END: B.cal_drag = 0; return 1;
-    case IN_BTN: cal_close(0); nos_feedback(FB_BACK); return 1;   /* the button cancels */
-    default: return 0;
-    }
+    ui_label(fb, UI_CX, 326, t, C_SEC, UI_CENTER);
+    ui_label(fb, UI_CX, 386, "STRAP SENSOR", C_DIS, UI_CENTER);
 }
 
 /* ------------------------------------------------------------- draw / input */
 static void baro_draw(gfx_fb *fb)
 {
     if (!B.present) {
-        draw_absent(fb, "BAROMETER", DOT_ICON_GAUGE, "Add the climate sensor for pressure",
-                    "BME280  STRAP");
+        ui_title(fb, "BAROMETER", 0);
+        ui_absent(fb, DOT_ICON_GAUGE, "Not connected", "Add the climate sensor for pressure",
+                  "CLIMATE MODULE", build_of());
         return;
     }
     if (!B.valid) {
         ui_title(fb, "BAROMETER", 0);
-        dot_icon(fb, DOT_ICON_GAUGE, UI_CX, 190, 6.0f, 4.8f, C_DIS);
-        ui_state(fb, UI_CX, 292, "READING", C_SEC);
+        ui_absent(fb, DOT_ICON_GAUGE, 0, 0, 0, build_of());
+        ui_state(fb, UI_CX, 340, "READING", C_SEC);
         return;
     }
-    if (B.cal) { cal_draw(fb); return; }
     float pos = pg_pos(&B.pg);
     for (int i = 0; i < NPAGE; i++) {
         float off = i * PAGE_W - pos;
@@ -437,23 +359,176 @@ static void baro_draw(gfx_fb *fb)
         else if (i == 1) page_altitude(&sub);
         else page_local(&sub);
     }
-    ui_page_dots(fb, UI_CX, 434, NPAGE, pos / PAGE_W);
+    ui_page_dots(fb, UI_CX, UI_DOTS_Y, NPAGE, pos / PAGE_W);
 }
+
+extern const nos_screen scr_baro_cal;
 
 static int baro_input(const nos_input *in)
 {
     if (!B.valid) return 0;
-    if (B.cal) return cal_input(in);
     if (pg_input(&B.pg, in)) { B.pressed = 0; return 1; }
-    int on_cal = B.pg.page == 1 && !B.pg.sp.moving && abs(in->x - UI_CX) < 110 && abs(in->y - 360) < 44;
+    int on_cal = B.pg.page == 1 && !B.pg.sp.moving && abs(in->x - UI_CX) < UI_BTN_W / 2 &&
+                 abs(in->y - UI_BTN_Y) < UI_BTN_H / 2;
     switch (in->type) {
-    case IN_DOWN: B.pressed = on_cal ? P_CAL : 0; return 1;
-    case IN_UP: B.pressed = 0; return 1;
+    case IN_DOWN: B.pressed = on_cal ? P_CAL : 0; B.press_until = 0; return 1;
+    case IN_UP: if (nos_t >= B.press_until) B.pressed = 0; return 1;
     case IN_TAP:
-        if (on_cal) { nos_feedback(FB_TAP); cal_open(); return 1; }
+        if (on_cal) {
+            nos_feedback(FB_TAP);
+            B.press_until = nos_t + 0.1f;          /* keep the press visible for 3 frames */
+            nos_push(&scr_baro_cal, TX_PUSH);
+            return 1;
+        }
         return 0;
     default: return 0;
     }
 }
 
-const nos_screen scr_baro = { "BAROMETER", baro_enter, baro_leave, baro_tick, baro_draw, baro_input, SCR_HDRAG };
+const nos_screen scr_baro = { "BAROMETER", baro_enter, 0, baro_tick, baro_draw, baro_input, SCR_HDRAG };
+
+/* ================================================================ sea-level picker */
+#define CAL_MIN 870.0f
+#define CAL_MAX 1085.0f
+#define PM_Y    256
+#define PM_DX   70
+
+static struct {
+    float v;
+    mval m;
+    float t0;
+    int pressed; float press_t0, press_until, rep_t;
+    int repeated;
+    int drag; float last_dy, acc;
+    int gps_ok; float gps_alt, gps_t;   /* gps_t: when the fix arrived (enable fade) */
+    hal_env env;
+} K;
+
+static void cal_show(void)
+{
+    char t[16];
+    fmt1(t, sizeof t, K.v);
+    mv_set(&K.m, t, 0.12f);
+}
+static void cal_step(float d)
+{
+    float v = floorf((K.v + d) * 10.0f + 0.5f) / 10.0f;
+    if (v < CAL_MIN || v > CAL_MAX) { nos_feedback(FB_LIMIT); v = m_clamp(v, CAL_MIN, CAL_MAX); }
+    else nos_feedback(FB_TICK);
+    K.v = v;
+    cal_show();
+}
+
+static void cal_enter(void)
+{
+    memset(&K, 0, sizeof K);
+    hal_env_get(&K.env);
+    float sea = sea_from(K.env.pressure_hpa, K.env.altitude_m);
+    K.v = floorf((sea > 800 ? sea : 1013.25f) * 10.0f + 0.5f) / 10.0f;
+    cal_show();
+    K.m.t0 = -10;
+    K.t0 = nos_t;
+    K.gps_t = -10;
+    hal_gps_enable(1);
+}
+static void cal_leave(void) { hal_gps_enable(0); }   /* a recording track re-enables it each frame */
+
+static void cal_tick(float dt)
+{
+    hal_env_get(&K.env);
+    hal_gps g;
+    int ok = hal_gps_get(&g) && g.valid && g.fix3d;
+    if (ok && !K.gps_ok) K.gps_t = nos_t;
+    K.gps_ok = ok;
+    K.gps_alt = g.alt_m;
+    /* hold on - / +: auto-repeat at 8 Hz after 400 ms, whole hPa after 2 s */
+    if ((K.pressed == P_MINUS || K.pressed == P_PLUS) && !K.drag) {
+        float held = nos_t - K.press_t0;
+        if (held >= 0.4f && nos_t - K.rep_t >= 0.125f) {
+            K.rep_t = nos_t; K.repeated = 1;
+            float s = held > 2.0f ? 1.0f : 0.1f;
+            cal_step(K.pressed == P_MINUS ? -s : s);
+        }
+    }
+    if ((K.pressed == P_SET || K.pressed == P_GPS) && K.press_until > 0 && nos_t > K.press_until) K.pressed = 0;
+}
+
+static void cal_draw(gfx_fb *fb)
+{
+    ui_title(fb, "SEA LEVEL", 0);
+    float b = m_clamp((nos_t - K.t0) / UI_ENTRY_S, 0, 1);
+    dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
+    mv_draw(fb, &st, UI_CX, 102, &K.m, b);
+    ui_text(fb, UI_F_LABEL, UI_CX, 200, "hPa", C_SEC, UI_CENTER, 2);
+    round_btn(fb, UI_CX - PM_DX, PM_Y, 34, DOT_ICON_MINUS, K.pressed == P_MINUS);
+    round_btn(fb, UI_CX + PM_DX, PM_Y, 34, DOT_ICON_PLUS, K.pressed == P_PLUS);
+    char t[24];
+    snprintf(t, sizeof t, "ALTITUDE %d", (int)lroundf(alt_from(K.env.pressure_hpa, K.v)));
+    ui_label_unit(fb, UI_CX, 316, t, "m", C_DIS, UI_CENTER);
+    /* both buttons always: Use GPS waits disabled for a 3D fix, then fades in place */
+    float gk = K.gps_ok ? m_clamp((nos_t - K.gps_t) / 0.15f, 0, 1) : 0;
+    btn(fb, UI_BTN_PAIR_X0, UI_BTN_Y, UI_BTN_PAIR_W, "Use GPS", 0, K.pressed == P_GPS && K.gps_ok, gk);
+    btn(fb, UI_BTN_PAIR_X1, UI_BTN_Y, UI_BTN_PAIR_W, "Set", 1, K.pressed == P_SET, 1);
+}
+
+static int cal_hit(int x, int y)
+{
+    if (abs(y - PM_Y) < 46 && x < UI_CX && abs(x - (UI_CX - PM_DX)) < 48) return P_MINUS;
+    if (abs(y - PM_Y) < 46 && x >= UI_CX && abs(x - (UI_CX + PM_DX)) < 48) return P_PLUS;
+    if (abs(y - UI_BTN_Y) < UI_BTN_H / 2) {
+        if (abs(x - UI_BTN_PAIR_X0) <= UI_BTN_PAIR_W / 2 + 4) return P_GPS;
+        if (abs(x - UI_BTN_PAIR_X1) <= UI_BTN_PAIR_W / 2 + 4) return P_SET;
+    }
+    return 0;
+}
+
+static int cal_input(const nos_input *in)
+{
+    switch (in->type) {
+    case IN_DOWN:
+        K.pressed = cal_hit(in->x, in->y);
+        K.press_t0 = nos_t; K.rep_t = nos_t; K.repeated = 0; K.press_until = 0;
+        return 1;
+    case IN_UP:
+        if (K.pressed == P_MINUS || K.pressed == P_PLUS || nos_t >= K.press_until) K.pressed = 0;
+        return 1;
+    case IN_TAP: {
+        int h = cal_hit(in->x, in->y);
+        if (h == P_MINUS && !K.repeated) cal_step(-0.1f);
+        else if (h == P_PLUS && !K.repeated) cal_step(0.1f);
+        else if (h == P_GPS) {
+            if (!K.gps_ok) { nos_feedback(FB_ERROR); return 1; }
+            K.v = floorf(sea_from(K.env.pressure_hpa, K.gps_alt) * 10.0f + 0.5f) / 10.0f;
+            cal_show();
+            nos_feedback(FB_TAP);
+            K.press_until = nos_t + 0.1f;
+        } else if (h == P_SET) {
+            hal_env_set_sea_level(K.v);
+            B.saved_t = nos_t;
+            nos_feedback(FB_SUCCESS);
+            K.press_until = nos_t + 0.1f;
+            nos_pop();
+        }
+        return 1;
+    }
+    case IN_LONG: return 1;                   /* the hold repeats in tick() */
+    case IN_DRAG_START:
+        if (in->axis != AXIS_Y) return 0;
+        K.drag = 1; K.pressed = 0; K.last_dy = 0; K.acc = 0;
+        /* fall through */
+    case IN_DRAG: {
+        if (!K.drag) return 0;
+        /* every 8 px of travel is one detent; its size scales with the finger's speed */
+        K.acc += -(in->dy - K.last_dy);
+        K.last_dy = in->dy;
+        float sp = fabsf(in->vy), step = sp < 300 ? 0.1f : sp < 900 ? 0.5f : 1.0f;
+        while (K.acc >= 8.0f) { K.acc -= 8.0f; cal_step(step); }
+        while (K.acc <= -8.0f) { K.acc += 8.0f; cal_step(-step); }
+        return 1;
+    }
+    case IN_DRAG_END: K.drag = 0; return 1;
+    default: return 0;
+    }
+}
+
+const nos_screen scr_baro_cal = { "SEA LEVEL", cal_enter, cal_leave, cal_tick, cal_draw, cal_input, 0 };

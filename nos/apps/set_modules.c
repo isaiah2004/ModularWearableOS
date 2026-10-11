@@ -2,15 +2,19 @@
  * and the hardware bring-up tool for the real watch.
  *
  * List: a summary (online count + one dot per module), then BOARD and STRAP sections.
- * Each row: status dot (white = present/ok, grey = absent), name, bus/part, live value.
- * Live values are sampled in tick at 4 Hz so the text is readable and damage settles.
+ * Each row: status dot (white = present/ok, grey = absent), name, bus/part, live value,
+ * chevron. Live values refresh at 1 Hz so the text is readable and damage settles.
  *
  * Tapping a row pushes a detail page: a live readout plus a test action
  *   touch: five edge targets   IMU: bubble level   RTC: resync   SD: capacity
  *   haptic: play each pattern  speaker: play each SFX   mic: live dB + envelope
  *   GPS: satellites + SNR      LTE: power on/off   env: T/RH/P   light: lux, prox, gestures
  *   compass: dial + calibrate  HR: live PPG trace
- * Every page has a designed "not connected" state naming the expected bus and pins. */
+ * Every page has the standard "not connected" state (ui_absent) plus the exact wiring it
+ * expects, because this page is the bring-up tool.
+ *
+ * Shared with Settings: set_modules_online() is the one module count in the OS, and
+ * Settings > Storage / Cellular open the SD card / Cellular pages here. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -26,45 +30,49 @@
 enum { M_TOUCH = 0, M_IMU, M_RTC, M_SD, M_BATT, M_WIFI, M_BLE,
        M_HAPTIC, M_MIC, M_SPK, M_GPS, M_LTE, M_ENV, M_LIGHT, M_MAG, M_HR, M_COUNT };
 #define M_BOARD_N 7
+#define PRESS_FLASH 0.10f        /* a quick tap still shows its pressed state 3 frames */
+#define LIVE_S 1.0f              /* live text readings refresh at 1 Hz */
+#define MORPH_S 0.28f
 
 typedef struct {
     const char *name, *bus, *title;
     int icon;
     uint32_t ext;          /* EXT_* bit for strap modules, 0 = on the board */
     const char *adds;      /* what it adds (absent state) */
-    const char *wire;      /* where it is expected (absent state) */
+    const char *part;      /* absent footer: "<PART> MODULE" */
+    const char *wire;      /* where it is expected (absent state, bring-up) */
 } mod_info;
 
 static const mod_info MI[M_COUNT] = {
-    { "Touch", "I2C 0x38  FT3168", "TOUCH", DOT_ICON_HAND, 0, "", "" },
-    { "Motion", "I2C 0x6B  QMI8658", "MOTION", DOT_ICON_LEVEL, 0, "Raise to wake, steps and tilt",
-      "I2C 0x6B, SDA 47 SCL 48" },
-    { "Clock", "I2C 0x51  PCF85063", "CLOCK", DOT_ICON_TIMER, 0, "Keeps time while the watch sleeps",
-      "I2C 0x51, SDA 47 SCL 48" },
-    { "SD card", "SDMMC 1-bit", "SD CARD", DOT_ICON_SD, 0, "Voice memos and logs",
-      "SDMMC CLK 41, CMD 39, D0 40" },
-    { "Battery", "ADC GPIO4  3:1", "BATTERY", DOT_ICON_BATTERY, 0, "Charge estimate from the rail",
-      "GPIO4, ADC1 channel 3" },
-    { "Wi-Fi", "ESP32-S3  2.4 GHz", "WI-FI", DOT_ICON_WIFI, 0, "", "" },
-    { "Bluetooth", "ESP32-S3  NUS", "BLUETOOTH", DOT_ICON_BT, 0, "", "" },
-    { "Haptics", "GPIO16  PWM", "HAPTICS", DOT_ICON_BELL, EXT_HAPTIC, "A felt click on every detent",
-      "Motor driver on GPIO16" },
-    { "Microphone", "I2S IN  INMP441", "MICROPHONE", DOT_ICON_MIC, EXT_MIC, "Voice memos and the sound meter",
-      "I2S BCLK 1, WS 2, SD 3" },
-    { "Speaker", "I2S OUT  MAX98357A", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, "UI sounds, alarms and memo playback",
-      "I2S BCLK 1, LRC 2, DIN 5, SD 6" },
-    { "GPS", "UART1  M10", "GPS", DOT_ICON_SAT, EXT_GPS, "Position for navigation and routes",
-      "UART1 RX 7, TX 17" },
-    { "Cellular", "UART0  EG800AK", "CELLULAR", DOT_ICON_SIGNAL, EXT_LTE, "Calls and SMS without the phone",
-      "UART0 RX 44, TX 43, PWRKEY 18" },
-    { "Environment", "I2C 0x76  BME280", "ENVIRONMENT", DOT_ICON_THERMO, EXT_ENV, "Temperature, humidity and altitude",
-      "I2C 0x76 / 0x77, SDA 47 SCL 48" },
-    { "Light", "I2C 0x39  APDS-9960", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, "Auto brightness and air gestures",
-      "I2C 0x39, SDA 47 SCL 48" },
-    { "Compass", "I2C 0x0D  QMC5883L", "COMPASS", DOT_ICON_COMPASS, EXT_MAG, "Heading for the compass and maps",
-      "I2C 0x0D / 0x1E, SDA 47 SCL 48" },
-    { "Heart rate", "I2C 0x57  MAX30102", "HEART RATE", DOT_ICON_HEART, EXT_HR, "Heart rate and blood oxygen",
-      "I2C 0x57, SDA 47 SCL 48" },
+    { "Touch", "I2C 0x38  FT3168", "TOUCH", DOT_ICON_HAND, 0, "", "", "" },
+    { "Motion", "I2C 0x6B  QMI8658", "MOTION", DOT_ICON_LEVEL, 0, "Raise to wake, steps and tilt", "QMI8658",
+      "I2C 0x6B  SDA 47  SCL 48" },
+    { "Clock", "I2C 0x51  PCF85063", "CLOCK", DOT_ICON_TIMER, 0, "Keeps time while the watch sleeps", "PCF85063",
+      "I2C 0x51  SDA 47  SCL 48" },
+    { "SD card", "SDMMC 1-BIT", "SD CARD", DOT_ICON_SD, 0, "Insert a microSD card for voice memos and logs", "SDMMC 1-BIT",
+      "CLK 41  CMD 39  D0 40" },
+    { "Battery", "ADC GPIO4  3:1", "BATTERY", DOT_ICON_BATTERY, 0, "Charge estimate from the rail", "RAIL ADC",
+      "GPIO4  ADC1 CH3" },
+    { "Wi-Fi", "ESP32-S3  2.4 GHZ", "WI-FI", DOT_ICON_WIFI, 0, "", "", "" },
+    { "Bluetooth", "ESP32-S3  NUS", "BLUETOOTH", DOT_ICON_BT, 0, "", "", "" },
+    { "Haptics", "GPIO16  PWM", "HAPTICS", DOT_ICON_BELL, EXT_HAPTIC, "A click on every detent", "HAPTIC",
+      "MOTOR DRIVER ON GPIO16" },
+    { "Microphone", "I2S IN  INMP441", "MICROPHONE", DOT_ICON_MIC, EXT_MIC, "Voice memos and the sound meter", "INMP441",
+      "I2S BCLK 1  WS 2  SD 3" },
+    { "Speaker", "I2S OUT  MAX98357A", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, "UI sounds, alarms and memo playback", "MAX98357A",
+      "I2S BCLK 1  LRC 2  DIN 5  SD 6" },
+    { "GPS", "UART1  M10", "GPS", DOT_ICON_SAT, EXT_GPS, "Position for navigation and routes", "M10 GPS",
+      "UART1  RX 7  TX 17" },
+    { "Cellular", "UART0  EG800AK", "CELLULAR", DOT_ICON_SIGNAL, EXT_LTE, "Calls and SMS without the phone", "EG800AK",
+      "UART0  RX 44  TX 43  PWRKEY 18" },
+    { "Environment", "I2C 0x76  BME280", "ENVIRONMENT", DOT_ICON_THERMO, EXT_ENV, "Temperature, humidity and altitude", "BME280",
+      "I2C 0x76/0x77  SDA 47  SCL 48" },
+    { "Light", "I2C 0x39  APDS-9960", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, "Auto brightness and air gestures", "APDS-9960",
+      "I2C 0x39  SDA 47  SCL 48" },
+    { "Compass", "I2C 0x0D  QMC5883L", "COMPASS", DOT_ICON_COMPASS, EXT_MAG, "Heading for the compass and maps", "QMC5883L",
+      "I2C 0x0D/0x1E  SDA 47  SCL 48" },
+    { "Heart rate", "I2C 0x57  MAX30102", "HEART RATE", DOT_ICON_HEART, EXT_HR, "Heart rate and blood oxygen", "MAX30102",
+      "I2C 0x57  SDA 47  SCL 48" },
 };
 
 static const char *const k_hap_names[] = { "Tick", "Click", "Double", "Heavy", "Buzz", "Alarm", "Heartbeat" };
@@ -81,12 +89,35 @@ static float qfade(float yc)
     return floorf(f * 16.0f + 0.5f) / 16.0f;
 }
 static int cap_base(const font_t *f, float cy) { return (int)lroundf(cy + f->ascent * 0.36f); }
-static int label_w(const char *s)
+static void row_cols(float cy, int *lx, int *rx)
 {
-    char b[32]; int i = 0;
-    for (; s[i] && i < 31; i++) b[i] = (char)(s[i] >= 'a' && s[i] <= 'z' ? s[i] - 32 : s[i]);
-    b[i] = 0;
-    return ui_text_width(UI_F_LABEL, b, 2);
+    int x0, x1;
+    ui_row_span(cy, 6, &x0, &x1);
+    *lx = x0 > UI_ROW_X0 ? x0 : UI_ROW_X0;
+    *rx = x1 < UI_ROW_X1 ? x1 : UI_ROW_X1;
+}
+static void chevron(gfx_fb *fb, float rx, float cy, uint16_t col)
+{
+    dot_style st = { DOT_FONT_5X7, 2.0f, 1.7f, col, 0, 1, 0 };
+    dot_text(fb, &st, rx - 8.0f, cy - 7.0f, ">");
+}
+/* technical identifiers: small mono caps, tracking 1 */
+static void ident(gfx_fb *fb, int x, int y, const char *s, uint16_t col, int align)
+{
+    ui_text(fb, UI_F_SMALL, x, y, s, col, align, 1);
+}
+/* caps label + case-kept unit; an empty value draws the unit alone */
+static int lab_u(gfx_fb *fb, int x, int y, const char *v, const char *u, uint16_t col, int align)
+{
+    if (u && *u && (!v || !*v)) return ui_text(fb, UI_F_LABEL, x, y, u, col, align, 2);
+    if (u && *u) return ui_label_unit(fb, x, y, v, u, col, align);
+    return ui_label(fb, x, y, v, col, align);
+}
+static int lab_u_w(const char *v, const char *u)
+{
+    int w = v && *v ? ui_label_width(v) : 0;
+    if (u && *u) w += (w ? 8 : 0) + ui_text_width(UI_F_LABEL, u, 2);
+    return w;
 }
 
 typedef struct { char from[24], to[24]; float t0; } mmt;
@@ -104,6 +135,13 @@ static void mmt_draw(gfx_fb *fb, const mmt *m, const dot_style *st, float x, flo
     if (p >= 1) dot_text_a(fb, st, x, y, m->to, 1);
     else dot_text_morph(fb, st, x, y, m->from, m->to, 1, p);
 }
+static float hero_pitch(const char *s)
+{
+    int n = 0;
+    for (const unsigned char *c = (const unsigned char *)s; *c; c++)
+        if (*c != ':' && *c != '.' && *c != ',' && *c != 0xC2 && *c != 0xB0) n++;
+    return n <= 4 ? UI_HERO_PITCH : UI_HEROW_PITCH;
+}
 
 static int mod_present(int m)
 {
@@ -117,35 +155,15 @@ static const char *cardinal(float h)
     int i = (int)floorf(fmodf(h + 22.5f + 360.0f, 360.0f) / 45.0f);
     return c[i & 7];
 }
+static void fmt_gb(double gb, char *o, int n) { snprintf(o, (size_t)n, gb >= 10 ? "%.0f" : "%.1f", gb); }
+static double gib(uint64_t b) { return (double)b / (1024.0 * 1024.0 * 1024.0); }
+static int rail_mv(const hal_power *pw) { return pw->rail_mv > 0 ? pw->rail_mv : hal_battery_mv(); }
 
-/* ui_list_input releases the scroller again on the IN_UP that follows IN_DRAG_END,
- * with zero velocity, which kills every fling. Forward IN_UP only while the finger
- * still holds the list (a press that never dragged). */
-/* ui_list_tick quantises the fading scrollbar to 1/16 with round-to-nearest, so the
- * exponential fade-out stalls at 3/16 forever. Finish the fade linearly. */
-static void bar_fix(ui_list *l, float dt)
-{
-    if (nos_t - l->bar_t < 0.6f || l->bar_alpha <= 0) return;
-    float a = l->bar_alpha - dt * 3.0f;
-    l->bar_alpha = a <= 0.03f ? 0 : floorf(a * 16.0f) / 16.0f;
-}
-
-static int list_in(ui_list *l, const nos_input *in)
-{
-    if (in->type == IN_UP && !l->sc.dragging) { l->pressed = -1; return 1; }
-    int moving = l->sc.moving && fabsf(l->sc.v) > 5.0f;
-    int r = ui_list_input(l, in);
-    /* a press on a resting list need not hold the scroller: holding it keeps the
-     * scrollbar lit, so every tap would flash it */
-    if (in->type == IN_DOWN && !moving && !l->sc.springing) l->sc.dragging = 0;
-    return r;
-}
-
-/* ======================================================================= sampling
- * One snapshot of everything, refreshed at 4 Hz (list) or every frame (detail visuals). */
+/* ======================================================================= sampling */
 static struct {
     int ok[M_COUNT];
     char val[M_COUNT][24];
+    char vu[M_COUNT][8];         /* case-kept unit of val */
     hal_imu imu; int imu_ok;
     hal_storage sd;
     hal_power pw;
@@ -177,61 +195,94 @@ static void sample(int poll_hr, int poll_mic)
     V.mic_db = (poll_mic && (ext & EXT_MIC)) ? hal_mic_db() : -1.0f;
 }
 
+/* presence / health of every part, the same rule everywhere */
+static void presence(int ok[M_COUNT], int imu_ok, const hal_storage *sd, const hal_power *pw)
+{
+    for (int m = 0; m < M_COUNT; m++) ok[m] = mod_present(m);
+    ok[M_IMU] = imu_ok;
+    ok[M_SD] = sd->mounted;
+    ok[M_BATT] = rail_mv(pw) > 0;
+    ok[M_WIFI] = hal_status(HAL_FEAT_WIFI) == HAL_CONN_UP;
+    ok[M_BLE] = hal_status(HAL_FEAT_BLE) != HAL_CONN_OFF;
+}
+
+int set_modules_online(int *total)
+{
+    int ok[M_COUNT];
+    hal_imu imu; hal_storage sd; hal_power pw;
+    int iok = hal_imu_read(&imu);
+    hal_storage_get(&sd);
+    hal_power_get(&pw);
+    presence(ok, iok, &sd, &pw);
+    int n = 0;
+    for (int m = 0; m < M_COUNT; m++) n += ok[m] != 0;
+    if (total) *total = M_COUNT;
+    return n;
+}
+
+static void setv(int m, const char *v, const char *u)
+{
+    snprintf(V.val[m], sizeof V.val[m], "%s", v);
+    snprintf(V.vu[m], sizeof V.vu[m], "%s", u ? u : "");
+}
+
 static void list_values(void)
 {
-    char *v;
-    for (int m = 0; m < M_COUNT; m++) V.ok[m] = mod_present(m);
-    v = V.val[M_TOUCH];
-    if (V.touched) snprintf(v, 24, "%d, %d", V.touch_x, V.touch_y); else snprintf(v, 24, "Ready");
-    V.ok[M_IMU] = V.imu_ok;
+    char b[24];
+    presence(V.ok, V.imu_ok, &V.sd, &V.pw);
+    if (V.touched) { snprintf(b, sizeof b, "%d, %d", V.touch_x, V.touch_y); setv(M_TOUCH, b, 0); }
+    else setv(M_TOUCH, "Ready", 0);
     if (V.imu_ok) {
         float g = sqrtf(V.imu.ax * V.imu.ax + V.imu.ay * V.imu.ay + V.imu.az * V.imu.az);
-        snprintf(V.val[M_IMU], 24, "%.2f g", g);
-    } else snprintf(V.val[M_IMU], 24, "No reply");
-    ui_fmt_time(V.val[M_RTC], 24, V.dt.hour, V.dt.minute);
-    V.ok[M_SD] = V.sd.mounted;
-    if (V.sd.mounted) snprintf(V.val[M_SD], 24, "%.0f GB free", V.sd.free_bytes / (1024.0 * 1024.0 * 1024.0));
-    else snprintf(V.val[M_SD], 24, "No card");
-    int mv = V.pw.rail_mv > 0 ? V.pw.rail_mv : hal_battery_mv();
-    V.ok[M_BATT] = mv > 0;
-    if (mv > 0) snprintf(V.val[M_BATT], 24, "%d mV", mv); else snprintf(V.val[M_BATT], 24, "No reading");
+        snprintf(b, sizeof b, "%.2f", g); setv(M_IMU, b, "g");
+    } else setv(M_IMU, "No reply", 0);
+    ui_fmt_time(b, sizeof b, V.dt.hour, V.dt.minute); setv(M_RTC, b, 0);
+    if (V.sd.mounted) { fmt_gb(gib(V.sd.free_bytes), b, sizeof b); strcat(b, " GB FREE"); setv(M_SD, b, 0); }
+    else setv(M_SD, "No card", 0);
+    int mv = rail_mv(&V.pw);
+    if (mv > 0) { snprintf(b, sizeof b, "%.2f", mv / 1000.0f); setv(M_BATT, b, "V"); }
+    else setv(M_BATT, UI_NONE, 0);
     hal_conn w = hal_status(HAL_FEAT_WIFI);
-    V.ok[M_WIFI] = w == HAL_CONN_UP;
-    snprintf(V.val[M_WIFI], 24, "%s", w == HAL_CONN_UP ? "Online" : w == HAL_CONN_TRYING ? "Joining" :
-             w == HAL_CONN_DOWN ? "No network" : "Off");
+    setv(M_WIFI, w == HAL_CONN_UP ? "Online" : w == HAL_CONN_TRYING ? "Joining" :
+         w == HAL_CONN_DOWN ? "No network" : "Off", 0);
     int phone = hal_phone_connected() || svc_sys()->phone_connected;
-    hal_conn b = hal_status(HAL_FEAT_BLE);
-    V.ok[M_BLE] = b != HAL_CONN_OFF;
-    snprintf(V.val[M_BLE], 24, "%s", phone ? "Phone linked" : b == HAL_CONN_OFF ? "Off" : "Advertising");
-    if (V.ok[M_HAPTIC]) snprintf(V.val[M_HAPTIC], 24, nos_prefs.haptics ? "%d%%" : "Muted", nos_prefs.haptic_strength);
-    if (V.ok[M_MIC]) {
-        if (V.mic_db >= 0) snprintf(V.val[M_MIC], 24, "%.0f dB", V.mic_db); else snprintf(V.val[M_MIC], 24, "Ready");
+    hal_conn bl = hal_status(HAL_FEAT_BLE);
+    setv(M_BLE, phone ? "Phone linked" : bl == HAL_CONN_OFF ? "Off" : "Advertising", 0);
+    if (V.ok[M_HAPTIC]) {
+        if (nos_prefs.haptics) { snprintf(b, sizeof b, "%d%%", nos_prefs.haptic_strength); setv(M_HAPTIC, b, 0); }
+        else setv(M_HAPTIC, "Muted", 0);
     }
-    if (V.ok[M_SPK]) snprintf(V.val[M_SPK], 24, "Vol %d%%", nos_prefs.volume);
+    if (V.ok[M_MIC]) {
+        if (V.mic_db >= 0) { snprintf(b, sizeof b, "%.0f", V.mic_db); setv(M_MIC, b, "dB"); }
+        else setv(M_MIC, "Ready", 0);
+    }
+    if (V.ok[M_SPK]) { snprintf(b, sizeof b, "Vol %d%%", nos_prefs.volume); setv(M_SPK, b, 0); }
     if (V.ok[M_GPS]) {
-        if (V.gps.valid) snprintf(V.val[M_GPS], 24, "%d sats", V.gps.sats_used);
-        else if (V.gps.sats_view) snprintf(V.val[M_GPS], 24, "%d in view", V.gps.sats_view);
-        else snprintf(V.val[M_GPS], 24, "Searching");
+        if (V.gps.valid) { snprintf(b, sizeof b, "%d sats", V.gps.sats_used); setv(M_GPS, b, 0); }
+        else if (V.gps.sats_view) { snprintf(b, sizeof b, "%d in view", V.gps.sats_view); setv(M_GPS, b, 0); }
+        else setv(M_GPS, "Searching", 0);
     }
     if (V.ok[M_LTE]) {
-        if (!V.lte.powered) snprintf(V.val[M_LTE], 24, "Off");
-        else if (!V.lte.sim) snprintf(V.val[M_LTE], 24, "No SIM");
-        else if (V.lte.registered == 1 || V.lte.registered == 2) snprintf(V.val[M_LTE], 24, "%d dBm", V.lte.rssi_dbm);
-        else snprintf(V.val[M_LTE], 24, "Searching");
+        if (!V.lte_ok || !V.lte.powered) setv(M_LTE, "Off", 0);
+        else if (!V.lte.sim) setv(M_LTE, "No SIM", 0);
+        else if ((V.lte.registered == 1 || V.lte.registered == 2) && V.lte.rssi_dbm) {
+            snprintf(b, sizeof b, "%d", V.lte.rssi_dbm); setv(M_LTE, b, "dBm");
+        } else setv(M_LTE, "Searching", 0);
     }
     if (V.ok[M_ENV]) {
-        if (V.env_ok) snprintf(V.val[M_ENV], 24, "%.1fC  %.0f%%", V.env.temp_c, V.env.humidity);
-        else snprintf(V.val[M_ENV], 24, "Warming up");
+        if (V.env_ok) { snprintf(b, sizeof b, "%.1f\xB0" "C  %.0f%%", V.env.temp_c, V.env.humidity); setv(M_ENV, b, 0); }
+        else setv(M_ENV, "Warming up", 0);
     }
     if (V.ok[M_LIGHT]) {
-        if (V.light_ok) snprintf(V.val[M_LIGHT], 24, "%.0f lux", V.light.lux); else snprintf(V.val[M_LIGHT], 24, "Ready");
+        if (V.light_ok) { snprintf(b, sizeof b, "%.0f lux", V.light.lux); setv(M_LIGHT, b, 0); }
+        else setv(M_LIGHT, "Ready", 0);
     }
     if (V.ok[M_MAG]) {
-        if (V.mag_ok) snprintf(V.val[M_MAG], 24, "HDG %03.0f", fmodf(V.mag.heading_deg + 360.0f, 360.0f));
-        else snprintf(V.val[M_MAG], 24, "Ready");
+        if (V.mag_ok) { snprintf(b, sizeof b, "HDG %03.0f", fmodf(V.mag.heading_deg + 360.0f, 360.0f)); setv(M_MAG, b, 0); }
+        else setv(M_MAG, "Ready", 0);
     }
-    if (V.ok[M_HR]) snprintf(V.val[M_HR], 24, "Ready");
-    for (int m = M_HAPTIC; m < M_COUNT; m++) if (!V.ok[m]) snprintf(V.val[m], 24, "Absent");
+    if (V.ok[M_HR]) setv(M_HR, "Ready", 0);
+    for (int m = M_HAPTIC; m < M_COUNT; m++) if (!V.ok[m]) setv(m, "Absent", 0);
 }
 
 /* ======================================================================= list */
@@ -257,10 +308,11 @@ static struct {
     int start[NLE];
     int8_t unit_e[NLE * 6];
     int nunits;
-    int inited, covered, was_moving;
+    int inited, was_moving;
     float t0, next;
     mmt sum;
     int online;
+    int flash_e; float flash_t;
 } ML;
 
 static void mods_count(void)
@@ -272,8 +324,7 @@ static void mods_count(void)
 
 static void modules_enter(void)
 {
-    int revealed = ML.inited && ML.covered && nos_transitioning();
-    ML.covered = 0;
+    int revealed = ML.inited && nos_revealed();
     if (!revealed) {
         int u = 0;
         for (int e = 0; e < NLE; e++) {
@@ -284,8 +335,9 @@ static void modules_enter(void)
         }
         ML.nunits = u;
         ui_list_init(&ML.L, u, MU, MTOP, 0, 0);
-        ML.L.bottom_pad = GFX_H / 2 - 50;
+        ML.L.bottom_pad = 120;
         ui_list_set_n(&ML.L, u);
+        ML.L.bar_t = -10.0f;
         ML.t0 = nos_t;
         ML.inited = 1;
     }
@@ -296,21 +348,21 @@ static void modules_enter(void)
     mods_count();
     char b[12]; snprintf(b, sizeof b, "%d/%d", ML.online, M_COUNT);
     mmt_set(&ML.sum, b, !revealed);
-    ML.next = nos_t + 0.25f;
+    ML.next = nos_t + LIVE_S;
+    ML.flash_e = -1;
 }
-static void modules_leave(void) { ML.covered = 1; hal_gps_enable(0); }
+static void modules_leave(void) { hal_gps_enable(0); }
 
 static void modules_tick(float dt)
 {
     ui_list_tick(&ML.L, dt);
-    bar_fix(&ML.L, dt);
     if (nos_t >= ML.next) {
         sample(0, 1);
         list_values();
         mods_count();
         char b[12]; snprintf(b, sizeof b, "%d/%d", ML.online, M_COUNT);
         mmt_set(&ML.sum, b, 0);
-        ML.next = nos_t + 0.25f;
+        ML.next = nos_t + LIVE_S;
     }
 }
 
@@ -320,7 +372,7 @@ static float mbuild(float y, float *dy)
 {
     int k = (int)((y - 60.0f) / 80.0f);
     if (k < 0) k = 0;
-    if (k > 6) k = 6;
+    if (k > 5) k = 5;
     float p = m_clamp((nos_t - ML.t0 - k * 0.034f) / 0.20f, 0, 1);
     float e = floorf(bezier_ease(&EASE_STANDARD, p) * 8.0f + 0.5f) / 8.0f;
     *dy = (1.0f - e) * 14.0f;
@@ -329,20 +381,21 @@ static float mbuild(float y, float *dy)
 
 static void draw_summary(gfx_fb *fb, float y, float k)
 {
-    float bp = m_clamp((nos_t - ML.t0) / 0.32f, 0, 1);
-    dot_style hs = { DOT_FONT_TALL, 7.0f, 5.6f, ui_dim(C_WHITE, k), 0, 1, 1 };
-    if (bp < 1) dot_text_anim(fb, &hs, UI_CX, y + 6, ML.sum.to, 1, bp, DOT_REVEAL_RANDOM, 21);
-    else mmt_draw(fb, &ML.sum, &hs, UI_CX, y + 6, 0.2f);
-    ui_label(fb, UI_CX, (int)(y + 104), "ONLINE", ui_dim(C_SEC, k), UI_CENTER);
+    float bp = m_clamp((nos_t - ML.t0) / UI_ENTRY_S, 0, 1);
+    float pitch = hero_pitch(ML.sum.to);
+    dot_style hs = { DOT_FONT_TALL, pitch, pitch * 0.8f, ui_dim(C_WHITE, k), 0, 1, 1 };
+    if (bp < 1) dot_text_anim(fb, &hs, UI_CX, y + 2, ML.sum.to, 1, bp, DOT_REVEAL_RANDOM, 21);
+    else mmt_draw(fb, &ML.sum, &hs, UI_CX, y + 2, MORPH_S);
+    ui_label(fb, UI_CX, (int)(y + 108), "ONLINE", ui_dim(C_SEC, k), UI_CENTER);
     /* one dot per module, in list order: the whole bus at a glance */
-    const float pitch = 16.0f;
-    float x0 = UI_CX - (M_COUNT - 1) * pitch * 0.5f;
+    const float pitch_d = 16.0f;
+    float x0 = UI_CX - (M_COUNT - 1) * pitch_d * 0.5f;
     for (int m = 0; m < M_COUNT; m++) {
         float p = m_clamp((nos_t - ML.t0 - 0.08f - m * 0.012f) / 0.12f, 0, 1);
         p = floorf(p * 4.0f + 0.5f) / 4.0f;
         if (p <= 0) continue;
         float gx = m >= M_BOARD_N ? 8.0f : 0.0f;     /* gap between board and strap */
-        dot_disc(fb, x0 + m * pitch + gx - 4.0f, y + 140, 8.0f * p, ui_dim(V.ok[m] ? C_WHITE : C_LINE2, k));
+        dot_disc(fb, x0 + m * pitch_d + gx - 4.0f, y + 142, 8.0f * p, ui_dim(V.ok[m] ? C_WHITE : C_LINE2, k));
     }
 }
 
@@ -355,30 +408,39 @@ static void draw_lrow(gfx_fb *fb, int e, float y, float h, int pressed)
     float cy = y + h * 0.5f;
     float k = qfade(cy) * bk;
     if (le->kind == LK_SUM) { draw_summary(fb, y, k); return; }
-    float edge = cy;
-    int x0, x1;
-    ui_row_span(edge, 30, &x0, &x1);
-    if (x1 - x0 < 160) return;
-    int lx = x0 > 62 ? x0 : 62, rx = x1 < 404 ? x1 : 404;
+    int lx, rx;
+    row_cols(cy, &lx, &rx);
+    if (rx - lx < 140) return;
     if (le->kind == LK_HDR) { ui_label(fb, lx, (int)(y + h - 16), le->label, ui_dim(C_DIS, k), UI_LEFT); return; }
     int m = le->mod;
     if (pressed) ui_rrect(fb, lx - 20, y + 5, rx - lx + 40, h - 10, (h - 10) * 0.5f, C_SURF2);
     int ok = V.ok[m];
-    dot_disc(fb, lx + 5, cy - 11, 10, ui_dim(ok ? C_WHITE : C_DIS, k));
+    const int vx = rx - (UI_ROW_X1 - UI_VALUE_X);
+    int vw = lab_u_w(V.val[m], V.vu[m]);
+    int nw = ui_text_width(UI_F_BODY, MI[m].name, 0);
     int tx = lx + 24;
+    if (tx + nw + 14 > vx - vw) {                         /* the name gives way at the bezel */
+        int g0, g1;
+        ui_row_span(cy - 11, 2, &g0, &g1);
+        tx = vx - vw - 14 - nw;
+        if (tx < g0 + 20) tx = g0 + 20;
+    }
+    int over = tx + nw + 14 - (vx - vw);
+    float vk = k * (over > 0 ? floorf(m_clamp(1.0f - over / 28.0f, 0, 1) * 8.0f + 0.5f) / 8.0f : 1.0f);
+    dot_disc(fb, tx - 19, cy - 11, 10, ui_dim(ok ? C_WHITE : C_DIS, k));
     ui_text(fb, UI_F_BODY, tx, cap_base(UI_F_BODY, cy - 11), MI[m].name, ui_dim(ok ? C_PRI : C_SEC, k), UI_LEFT, 0);
-    ui_text(fb, UI_F_SMALL, tx, cap_base(UI_F_SMALL, cy + 17), MI[m].bus, ui_dim(C_DIS, k), UI_LEFT, 0);
-    int nend = tx + ui_text_width(UI_F_BODY, MI[m].name, 0) + 14;
-    if (rx - label_w(V.val[m]) > nend)
-        ui_label(fb, rx, cap_base(UI_F_LABEL, cy - 11), V.val[m], ui_dim(ok ? C_SEC : C_DIS, k), UI_RIGHT);
+    ident(fb, tx, cap_base(UI_F_SMALL, cy + 17), MI[m].bus, ui_dim(C_DIS, k), UI_LEFT);
+    if (vk > 0) lab_u(fb, vx, cap_base(UI_F_LABEL, cy - 11), V.val[m], V.vu[m], ui_dim(ok ? C_SEC : C_DIS, vk), UI_RIGHT);
+    chevron(fb, rx, cy - 11, ui_dim(C_DIS, k));
 }
 
 static void modules_draw(gfx_fb *fb)
 {
     float off = mlist_off();
     ui_title(fb, "MODULES", off);
-    int pe = ML.L.pressed >= 0 && ML.L.pressed < ML.nunits && nos_t - ML.L.press_t > 0.05f ?
-             ML.unit_e[ML.L.pressed] : -1;
+    int pe = -1;
+    if (ML.flash_e >= 0 && nos_t - ML.flash_t < PRESS_FLASH) pe = ML.flash_e;
+    else if (ML.L.pressed >= 0 && ML.L.pressed < ML.nunits && nos_t - ML.L.press_t > 0.05f) pe = ML.unit_e[ML.L.pressed];
     for (int e = 0; e < NLE; e++) {
         float h = (float)(lunits(LE[e].kind) * MU);
         float y = MTOP + ML.start[e] * MU - off;
@@ -392,6 +454,8 @@ static void modules_draw(gfx_fb *fb)
 
 static const nos_screen scr_mod_detail, scr_mod_touch;
 static void open_detail(int m);
+void set_modules_open_sd(void) { open_detail(M_SD); }
+void set_modules_open_lte(void) { open_detail(M_LTE); }
 
 static int modules_input(const nos_input *in)
 {
@@ -406,13 +470,14 @@ static int modules_input(const nos_input *in)
             float fy = in->y + mlist_off() - MTOP;
             int u = fy >= 0 ? (int)(fy / MU) : -1;
             if (u >= 0 && u < ML.nunits && LE[ML.unit_e[u]].kind == LK_ROW) {
+                ML.flash_e = ML.unit_e[u]; ML.flash_t = nos_t;
                 nos_feedback(FB_TAP);
                 open_detail(LE[ML.unit_e[u]].mod);
             }
         }
         return 1;
     }
-    return list_in(&ML.L, in);
+    return ui_list_input(&ML.L, in);
 }
 
 const nos_screen scr_modules = { "MODULES", modules_enter, modules_leave, modules_tick,
@@ -422,14 +487,15 @@ const nos_screen scr_modules = { "MODULES", modules_enter, modules_leave, module
 static struct {
     int m;
     float t0, next;
-    int pressed;                 /* action button held */
+    int pressed; float flash_t;  /* action button */
     mmt hero;
-    char unit[32];
-    char line[3][44];
+    char unit[32], unit_u[12];   /* label under the hero, + case-kept unit */
+    char line[3][44], lu[3][12]; /* info lines + case-kept units */
     /* haptic / speaker play lists */
     ui_list L;
     int was_moving;
     int last_play; float play_t;
+    int flash_row; float flash_rt;
     /* touch test */
     int tgt_hit[5]; int tgt_done;
     int fx, fy, fdown;
@@ -439,6 +505,7 @@ static struct {
     int lte_req; float lte_req_t;
     /* light */
     int gest; float gest_t;
+    int sig;                     /* last LTE / SD state signature */
     /* mic */
     float peak;
     uint8_t wave[32];
@@ -466,123 +533,143 @@ static const char *detail_button(void)
 }
 static int is_list_page(void) { return mod_present(D.m) && (D.m == M_HAPTIC || D.m == M_SPK); }
 #define PLAY_TOP 96
-#define PLAY_ROW 88
+#define PLAY_ROW UI_ROW_H
+
+static void dline(int i, const char *s, const char *u)
+{
+    snprintf(D.line[i], sizeof D.line[i], "%s", s);
+    snprintf(D.lu[i], sizeof D.lu[i], "%s", u ? u : "");
+}
 
 static void detail_values(int init)
 {
-    char h[24];
+    char h[24], b[44];
     h[0] = 0;
-    D.unit[0] = 0;
-    for (int i = 0; i < 3; i++) D.line[i][0] = 0;
+    D.unit[0] = 0; D.unit_u[0] = 0;
+    for (int i = 0; i < 3; i++) { D.line[i][0] = 0; D.lu[i][0] = 0; }
     switch (D.m) {
     case M_IMU: {
         float g = sqrtf(V.imu.ax * V.imu.ax + V.imu.ay * V.imu.ay + V.imu.az * V.imu.az);
         float tilt = g > 0.05f ? acosf(m_clamp(fabsf(V.imu.az) / g, 0, 1)) * 57.29578f : 0;
         snprintf(h, sizeof h, "%.0f\xC2\xB0", tilt);
         snprintf(D.unit, sizeof D.unit, "TILT");
-        snprintf(D.line[0], 44, "X %+.2f  Y %+.2f  Z %+.2f G", V.imu.ax, V.imu.ay, V.imu.az);
-        snprintf(D.line[1], 44, "GYRO %.0f %.0f %.0f DPS", V.imu.gx, V.imu.gy, V.imu.gz);
+        snprintf(b, sizeof b, "X %+.2f  Y %+.2f", V.imu.ax, V.imu.ay); dline(0, b, 0);
+        snprintf(b, sizeof b, "Z %+.2f", V.imu.az); dline(1, b, "g");
+        snprintf(b, sizeof b, "GYRO %.0f %.0f %.0f", V.imu.gx, V.imu.gy, V.imu.gz); dline(2, b, "\xB0/s");
         break;
     }
     case M_RTC:
         snprintf(h, sizeof h, "%02d:%02d:%02d", V.dt.hour, V.dt.minute, V.dt.second);
         snprintf(D.unit, sizeof D.unit, "%s %d %s %d", ui_weekday3(V.dt.weekday), V.dt.day, ui_month3(V.dt.month), V.dt.year);
-        snprintf(D.line[0], 44, "%s", hal_epoch_seconds() ? "UTC SYNCED" : "UTC NOT SYNCED");
+        dline(0, hal_epoch_seconds() ? "UTC SYNCED" : "UTC NOT SYNCED", 0);
         break;
     case M_SD:
         if (V.sd.mounted) {
-            snprintf(h, sizeof h, "%.1f", V.sd.free_bytes / (1024.0 * 1024.0 * 1024.0));
-            snprintf(D.unit, sizeof D.unit, "GB FREE OF %.0f", V.sd.total_bytes / (1024.0 * 1024.0 * 1024.0));
+            fmt_gb(gib(V.sd.free_bytes), h, sizeof h);
+            char t[12]; fmt_gb(gib(V.sd.total_bytes), t, sizeof t);
+            snprintf(D.unit, sizeof D.unit, "GB FREE OF %s", t);
+            int pct = V.sd.total_bytes ? (int)((1.0 - (double)V.sd.free_bytes / (double)V.sd.total_bytes) * 100 + 0.5) : 0;
+            snprintf(b, sizeof b, "%d%% USED", pct); dline(0, b, 0);
         }
-        snprintf(D.line[0], 44, "%.40s", V.sd.message[0] ? V.sd.message : "SDMMC 1-bit, 20 MHz");
+        snprintf(b, sizeof b, "%.40s", V.sd.message[0] ? V.sd.message : "SDMMC 1-BIT, 20 MHZ"); dline(1, b, 0);
         break;
     case M_BATT: {
-        int mv = V.pw.rail_mv > 0 ? V.pw.rail_mv : hal_battery_mv();
-        snprintf(h, sizeof h, "%d", mv);
-        snprintf(D.unit, sizeof D.unit, "MV ON THE RAIL");
+        int mv = rail_mv(&V.pw);
+        if (mv > 0) snprintf(h, sizeof h, "%.2f", mv / 1000.0f); else snprintf(h, sizeof h, UI_NONE);
+        snprintf(D.unit, sizeof D.unit, "VOLTS ON THE RAIL");
         int pct = V.pw.battery_percent ? V.pw.battery_percent : hal_battery_percent();
-        if (V.pw.external_power == 1) snprintf(D.line[0], 44, "USB POWER");
-        else snprintf(D.line[0], 44, "%d%% ESTIMATE", pct);
-        snprintf(D.line[1], 44, "GPIO4  ADC1 CH3  3:1");
+        if (V.pw.external_power == 1) dline(0, "USB POWER", 0);
+        else { snprintf(b, sizeof b, "%d%% ESTIMATE", pct); dline(0, b, 0); }
+        dline(1, "GPIO4  ADC1 CH3  3:1", 0);
         break;
     }
     case M_WIFI: {
         hal_conn w = hal_status(HAL_FEAT_WIFI);
         snprintf(D.unit, sizeof D.unit, "%s", w == HAL_CONN_UP ? "ONLINE" : w == HAL_CONN_TRYING ? "JOINING" :
                  w == HAL_CONN_DOWN ? "NO NETWORK" : "OFF");
-        snprintf(D.line[0], 44, "2.4 GHZ  STATION");
-        snprintf(D.line[1], 44, "%s", nos_prefs.wifi ? "ENABLED IN SETTINGS" : "DISABLED IN SETTINGS");
+        dline(0, "2.4 GHZ  STATION", 0);
+        dline(1, nos_prefs.wifi ? "ENABLED IN SETTINGS" : "DISABLED IN SETTINGS", 0);
         break;
     }
     case M_BLE: {
         int phone = hal_phone_connected() || svc_sys()->phone_connected;
         snprintf(D.unit, sizeof D.unit, "%s", phone ? "PHONE LINKED" : "ADVERTISING AS NOS");
         char st[40]; hal_ble_status(st, sizeof st);
-        snprintf(D.line[0], 44, "%.40s", st);
-        snprintf(D.line[1], 44, "NORDIC UART  GADGETBRIDGE");
+        snprintf(b, sizeof b, "%.40s", st); dline(0, b, 0);
+        dline(1, "NORDIC UART  GADGETBRIDGE", 0);
         break;
     }
     case M_MIC:
-        if (V.mic_db >= 0) snprintf(h, sizeof h, "%.0f", V.mic_db); else snprintf(h, sizeof h, "--");
-        snprintf(D.unit, sizeof D.unit, "DB SPL");
-        snprintf(D.line[0], 44, "PEAK %.0f DB", D.peak);
+        if (V.mic_db >= 0) snprintf(h, sizeof h, "%.0f", V.mic_db); else snprintf(h, sizeof h, UI_NONE);
+        snprintf(D.unit_u, sizeof D.unit_u, "dB SPL");
+        snprintf(b, sizeof b, "PEAK %.0f", D.peak); dline(0, b, "dB");
         break;
     case M_GPS:
-        snprintf(h, sizeof h, "%d", V.gps.valid ? V.gps.sats_used : 0);
+        if (V.gps.valid) snprintf(h, sizeof h, "%d", V.gps.sats_used); else snprintf(h, sizeof h, UI_NONE);
         snprintf(D.unit, sizeof D.unit, "SATELLITES IN USE");
-        if (V.gps.valid)
-            snprintf(D.line[0], 44, "%.4f%c  %.4f%c", fabs(V.gps.lat), V.gps.lat >= 0 ? 'N' : 'S',
+        if (V.gps.valid) {
+            snprintf(b, sizeof b, "%.4f%c  %.4f%c", fabs(V.gps.lat), V.gps.lat >= 0 ? 'N' : 'S',
                      fabs(V.gps.lon), V.gps.lon >= 0 ? 'E' : 'W');
-        else snprintf(D.line[0], 44, "%d IN VIEW, NO FIX YET", V.gps.sats_view);
-        if (V.gps.valid) snprintf(D.line[1], 44, "%s  HDOP %.1f", V.gps.fix3d ? "3D FIX" : "2D FIX", V.gps.hdop);
+            dline(0, b, 0);
+            snprintf(b, sizeof b, "%s  HDOP %.1f", V.gps.fix3d ? "3D FIX" : "2D FIX", V.gps.hdop); dline(1, b, 0);
+        } else { snprintf(b, sizeof b, "%d IN VIEW, NO FIX YET", V.gps.sats_view); dline(0, b, 0); }
         break;
-    case M_LTE:
-        if (V.lte_ok && V.lte.powered) {
+    case M_LTE: {
+        int reg = V.lte_ok && V.lte.powered && (V.lte.registered == 1 || V.lte.registered == 2) && V.lte.rssi_dbm;
+        if (reg) {
             snprintf(h, sizeof h, "%d", V.lte.rssi_dbm);
-            snprintf(D.unit, sizeof D.unit, "DBM  %d/4 BARS", V.lte.bars);
-            snprintf(D.line[0], 44, "SIM %s", V.lte.sim == 1 ? "READY" : V.lte.sim == 2 ? "PIN LOCKED" : "MISSING");
-            snprintf(D.line[1], 44, "%s %s", V.lte.registered == 1 ? "HOME" : V.lte.registered == 2 ? "ROAMING" :
-                     V.lte.registered == 3 ? "SEARCHING" : "NOT REGISTERED", V.lte.op);
+            snprintf(D.unit_u, sizeof D.unit_u, "dBm");
+        } else if (V.lte_ok && V.lte.powered) {
+            snprintf(h, sizeof h, UI_NONE);
+            snprintf(D.unit, sizeof D.unit, "%s", !V.lte.sim ? "NO SIM" : V.lte.sim == 2 ? "SIM LOCKED" : "SEARCHING");
         } else {
             snprintf(h, sizeof h, "OFF");
             snprintf(D.unit, sizeof D.unit, "%s", D.lte_req ? "STARTING" : "MODEM POWERED DOWN");
-            snprintf(D.line[0], 44, "PWRKEY ON IO18");
         }
+        if (V.lte_ok && V.lte.powered) {
+            snprintf(b, sizeof b, "SIM %s", V.lte.sim == 1 ? "READY" : V.lte.sim == 2 ? "PIN LOCKED" : "MISSING");
+            dline(0, b, 0);
+            const char *r = V.lte.registered == 1 ? "HOME" : V.lte.registered == 2 ? "ROAMING" :
+                            V.lte.registered == 3 ? "SEARCHING" : "NOT REGISTERED";
+            if (V.lte.op[0]) snprintf(b, sizeof b, "%s  %.18s", r, V.lte.op);
+            else snprintf(b, sizeof b, "%s", r);
+            if (strcmp(b, D.unit)) dline(1, b, 0);        /* never repeat the state above */
+        } else dline(0, "PWRKEY ON IO18", 0);
         break;
+    }
     case M_ENV:
         if (V.env_ok) {
             float t = nos_prefs.units_metric ? V.env.temp_c : V.env.temp_c * 1.8f + 32.0f;
             snprintf(h, sizeof h, "%.1f\xC2\xB0", t);
             snprintf(D.unit, sizeof D.unit, "%s", nos_prefs.units_metric ? "CELSIUS" : "FAHRENHEIT");
-            snprintf(D.line[0], 44, "HUMIDITY %.0f%%", V.env.humidity);
-            snprintf(D.line[1], 44, "PRESSURE %.1f HPA", V.env.pressure_hpa);
-            snprintf(D.line[2], 44, "ALTITUDE %.0f M", V.env.altitude_m);
-        } else { snprintf(h, sizeof h, "--"); snprintf(D.unit, sizeof D.unit, "WAITING FOR A SAMPLE"); }
+            snprintf(b, sizeof b, "HUMIDITY %.0f%%", V.env.humidity); dline(0, b, 0);
+            snprintf(b, sizeof b, "PRESSURE %.1f", V.env.pressure_hpa); dline(1, b, "hPa");
+            snprintf(b, sizeof b, "ALTITUDE %.0f", V.env.altitude_m); dline(2, b, "m");
+        } else { snprintf(h, sizeof h, UI_NONE); snprintf(D.unit, sizeof D.unit, "WAITING FOR A SAMPLE"); }
         break;
-    case M_LIGHT:
-        if (V.light_ok) snprintf(h, sizeof h, "%.0f", V.light.lux); else snprintf(h, sizeof h, "--");
+    case M_LIGHT: {
+        if (V.light_ok) snprintf(h, sizeof h, "%.0f", V.light.lux); else snprintf(h, sizeof h, UI_NONE);
         snprintf(D.unit, sizeof D.unit, "LUX");
-        snprintf(D.line[0], 44, "PROXIMITY %d", V.light_ok ? V.light.prox : 0);
-        {
-            static const char *const g[] = { "NONE", "UP", "DOWN", "LEFT", "RIGHT", "NEAR", "FAR" };
-            snprintf(D.line[1], 44, "GESTURE %s", (D.gest > 0 && D.gest <= 6 && nos_t - D.gest_t < 2.0f) ? g[D.gest] : "--");
-        }
+        snprintf(b, sizeof b, "PROXIMITY %d", V.light_ok ? V.light.prox : 0); dline(0, b, 0);
+        static const char *const g[] = { "NONE", "UP", "DOWN", "LEFT", "RIGHT", "NEAR", "FAR" };
+        snprintf(b, sizeof b, "GESTURE %s", (D.gest > 0 && D.gest <= 6 && nos_t - D.gest_t < 2.0f) ? g[D.gest] : UI_NONE);
+        dline(1, b, 0);
         break;
+    }
     case M_MAG:
         if (V.mag_ok) {
             float hd = fmodf(V.mag.heading_deg + 360.0f, 360.0f);
             snprintf(h, sizeof h, "%.0f\xC2\xB0", hd);
             snprintf(D.unit, sizeof D.unit, "%s", cardinal(hd));
-            snprintf(D.line[0], 44, "FIELD %.0f UT", V.mag.field_ut);
-            snprintf(D.line[1], 44, "%s", D.calibrating ? "MOVE IN A FIGURE 8" :
-                     V.mag.calibrated ? "CALIBRATED" : "NOT CALIBRATED");
-        } else { snprintf(h, sizeof h, "--"); snprintf(D.unit, sizeof D.unit, "WAITING FOR A SAMPLE"); }
+            snprintf(b, sizeof b, "FIELD %.0f", V.mag.field_ut); dline(0, b, "uT");
+            dline(1, D.calibrating ? "MOVE IN A FIGURE 8" : V.mag.calibrated ? "CALIBRATED" : "NOT CALIBRATED", 0);
+        } else { snprintf(h, sizeof h, UI_NONE); snprintf(D.unit, sizeof D.unit, "WAITING FOR A SAMPLE"); }
         break;
     case M_HR:
-        if (V.hr_ok && V.hr.bpm) snprintf(h, sizeof h, "%d", V.hr.bpm); else snprintf(h, sizeof h, "--");
+        if (V.hr_ok && V.hr.bpm) snprintf(h, sizeof h, "%d", V.hr.bpm); else snprintf(h, sizeof h, UI_NONE);
         snprintf(D.unit, sizeof D.unit, "BPM");
-        if (V.hr_ok && V.hr.spo2) snprintf(D.line[0], 44, "SPO2 %d%%", V.hr.spo2);
-        else if (V.hr_ok && V.hr.on_wrist && !V.hr.bpm) snprintf(D.line[0], 44, "LOCKING ON");
+        if (V.hr_ok && V.hr.spo2) { snprintf(b, sizeof b, "SPO2 %d%%", V.hr.spo2); dline(0, b, 0); }
+        else if (V.hr_ok && V.hr.on_wrist && !V.hr.bpm) dline(0, "LOCKING ON", 0);
         break;
     default: break;
     }
@@ -592,13 +679,15 @@ static void detail_values(int init)
 static void detail_enter(void)
 {
     D.t0 = nos_t;
-    D.pressed = 0;
+    D.pressed = 0; D.flash_t = -100;
     D.calibrating = 0;
     D.lte_req = 0;
     D.gest = 0;
     D.peak = 0;
     D.last_play = -1; D.play_t = -100;
+    D.flash_row = -1; D.flash_rt = -100;
     memset(D.tgt_hit, 0, sizeof D.tgt_hit); D.tgt_done = 0; D.fdown = 0;
+    if (D.m == M_TOUCH) V.touched = 0;           /* the tap that opened the page is not data */
     if (D.m == M_HR) hal_hr_enable(1);
     if (D.m == M_GPS) hal_gps_enable(1);
     if (D.m == M_LIGHT) hal_light_gesture_enable(1);
@@ -606,10 +695,12 @@ static void detail_enter(void)
     ui_list_init(&D.L, n, PLAY_ROW, PLAY_TOP, 0, 0);
     D.L.bottom_pad = GFX_H / 2 - PLAY_ROW / 2;
     ui_list_set_n(&D.L, n);
+    D.L.bar_t = -10.0f;
     V.sd_t = 0;
     sample(D.m == M_HR, D.m == M_MIC);
+    if (D.m == M_MIC && V.mic_db > 0) D.peak = V.mic_db;
     detail_values(1);
-    D.next = nos_t + 0.25f;
+    D.next = nos_t + LIVE_S;
 }
 static void detail_leave(void)
 {
@@ -621,8 +712,8 @@ static void detail_leave(void)
 
 static void detail_tick(float dt)
 {
-    if (is_list_page()) { ui_list_tick(&D.L, dt); bar_fix(&D.L, dt); }
-    /* visuals every frame (bubble, dial, traces), text at 4 Hz */
+    if (is_list_page()) ui_list_tick(&D.L, dt);
+    /* visuals every frame (bubble, dial, traces), text at 1 Hz */
     sample(D.m == M_HR, D.m == M_MIC);
     if (D.m == M_MIC) {
         if (V.mic_db > D.peak) D.peak = V.mic_db;
@@ -630,54 +721,64 @@ static void detail_tick(float dt)
     }
     if (D.m == M_LIGHT) {
         int g = hal_light_gesture();
-        if (g != GEST_NONE) { D.gest = g; D.gest_t = nos_t; nos_feedback(FB_TICK); }
+        if (g != GEST_NONE) { D.gest = g; D.gest_t = nos_t; nos_feedback(FB_TICK); detail_values(0); }
     }
     if (D.m == M_MAG && D.calibrating && V.mag_ok && V.mag.cal_progress >= 1.0f) {
         hal_mag_calibrate(0);
         D.calibrating = 0;
         nos_feedback(FB_SUCCESS);
         nos_toast("Compass calibrated");
+        detail_values(0);
     }
     if (D.m == M_LTE && D.lte_req && ((V.lte_ok && V.lte.powered) == (D.lte_req > 0) || nos_t - D.lte_req_t > 20.0f))
         D.lte_req = 0;
-    if (nos_t >= D.next) { detail_values(0); D.next = nos_t + 0.25f; }
+    /* state changes (not readings) show at once, so the text never contradicts the button */
+    int sig = D.m == M_LTE ? (V.lte_ok ? 1 + V.lte.powered * 2 + V.lte.sim * 4 + V.lte.registered * 16 : 0) :
+              D.m == M_SD ? V.sd.mounted : 0;
+    if (sig != D.sig) { D.sig = sig; detail_values(0); }
+    if (nos_t >= D.next) { detail_values(0); D.next = nos_t + LIVE_S; }
 }
 
 /* ---- detail drawing ---- */
-static void absent_state(gfx_fb *fb)
+static void absent_page(gfx_fb *fb)
 {
     const mod_info *mi = &MI[D.m];
-    float bp = m_clamp((nos_t - D.t0) / 0.32f, 0, 1);
-    dot_icon_anim(fb, mi->icon, UI_CX, 156, 4.2f, 3.4f, C_DIS, bp, DOT_REVEAL_CENTER);
-    ui_text(fb, UI_F_TITLE, UI_CX, 244, "Not connected", C_PRI, UI_CENTER, 0);
-    ui_text_wrap(fb, UI_F_BODY, UI_CX, 282, 300, 30, 2, mi->adds, C_SEC, UI_CENTER);
-    ui_label(fb, UI_CX, 354, "EXPECTED ON", C_DIS, UI_CENTER);
-    ui_text_fit(fb, UI_F_SMALL, UI_CX, 378, mi->wire, C_SEC, UI_CENTER, 300);
+    float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
+    char foot[32];
+    snprintf(foot, sizeof foot, "%s MODULE", mi->part);
+    ui_absent(fb, mi->icon, "Not connected", mi->adds, foot, bp);
+    /* bring-up: exactly where the part is expected (between the body and the footer) */
+    float k = floorf(m_clamp((bp - 0.3f) / 0.7f, 0, 1) * 8.0f + 0.5f) / 8.0f;
+    if (k > 0 && mi->wire[0]) ident(fb, UI_CX, 372, mi->wire, ui_dim(C_SEC, k), UI_CENTER);
 }
 
-static void hero(gfx_fb *fb, float y, float pitch)
+static void hero(gfx_fb *fb, float y)
 {
-    float bp = m_clamp((nos_t - D.t0) / 0.32f, 0, 1);
+    float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
+    float pitch = hero_pitch(D.hero.to);
     dot_style hs = { DOT_FONT_TALL, pitch, pitch * 0.8f, C_WHITE, 0, 1, 1 };
-    if (bp < 1) dot_text_anim(fb, &hs, UI_CX, y, D.hero.to, 1, bp, DOT_REVEAL_RANDOM, 13);
-    else mmt_draw(fb, &D.hero, &hs, UI_CX, y, 0.16f);
+    float yy = y + (UI_HEROW_PITCH - pitch) * 9.0f * 0.5f - (pitch > UI_HEROW_PITCH ? 4 : 0);
+    if (bp < 1) dot_text_anim(fb, &hs, UI_CX, yy, D.hero.to, 1, bp, DOT_REVEAL_RANDOM, 13);
+    else mmt_draw(fb, &D.hero, &hs, UI_CX, yy, MORPH_S);
 }
-
+static void unit_line(gfx_fb *fb, int y)
+{
+    if (D.unit_u[0]) lab_u(fb, UI_CX, y, D.unit, D.unit_u, C_SEC, UI_CENTER);
+    else if (D.unit[0]) ui_label(fb, UI_CX, y, D.unit, C_SEC, UI_CENTER);
+}
 static void lines(gfx_fb *fb, float y)
 {
     for (int i = 0; i < 3; i++)
-        if (D.line[i][0]) ui_label(fb, UI_CX, (int)(y + i * 26), D.line[i], i ? C_DIS : C_SEC, UI_CENTER);
+        if (D.line[i][0]) lab_u(fb, UI_CX, (int)(y + i * 26), D.line[i], D.lu[i], i ? C_DIS : C_SEC, UI_CENTER);
 }
 
 static void play_row(gfx_fb *fb, int i, float y, int pressed)
 {
     float h = PLAY_ROW, cy = y + h * 0.5f;
     float k = qfade(cy);
-    float edge = cy;
-    int x0, x1;
-    ui_row_span(edge, 30, &x0, &x1);
-    if (x1 - x0 < 160) return;
-    int lx = x0 > 70 ? x0 : 70, rx = x1 < 396 ? x1 : 396;
+    int lx, rx;
+    row_cols(cy, &lx, &rx);
+    if (rx - lx < 140) return;
     if (pressed) ui_rrect(fb, lx - 20, y + 5, rx - lx + 40, h - 10, (h - 10) * 0.5f, C_SURF2);
     const char *name = D.m == M_HAPTIC ? k_hap_names[i] : k_sfx_names[i];
     ui_text(fb, UI_F_BODY, lx, cap_base(UI_F_BODY, cy), name, ui_dim(C_PRI, k), UI_LEFT, 0);
@@ -708,26 +809,28 @@ static void detail_draw(gfx_fb *fb)
         float off = floorf(ui_list_offset(&D.L) + 0.5f);
         ui_title(fb, mi->title, off);
         int n = D.L.n;
+        int pr = D.flash_row >= 0 && nos_t - D.flash_rt < PRESS_FLASH ? D.flash_row :
+                 (D.L.pressed >= 0 && nos_t - D.L.press_t > 0.05f ? D.L.pressed : -1);
         for (int i = 0; i < n; i++) {
             float y = PLAY_TOP + i * PLAY_ROW - off;
             if (y + PLAY_ROW < 0) continue;
             if (y > GFX_H) break;
-            play_row(fb, i, y, i == D.L.pressed && nos_t - D.L.press_t > 0.05f);
+            play_row(fb, i, y, i == pr);
         }
         ui_scrollbar(fb, D.L.sc.x, (float)(PLAY_TOP + n * PLAY_ROW + D.L.bottom_pad), GFX_H, D.L.bar_alpha);
         return;
     }
     ui_title(fb, mi->title, 0);
-    if (!mod_present(D.m) || (D.m == M_SD && !V.sd.mounted)) {
-        if (D.m == M_SD) {
-            dot_icon(fb, DOT_ICON_SD, UI_CX, 156, 4.2f, 3.4f, C_DIS);
-            ui_text(fb, UI_F_TITLE, UI_CX, 244, "No card", C_PRI, UI_CENTER, 0);
-            ui_text_wrap(fb, UI_F_BODY, UI_CX, 282, 300, 30, 2, "Insert a microSD card for memos and logs", C_SEC, UI_CENTER);
-            if (V.sd.message[0]) ui_text_fit(fb, UI_F_SMALL, UI_CX, 368, V.sd.message, C_DIS, UI_CENTER, 300);
-        } else absent_state(fb);
+    float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
+    if (!mod_present(D.m)) { absent_page(fb); return; }
+    if (D.m == M_SD && !V.sd.mounted) {
+        ui_absent(fb, DOT_ICON_SD, "No card", mi->adds, "SDMMC 1-BIT", bp);
+        if (V.sd.message[0]) {
+            char b[44]; snprintf(b, sizeof b, "%.40s", V.sd.message);
+            ident(fb, UI_CX, 372, b, C_SEC, UI_CENTER);
+        }
         return;
     }
-    float bp = m_clamp((nos_t - D.t0) / 0.32f, 0, 1);
     switch (D.m) {
     case M_WIFI: case M_BLE:
         dot_icon_anim(fb, mi->icon, UI_CX, 180, 5.0f, 4.0f, C_WHITE, bp, DOT_REVEAL_CENTER);
@@ -735,66 +838,67 @@ static void detail_draw(gfx_fb *fb)
         lines(fb, 334);
         break;
     case M_IMU:
-        hero(fb, 108, 6.0f);
-        ui_label(fb, UI_CX, 190, D.unit, C_SEC, UI_CENTER);
-        draw_bubble(fb, UI_CX, 268);
-        lines(fb, 356);
+        hero(fb, 100);
+        unit_line(fb, 190);
+        draw_bubble(fb, UI_CX, 266);
+        lines(fb, 346);
         break;
     case M_RTC:
-        hero(fb, 136, 6.0f);
-        ui_label(fb, UI_CX, 220, D.unit, C_SEC, UI_CENTER);
-        lines(fb, 262);
+        hero(fb, 112);
+        unit_line(fb, 214);
+        lines(fb, 254);
         break;
     case M_SD: {
-        hero(fb, 128, 8.0f);
-        ui_label(fb, UI_CX, 230, D.unit, C_SEC, UI_CENTER);
+        hero(fb, 112);
+        unit_line(fb, 218);
         float used = V.sd.total_bytes ? (float)(1.0 - (double)V.sd.free_bytes / (double)V.sd.total_bytes) : 0;
-        ui_segments(fb, 93, 260, 280, 26, 20, used * 20.0f * bp, C_WHITE, C_LINE);
-        lines(fb, 330);
+        ui_segments(fb, 93, 248, 280, 26, 20, used * 20.0f * bp, C_WHITE, C_LINE);
+        lines(fb, 318);
         break;
     }
     case M_BATT: {
-        hero(fb, 128, 8.0f);
-        ui_label(fb, UI_CX, 230, D.unit, C_SEC, UI_CENTER);
+        hero(fb, 112);
+        unit_line(fb, 218);
         int pct = V.pw.battery_percent ? V.pw.battery_percent : hal_battery_percent();
-        ui_segments(fb, 113, 260, 240, 26, 10, pct / 10.0f * bp, C_WHITE, C_LINE);
-        lines(fb, 330);
+        ui_segments(fb, 113, 248, 240, 26, 10, pct / 10.0f * bp, C_WHITE, C_LINE);
+        lines(fb, 318);
         break;
     }
-    case M_MIC: {
-        hero(fb, 116, 8.0f);
-        ui_label(fb, UI_CX, 216, D.unit, C_SEC, UI_CENTER);
-        dot_columns(fb, UI_CX - 16 * 8.0f, 240, 32, 8, 8.0f, 5.6f, D.wave, C_WHITE, C_GHOST);
-        lines(fb, 342);
+    case M_MIC:
+        hero(fb, 112);
+        unit_line(fb, 212);
+        dot_columns(fb, UI_CX - 16 * 8.0f, 236, 32, 8, 8.0f, 5.6f, D.wave, C_WHITE, C_GHOST);
+        lines(fb, 338);
         break;
-    }
     case M_GPS: {
-        hero(fb, 116, 8.0f);
-        ui_label(fb, UI_CX, 216, D.unit, C_SEC, UI_CENTER);
+        hero(fb, 112);
+        unit_line(fb, 212);
         uint8_t v[16];
         int n = V.gps.nsnr < 16 ? V.gps.nsnr : 16;
         for (int i = 0; i < 16; i++) v[i] = i < n ? (uint8_t)m_clamp(V.gps.snr[i] * 255.0f / 50.0f, 0, 255) : 0;
-        dot_columns(fb, UI_CX - 8 * 12.0f, 238, 16, 6, 12.0f, 8.0f, v, C_WHITE, C_GHOST);
-        lines(fb, 342);
+        dot_columns(fb, UI_CX - 8 * 12.0f, 234, 16, 6, 12.0f, 8.0f, v, C_WHITE, C_GHOST);
+        lines(fb, 340);
         break;
     }
-    case M_LTE:
-        hero(fb, 104, 8.0f);
-        ui_label(fb, UI_CX, 204, D.unit, C_SEC, UI_CENTER);
-        if (V.lte_ok && V.lte.powered) dot_bar(fb, UI_CX - 36, 236, 4, 24, 12, (float)V.lte.bars, C_WHITE, C_LINE2);
-        lines(fb, 278);
+    case M_LTE: {
+        hero(fb, 100);
+        unit_line(fb, 200);
+        int reg = V.lte_ok && V.lte.powered && (V.lte.registered == 1 || V.lte.registered == 2) && V.lte.rssi_dbm;
+        if (reg) dot_bar(fb, UI_CX - 36, 226, 4, 24, 12, (float)V.lte.bars, C_WHITE, C_LINE2);
+        lines(fb, 262);
         break;
+    }
     case M_ENV:
-        hero(fb, 134, 8.0f);
-        ui_label(fb, UI_CX, 234, D.unit, C_SEC, UI_CENTER);
-        lines(fb, 286);
+        hero(fb, 128);
+        unit_line(fb, 228);
+        lines(fb, 280);
         break;
     case M_LIGHT: {
-        hero(fb, 124, 8.0f);
-        ui_label(fb, UI_CX, 224, D.unit, C_SEC, UI_CENTER);
+        hero(fb, 120);
+        unit_line(fb, 220);
         float lit = V.light_ok ? V.light.prox * 16.0f / 255.0f : 0;
-        dot_bar(fb, UI_CX - 7.5f * 16.0f, 262, 16, 16, 9, floorf(lit + 0.5f), C_WHITE, C_LINE2);
-        lines(fb, 306);
+        dot_bar(fb, UI_CX - 7.5f * 16.0f, 258, 16, 16, 9, floorf(lit + 0.5f), C_WHITE, C_LINE2);
+        lines(fb, 302);
         break;
     }
     case M_MAG: {
@@ -806,15 +910,15 @@ static void detail_draw(gfx_fb *fb)
             nx = floorf(nx * 2 + 0.5f) * 0.5f; ny = floorf(ny * 2 + 0.5f) * 0.5f;
             dot_disc(fb, nx, ny, 14, C_RED);
         }
-        hero(fb, 112, 8.0f);
-        ui_label(fb, UI_CX, 212, D.unit, C_SEC, UI_CENTER);
-        if (D.calibrating) ui_segments(fb, 133, 236, 200, 18, 10, (V.mag_ok ? V.mag.cal_progress : 0) * 10.0f, C_WHITE, C_LINE);
-        lines(fb, D.calibrating ? 290 : 262);
+        hero(fb, 96);
+        unit_line(fb, 196);
+        if (D.calibrating) ui_segments(fb, 133, 214, 200, 16, 10, (V.mag_ok ? V.mag.cal_progress : 0) * 10.0f, C_WHITE, C_LINE);
+        lines(fb, D.calibrating ? 262 : 244);
         break;
     }
     case M_HR: {
-        hero(fb, 104, 8.0f);
-        ui_label(fb, UI_CX, 204, D.unit, C_SEC, UI_CENTER);
+        hero(fb, 104);
+        unit_line(fb, 204);
         if (V.hr_ok && V.hr.on_wrist) {
             const float x0 = UI_CX - 23.5f * 6.0f;
             for (int i = 0; i < 48; i++) {
@@ -827,7 +931,7 @@ static void detail_draw(gfx_fb *fb)
             lines(fb, 380);
         } else {
             ui_state(fb, UI_CX, 276, V.hr_ok ? "PLACE ON WRIST" : "STARTING", C_SEC);
-            ui_text_wrap(fb, UI_F_BODY, UI_CX, 320, 280, 30, 2, "Wear it snug, sensor against the skin", C_DIS, UI_CENTER);
+            ui_label(fb, UI_CX, 316, "WEAR IT SNUG, SENSOR ON SKIN", C_DIS, UI_CENTER);
         }
         break;
     }
@@ -836,11 +940,15 @@ static void detail_draw(gfx_fb *fb)
     if (detail_has_button()) {
         int kind = BTN_SECONDARY;
         if (D.m == M_MAG && D.calibrating) kind = BTN_PRIMARY;
-        ui_button(fb, UI_CX, 388, 200, 64, detail_button(), kind, D.pressed);
+        ui_button(fb, UI_CX, UI_BTN_Y, UI_BTN_W, UI_BTN_H, detail_button(), kind,
+                  D.pressed || nos_t - D.flash_t < PRESS_FLASH);
     }
 }
 
-static int detail_btn_hit(int x, int y) { return y > 350 && y < 430 && x > UI_CX - 120 && x < UI_CX + 120; }
+static int detail_btn_hit(int x, int y)
+{
+    return fabsf(y - (float)UI_BTN_Y) <= UI_BTN_H * 0.5f + 4 && fabsf(x - (float)UI_CX) <= UI_BTN_W * 0.5f + 10;
+}
 
 static void play_tap(int i)
 {
@@ -861,6 +969,7 @@ static int detail_input(const nos_input *in)
                 float fy = in->y + floorf(ui_list_offset(&D.L) + 0.5f) - PLAY_TOP;
                 int i = fy >= 0 ? (int)(fy / PLAY_ROW) : -1;
                 if (i >= 0 && i < D.L.n) {
+                    D.flash_row = i; D.flash_rt = nos_t;
                     if (D.m == M_HAPTIC && D.last_play == HAPTIC_ALARM && nos_t - D.play_t < 30.0f) {
                         hal_haptic_stop();
                         D.last_play = -1;
@@ -869,7 +978,7 @@ static int detail_input(const nos_input *in)
             }
             return 1;
         }
-        return list_in(&D.L, in);
+        return ui_list_input(&D.L, in);
     }
     switch (in->type) {
     case IN_DOWN: D.pressed = detail_has_button() && detail_btn_hit(in->x, in->y); return 1;
@@ -877,6 +986,7 @@ static int detail_input(const nos_input *in)
     case IN_TAP:
         if (D.pressed) {
             D.pressed = 0;
+            D.flash_t = nos_t;
             nos_feedback(FB_TAP);
             if (D.m == M_RTC) { hal_time_resync(); nos_toast("Resync requested"); }
             else if (D.m == M_LTE) {
@@ -906,7 +1016,9 @@ static const int16_t k_tgt[5][2] = { { 233, 233 }, { 233, 52 }, { 414, 233 }, { 
 static void touch_tick(float dt) { (void)dt; }
 static void touch_draw(gfx_fb *fb)
 {
-    float bp = m_clamp((nos_t - D.t0) / 0.3f, 0, 1);
+    /* the top ring owns the title band, so the title sits under it */
+    ui_label(fb, UI_CX, 120, "TOUCH", C_SEC, UI_CENTER);
+    float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
     for (int i = 0; i < 5; i++) {
         float p = m_clamp(bp * 5 - i, 0, 1);
         if (p <= 0) continue;
@@ -919,10 +1031,10 @@ static void touch_draw(gfx_fb *fb)
     if (D.fdown) {
         dot_disc(fb, D.fx, D.fy, 30, C_SEC);
         char b[16]; snprintf(b, sizeof b, "%d, %d", D.fx, D.fy);
-        ui_label(fb, UI_CX, 170, b, C_PRI, UI_CENTER);
+        ui_label(fb, UI_CX, 176, b, C_PRI, UI_CENTER);
     } else if (V.touched) {
         char b[24]; snprintf(b, sizeof b, "LAST %d, %d", V.touch_x, V.touch_y);
-        ui_label(fb, UI_CX, 170, b, C_DIS, UI_CENTER);
+        ui_label(fb, UI_CX, 176, b, C_DIS, UI_CENTER);
     }
 }
 static void touch_at(int x, int y)

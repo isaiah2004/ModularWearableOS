@@ -2,8 +2,8 @@
  * and the open-font credits.
  *
  * A ui_list (26 px units) scrolls the page: the logo block, then two-line info rows
- * (caps label over a value). Live numbers (uptime, rail, memory) are dot-matrix text
- * that morphs when it changes. The logo is drawn dot by dot from a local 5x7 bitmap:
+ * (caps label over a value). Static values are grotesk; the two live numbers (uptime,
+ * battery rail) are dot-matrix text that morphs when it changes. The logo is drawn dot by dot from a local 5x7 bitmap:
  * it sparkles in on entry and a slow glint sweeps across it every few seconds. */
 #include "nos.h"
 #include "ui.h"
@@ -18,29 +18,6 @@
 #include <string.h>
 
 #define ABOUT_VERSION NOS_VERSION
-
-/* ui_list_input releases the scroller again on the IN_UP that follows IN_DRAG_END,
- * with zero velocity, which kills every fling. Forward IN_UP only while the finger
- * still holds the list (a press that never dragged). */
-/* ui_list_tick quantises the fading scrollbar to 1/16 with round-to-nearest, so the
- * exponential fade-out stalls at 3/16 forever. Finish the fade linearly. */
-static void bar_fix(ui_list *l, float dt)
-{
-    if (nos_t - l->bar_t < 0.6f || l->bar_alpha <= 0) return;
-    float a = l->bar_alpha - dt * 3.0f;
-    l->bar_alpha = a <= 0.03f ? 0 : floorf(a * 16.0f) / 16.0f;
-}
-
-static int list_in(ui_list *l, const nos_input *in)
-{
-    if (in->type == IN_UP && !l->sc.dragging) { l->pressed = -1; return 1; }
-    int moving = l->sc.moving && fabsf(l->sc.v) > 5.0f;
-    int r = ui_list_input(l, in);
-    /* a press on a resting list need not hold the scroller: holding it keeps the
-     * scrollbar lit, so every tap would flash it */
-    if (in->type == IN_DOWN && !moving && !l->sc.springing) l->sc.dragging = 0;
-    return r;
-}
 
 /* ---- logo ------------------------------------------------------------------ */
 static const char *const k_logo[7] = {
@@ -68,10 +45,10 @@ static struct {
     int start[R_COUNT];
     int nunits;
     float t0;
-    char version[40];
+    char version[40], psram[16], sram[16];
     amt live[R_COUNT];          /* dot-matrix values that morph */
     float next_upd;
-    int covered, inited;
+    int inited;
 } A;
 
 static void amt_set(amt *m, const char *s, int init)
@@ -94,8 +71,8 @@ static void about_values(int init)
     char b[24];
     uint32_t ps = 0, in = 0;
     hal_mem_info(&ps, &in);
-    fmt_mem(ps, b, sizeof b); amt_set(&A.live[R_PSRAM], b, init);
-    fmt_mem(in, b, sizeof b); amt_set(&A.live[R_SRAM], b, init);
+    fmt_mem(ps, A.psram, sizeof A.psram);
+    fmt_mem(in, A.sram, sizeof A.sram);
     uint32_t s = hal_millis() / 1000u;
     unsigned h = s / 3600u, m = (s / 60u) % 60u, sec = s % 60u;
     if (h >= 24) snprintf(b, sizeof b, "%uD %02uH %02uM", h / 24u, h % 24u, m);
@@ -104,36 +81,33 @@ static void about_values(int init)
     hal_power pw;
     hal_power_get(&pw);
     int mv = pw.rail_mv > 0 ? pw.rail_mv : hal_battery_mv();
-    if (mv > 0) snprintf(b, sizeof b, "%d MV", mv);
-    else snprintf(b, sizeof b, "--");
+    if (mv > 0) snprintf(b, sizeof b, "%.2f V", mv / 1000.0f);   /* volts: caps would turn mV into MV */
+    else snprintf(b, sizeof b, UI_NONE);
     amt_set(&A.live[R_RAIL], b, init);
 }
 
 static void about_enter(void)
 {
-    int revealed = A.inited && A.covered && nos_revealed();
-    A.covered = 0;
-    if (!revealed) {
+    if (!A.inited || !nos_revealed()) {
         int u = 0;
         for (int i = 0; i < R_COUNT; i++) { A.start[i] = u; u += k_units[i]; }
         A.nunits = u;
         ui_list_init(&A.L, u, AU, ATOP, 0, 0);
         A.L.bottom_pad = GFX_H / 2 - 60;
         ui_list_set_n(&A.L, u);
+        A.L.bar_t = -10.0f;
         A.t0 = nos_t;
         A.inited = 1;
     }
     snprintf(A.version, sizeof A.version, "%s  (%s)", ABOUT_VERSION, __DATE__);
     about_values(1);
-    A.next_upd = nos_t + 0.25f;
+    A.next_upd = nos_t + 1.0f;
 }
-static void about_leave(void) { A.covered = 1; }
 
 static void about_tick(float dt)
 {
     ui_list_tick(&A.L, dt);
-    bar_fix(&A.L, dt);
-    if (nos_t >= A.next_upd) { about_values(0); A.next_upd = nos_t + 0.25f; }
+    if (nos_t >= A.next_upd) { about_values(0); A.next_upd = nos_t + 1.0f; }
 }
 
 static float afade(float yc)
@@ -192,8 +166,8 @@ static void about_draw(gfx_fb *fb)
         float y = ATOP + A.start[r] * AU - off;
         if (y + h < 0) continue;
         if (y > GFX_H) break;
-        /* stagger: rows arrive one frame apart */
-        float bt = nos_t - A.t0 - (r > 0 ? 0.10f + r * 0.034f : 0);
+        /* the logo leads; rows follow 34 ms apart and are all in by ~0.37 s */
+        float bt = nos_t - A.t0 - (r > 0 ? 0.20f + (r < 5 ? r : 5) * 0.034f : 0);
         float bk = m_clamp(bt / 0.2f, 0, 1);
         bk = floorf(bezier_ease(&EASE_STANDARD, bk) * 8.0f + 0.5f) / 8.0f;
         if (bk <= 0) continue;
@@ -209,10 +183,12 @@ static void about_draw(gfx_fb *fb)
         int vb = (int)(yy + 54);
         switch (r) {
         case R_VERSION: ui_text(fb, UI_F_BODY, UI_CX, vb, A.version, ui_dim(C_PRI, k), UI_CENTER, 0); break;
-        case R_BOARD:     /* the exact part name, broken after AMOLED- */
-            ui_text(fb, UI_F_BODY, UI_CX, vb, "ESP32-S3-Touch-AMOLED-", ui_dim(C_PRI, k), UI_CENTER, 0);
-            ui_text(fb, UI_F_BODY, UI_CX, vb + 28, "1.43-B", ui_dim(C_PRI, k), UI_CENTER, 0);
+        case R_BOARD:     /* the exact part name in two ~200 px halves, clear of the glass */
+            ui_text(fb, UI_F_BODY, UI_CX, vb, "ESP32-S3-Touch-", ui_dim(C_PRI, k), UI_CENTER, 0);
+            ui_text(fb, UI_F_BODY, UI_CX, vb + 28, "AMOLED-1.43-B", ui_dim(C_PRI, k), UI_CENTER, 0);
             break;
+        case R_PSRAM: ui_text(fb, UI_F_BODY, UI_CX, vb, A.psram, ui_dim(C_PRI, k), UI_CENTER, 0); break;
+        case R_SRAM: ui_text(fb, UI_F_BODY, UI_CX, vb, A.sram, ui_dim(C_PRI, k), UI_CENTER, 0); break;
         case R_DISPLAY: ui_text(fb, UI_F_BODY, UI_CX, vb, "466 x 466 AMOLED, 30 fps", ui_dim(C_PRI, k), UI_CENTER, 0); break;
         case R_FONTS:
             ui_text(fb, UI_F_BODY, UI_CX, vb, "Space Grotesk, Space Mono", ui_dim(C_PRI, k), UI_CENTER, 0);
@@ -220,8 +196,8 @@ static void about_draw(gfx_fb *fb)
             break;
         default: {
             const amt *m = &A.live[r];
-            dot_style st = { DOT_FONT_5X7, 3.2f, 2.6f, ui_dim(C_PRI, k), 0, 1, 1 };
-            float p = (nos_t - m->t0) / 0.2f;
+            dot_style st = { DOT_FONT_5X7, UI_SUB_PITCH, UI_SUB_PITCH * 0.8f, ui_dim(C_PRI, k), 0, 1, 1 };
+            float p = (nos_t - m->t0) / 0.28f;
             float ty = yy + 34;
             if (p >= 1) dot_text_a(fb, &st, UI_CX, ty, m->to, 1);
             else dot_text_morph(fb, &st, UI_CX, ty, m->from, m->to, 1, p);
@@ -238,7 +214,7 @@ static int about_input(const nos_input *in)
         nos_input up = *in; up.type = IN_UP;
         return ui_list_input(&A.L, &up);
     }
-    return list_in(&A.L, in);
+    return ui_list_input(&A.L, in);
 }
 
-const nos_screen scr_about = { "ABOUT", about_enter, about_leave, about_tick, about_draw, about_input, 0 };
+const nos_screen scr_about = { "ABOUT", about_enter, 0, about_tick, about_draw, about_input, 0 };

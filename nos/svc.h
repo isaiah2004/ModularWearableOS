@@ -108,6 +108,8 @@ void svc_alarm_save(void);
 int  svc_alarm_next(int *h, int *m, int *in_min); /* 1 if an alarm is set */
 int  svc_alarm_ringing(void);                   /* index or -1 */
 void svc_alarm_snooze(void);                    /* +9 min */
+int  svc_alarm_snoozed(int *idx, uint32_t *at_ms);   /* 1 if snoozing: which alarm, when (hal_millis) */
+void svc_alarm_snooze_cancel(void);
 void svc_alarm_stop(void);
 
 typedef struct {

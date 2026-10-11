@@ -5,9 +5,10 @@
  *      (48 radial three-dot segments; past the goal the ring continues in red)
  *   1  today: distance / kcal / active minutes blocks + hourly dot-column chart
  *   2  this week: daily average + 7 day bars with day letters, today emphasised
- * Entry: the ring lights segment by segment while the number counts up through dot
- * morphs; one haptic tick when the last segment lands. Pages 1-2 grow their bars the
- * first time they come into view. Data: svc_activity(), copied in tick(). */
+ * Entry (NOS_DESIGN §8): starts at 40% of the iris; the number builds with a dot
+ * sparkle while the ring lights segment by segment, both in 0.30 s, one haptic tick when
+ * the last segment lands; the labels follow. Live changes morph. Pages 1-2 grow their
+ * bars from the first revealed pixel. Data: svc_activity(), copied in tick(). */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -24,9 +25,8 @@
 #define NPAGES   3
 #define SEG_N    48
 #define SEG_D    5.5f
-#define FILL_S   0.62f          /* ring fill + count-up duration */
-#define COUNT_K  8              /* count-up steps (each a dot morph) */
-#define ENTRY_DELAY 0.22f       /* app: let the iris open before the ring fills */
+#define ENTRY_DELAY 0.17f       /* app: build starts at 40% of the iris */
+#define MORPH_S  0.28f          /* live value change */
 
 static const float k_seg_r[3] = { 182.0f, 193.0f, 204.0f };
 
@@ -46,13 +46,22 @@ static void read_data(void)
 
 static float qz(float v, float steps) { return floorf(v * steps + 0.5f) / steps; }
 
-/* Neutral grey at a fraction of a grey token (ui_dim rounds the 5/6-bit channels
- * separately, which tints dark greys magenta). */
-static uint16_t gdim(uint16_t c, float k)
+/* Thousands separator only from 10,000 (4-digit counts stay compact). */
+static void fmt_steps(char *b, int n, int v)
 {
-    float lvl = (float)((c >> 5) & 63) / 63.0f * m_clamp(k, 0, 1);
-    int r = (int)lroundf(lvl * 31.0f), g = (int)lroundf(lvl * 63.0f);
-    return (uint16_t)(r << 11 | g << 5 | r);
+    if (v < 0) v = 0;
+    if (v >= 10000) snprintf(b, (size_t)n, "%d,%03d", v / 1000, v % 1000);
+    else snprintf(b, (size_t)n, "%d", v);
+}
+
+/* A dot whole-row value for dot_columns: at rest rounded down so no sub-pixel speck
+ * grows above the column; while growing (g < 1) continuous. */
+static uint8_t col_value(float f, int rows, float g, int nonzero)
+{
+    f = floorf(m_clamp(f, 0, 1) * (float)rows + 0.5f) / (float)rows;
+    if (nonzero && f < 1.0f / (float)rows) f = 1.0f / (float)rows;
+    if (g >= 1.0f) return (uint8_t)floorf(f * 255.0f);
+    return (uint8_t)lroundf(m_clamp(f * g, 0, 1) * 255.0f);
 }
 
 /* Segments lit (white) and over-goal (red) for a step count, in whole segments. */
@@ -85,60 +94,72 @@ static void seg_ring(gfx_fb *fb, float cx, float cy, int lit, int over, int show
             dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)w, C_PRI, off);
     }
 }
-/* ---- count-up through dot morphs ----
- * mode 0: counting up from 0 in COUNT_K eased steps, each step a dot morph;
- * mode 1: one morph from the previous value to a new one (live change);
- * mode 2: settled. All state advances in tick; draw only reads it. */
-typedef struct {
-    char from[12], to[12];
-    float t, p;
-    int mode, target;
-} counter;
 
-static int count_value(int target, int k)
+/* ---- the hero: build (dot sparkle) then live morphs ----
+ * All state advances in tick; draw only reads it. */
+typedef struct {
+    float t;            /* since the build started (< 0: waiting) */
+    int value, prev;    /* shown value, previous (morph source) */
+    float morph;        /* 0..1, 1 = settled */
+    int lit, over, shown, ticked;
+} hero;
+
+static void hero_start(hero *h, float delay)
 {
-    if (k >= COUNT_K) return target;
-    if (k <= 0) return 0;
-    return (int)lroundf((float)target * bezier_ease(&EASE_STANDARD, (float)k / COUNT_K));
+    h->t = -delay; h->value = h->prev = s_act.steps; h->morph = 1;
+    seg_counts(s_act.steps, s_act.goal, &h->lit, &h->over);
+    h->shown = 0; h->ticked = 0;
 }
-static void counter_hold(counter *c, int target)       /* pre-build: shows 0 */
+static void hero_finish(hero *h)
 {
-    c->t = 0; c->p = 0; c->target = target; c->mode = target ? 0 : 2;
-    snprintf(c->from, sizeof c->from, "0");
-    snprintf(c->to, sizeof c->to, "%d", target ? count_value(target, 1) : 0);
+    h->t = 10; h->value = h->prev = s_act.steps; h->morph = 1;
+    seg_counts(s_act.steps, s_act.goal, &h->lit, &h->over);
+    h->shown = h->lit + h->over; h->ticked = 1;
 }
-static void counter_set(counter *c, int target)
+static float hero_build(const hero *h) { return m_clamp(h->t / UI_ENTRY_S, 0, 1); }
+static void hero_tick(hero *h, float dt, int haptic)
 {
-    if (c->target == target) return;
-    snprintf(c->from, sizeof c->from, "%d", c->target);
-    snprintf(c->to, sizeof c->to, "%d", target);
-    c->target = target; c->mode = 1; c->t = 0; c->p = 0;
-}
-static void counter_tick(counter *c, float dt)
-{
-    if (c->mode == 2) return;
-    c->t += dt;
-    if (c->mode == 1) {
-        c->p = qz(m_clamp(c->t / 0.3f, 0, 1), 16.0f);
-        if (c->p >= 1) { c->mode = 2; memcpy(c->from, c->to, sizeof c->to); }
+    h->t += dt;
+    if (h->morph < 1) h->morph = m_clamp(h->morph + dt / MORPH_S, 0, 1);
+    float b = hero_build(h);
+    if (b < 1) {
+        /* ring segments light in step with the number's build */
+        h->shown = (int)floorf(bezier_ease(&EASE_STANDARD, b) * (float)(h->lit + h->over) + 0.0001f);
         return;
     }
-    float step = FILL_S / COUNT_K;
-    int k = (int)(c->t / step);
-    if (k >= COUNT_K) {
-        c->mode = 2; c->p = 1;
-        snprintf(c->to, sizeof c->to, "%d", c->target);
-        memcpy(c->from, c->to, sizeof c->to);
-        return;
-    }
-    snprintf(c->from, sizeof c->from, "%d", count_value(c->target, k));
-    snprintf(c->to, sizeof c->to, "%d", count_value(c->target, k + 1));
-    c->p = qz(m_clamp(c->t / step - (float)k, 0, 1), 16.0f);
+    if (!h->ticked) { h->ticked = 1; if (haptic && h->shown > 0) nos_feedback(FB_TICK); }
+    /* live changes: the ring follows one segment per frame (never a jump) */
+    seg_counts(s_act.steps, s_act.goal, &h->lit, &h->over);
+    int tgt = h->lit + h->over;
+    if (h->shown < tgt) h->shown++;
+    else if (h->shown > tgt) h->shown--;
+    if (s_act.steps != h->value && h->morph >= 1) { h->prev = h->value; h->value = s_act.steps; h->morph = 0; }
 }
-static void counter_draw(gfx_fb *fb, const counter *c, const dot_style *st, float cx, float y)
+
+static void draw_hero(gfx_fb *fb, float oy, const hero *h, int widget)
 {
-    if (c->mode == 2) dot_text_a(fb, st, cx, y, c->to, 1);
-    else dot_text_morph(fb, st, cx, y, c->from, c->to, 1, c->p);
+    float b = hero_build(h);
+    seg_ring(fb, UI_CX, UI_CY + oy, h->lit, h->over, h->shown, C_LINE, widget);
+    dot_icon_anim(fb, DOT_ICON_STEPS, UI_CX, 140 + oy, 3.0f, 2.4f, C_SEC, b, DOT_REVEAL_CENTER);
+    char s[16], a[16];
+    fmt_steps(s, sizeof s, h->value);
+    float pitch = strlen(s) <= 4 ? UI_HERO_PITCH : UI_HEROW_PITCH;
+    dot_style st = { DOT_FONT_TALL, pitch, pitch * 0.8f, h->value ? C_WHITE : C_DIS, 0, 1, 1 };
+    float y = 190 + oy + (UI_HERO_PITCH - pitch) * 4.5f;   /* keep the number's centre */
+    if (b < 1) { if (b > 0) dot_text_anim(fb, &st, UI_CX, y, s, 1, b, DOT_REVEAL_RANDOM, 3); }
+    else if (h->morph < 1) {
+        fmt_steps(a, sizeof a, h->prev);
+        dot_text_morph(fb, &st, UI_CX, y, a, s, 1, qz(h->morph, 16.0f));
+    } else dot_text_a(fb, &st, UI_CX, y, s, 1);
+    /* labels follow the build (they would give the number away before it lands) */
+    float k = qz(m_clamp((h->t - UI_ENTRY_S * 0.6f) / 0.15f, 0, 1), 8.0f);
+    if (k <= 0) return;
+    ui_label(fb, UI_CX, (int)(300 + oy), "STEPS", ui_dim(C_SEC, k), UI_CENTER);
+    char g[32];
+    int pct = s_act.goal > 0 ? (int)((long)h->value * 100 / s_act.goal) : 0;
+    if (h->value > 0) snprintf(g, sizeof g, "%d%% OF %d", pct, s_act.goal);
+    else snprintf(g, sizeof g, "GOAL %d", s_act.goal);
+    ui_label(fb, UI_CX, (int)(332 + oy), g, ui_dim(C_DIS, k), UI_CENTER);
 }
 
 /* -------------------------------------------------------- vertical pager */
@@ -197,25 +218,24 @@ static int vp_input(vpager *v, const nos_input *in)
 static void vp_tick(vpager *v, float dt)
 {
     if (!v->drag && msp_step(&v->sp, dt)) v->bar_t = nos_t;
+    /* linear ramp at a fixed rate (in 0.17 s, out 0.4 s); quantised only when drawn,
+     * so it always reaches 0 instead of rounding back up */
     float target = nos_t - v->bar_t < 0.7f ? 1.0f : 0.0f;
-    float k = dt * (target > v->bar_k ? 10.0f : 3.5f);
-    v->bar_k += (target - v->bar_k) * (k > 1 ? 1 : k);
-    if (v->bar_k < 0.04f) v->bar_k = 0;
-    v->bar_k = qz(v->bar_k, 16.0f);
+    float step = dt * (target > v->bar_k ? 6.0f : 2.5f);
+    if (v->bar_k < target) { v->bar_k += step; if (v->bar_k > target) v->bar_k = target; }
+    else { v->bar_k -= step; if (v->bar_k < target) v->bar_k = target; }
 }
 static float vp_off(const vpager *v) { return floorf(v->sp.x + 0.5f); }
 static void vp_draw_bar(gfx_fb *fb, const vpager *v)
 {
-    ui_scrollbar(fb, v->sp.x, PAGE_H * v->n, PAGE_H, v->bar_k);
+    if (v->bar_k < 0.2f) return;                 /* gfx_arc is expensive: gone below 20% */
+    ui_scrollbar(fb, v->sp.x, PAGE_H * v->n, PAGE_H, qz(v->bar_k, 16.0f));
 }
 
 /* ================================================================= APP */
 static struct {
     vpager vp;
-    float t;               /* since enter */
-    counter cnt;
-    int lit, over, shown;  /* ring fill */
-    int ticked;
+    hero hero;
     float pg_build[NPAGES];
     int   pg_started[NPAGES];
 } A;
@@ -224,110 +244,71 @@ static void act_enter(void)
 {
     read_data();
     vp_init(&A.vp, NPAGES);
-    A.vp.bar_t = -10;                 /* the bar would crowd the ring: shown only while paging */
-    A.t = 0;
-    seg_counts(s_act.steps, s_act.goal, &A.lit, &A.over);
-    A.shown = 0;
-    A.ticked = 0;
-    counter_hold(&A.cnt, s_act.steps);
     memset(A.pg_build, 0, sizeof A.pg_build);
     memset(A.pg_started, 0, sizeof A.pg_started);
     A.pg_started[0] = 1;
+    if (nos_revealed()) { hero_finish(&A.hero); for (int i = 0; i < NPAGES; i++) { A.pg_started[i] = 1; A.pg_build[i] = 1; } }
+    else hero_start(&A.hero, ENTRY_DELAY);
 }
 
 static void act_tick(float dt)
 {
-    A.t += dt;
     read_data();
     vp_tick(&A.vp, dt);
-    /* the ring: segment by segment; the timeline waits for the iris to open */
-    float te = A.t - ENTRY_DELAY;
-    int lit, over;
-    seg_counts(s_act.steps, s_act.goal, &lit, &over);
-    if (te > FILL_S + 0.1f) {
-        A.lit = lit; A.over = over;
-        A.shown = A.lit + A.over;
-        if (A.cnt.mode == 2) counter_set(&A.cnt, s_act.steps);
-    } else {
-        float e = bezier_ease(&EASE_STANDARD, m_clamp(te / FILL_S, 0, 1));
-        A.shown = (int)floorf(e * (float)(A.lit + A.over) + 0.0001f);
-    }
-    if (!A.ticked && A.shown >= A.lit + A.over && te > 0.05f) {
-        A.ticked = 1;
-        if (A.lit + A.over > 0) nos_feedback(FB_TICK);
-    }
-    if (te > 0) counter_tick(&A.cnt, dt);
-    /* pages 1-2 build the first time they come half into view */
+    hero_tick(&A.hero, dt, 1);
+    /* pages 1-2 build from their first revealed pixel, so the stagger ends as they land */
     float pos = A.vp.sp.x / PAGE_H;
     for (int i = 1; i < NPAGES; i++) {
-        if (!A.pg_started[i] && fabsf(pos - (float)i) < 0.55f) A.pg_started[i] = 1;
-        if (A.pg_started[i] && A.pg_build[i] < 1) A.pg_build[i] = m_clamp(A.pg_build[i] + dt / 0.5f, 0, 1);
+        if (!A.pg_started[i] && fabsf(pos - (float)i) < 0.95f) A.pg_started[i] = 1;
+        if (A.pg_started[i] && A.pg_build[i] < 1) A.pg_build[i] = m_clamp(A.pg_build[i] + dt / 0.45f, 0, 1);
     }
-}
-
-/* ---- page 0: hero ---- */
-static void draw_hero(gfx_fb *fb, float oy, const counter *c, int lit, int over, int shown, int title)
-{
-    seg_ring(fb, UI_CX, UI_CY + oy, lit, over, shown, C_LINE, !title);
-    dot_icon(fb, DOT_ICON_STEPS, UI_CX, 140 + oy, 3.0f, 2.4f, C_SEC);
-    dot_style st = { DOT_FONT_TALL, 8.0f, 6.4f, s_act.steps ? C_WHITE : C_DIS, C_GHOST, 1, 1 };
-    counter_draw(fb, c, &st, UI_CX, 190 + oy);
-    ui_label(fb, UI_CX, (int)(298 + oy), "STEPS", C_SEC, UI_CENTER);
-    char b[32];
-    int pct = s_act.goal > 0 ? (int)((long)s_act.steps * 100 / s_act.goal) : 0;
-    if (s_act.steps > 0) snprintf(b, sizeof b, "%d%% OF %d", pct, s_act.goal);
-    else snprintf(b, sizeof b, "GOAL %d", s_act.goal);
-    ui_label(fb, UI_CX, (int)(330 + oy), b, C_DIS, UI_CENTER);
 }
 
 /* ---- page 1: today ---- */
-static void value_block(gfx_fb *fb, float cx, float oy, int icon, const char *v, const char *unit, float p)
+static void value_block(gfx_fb *fb, float cx, float oy, int icon, const char *v, int zero, const char *unit, float p)
 {
     float k = qz(m_clamp(p * 1.4f, 0, 1), 8.0f);
-    dot_icon(fb, icon, cx, 108 + oy, 2.6f, 2.1f, gdim(C_SEC, k));
-    dot_style st = { DOT_FONT_TALL, 5.0f, 4.0f, C_WHITE, 0, 1, 1 };
-    dot_text_anim(fb, &st, cx, 132 + oy, v, 1, p, DOT_REVEAL_RAIN, 3);
-    ui_label(fb, (int)cx, (int)(204 + oy), unit, gdim(C_SEC, k), UI_CENTER);
+    dot_icon_anim(fb, icon, cx, 124 + oy, 2.6f, 2.1f, C_SEC, p, DOT_REVEAL_CENTER);
+    dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, zero ? C_DIS : C_WHITE, 0, 1, 1 };
+    dot_text_anim(fb, &st, cx, 148 + oy, v, 1, p, DOT_REVEAL_RANDOM, 3);
+    ui_label(fb, (int)cx, (int)(214 + oy), unit, ui_dim(C_SEC, k), UI_CENTER);
 }
 
 static void draw_today(gfx_fb *fb, float oy)
 {
     float p = A.pg_build[1];
+    ui_label(fb, UI_CX, (int)(UI_TITLE_Y + oy), "TODAY", C_SEC, UI_CENTER);
     char b[16];
     int metric = nos_prefs.units_metric != 0;
     float dist = metric ? s_act.km : s_act.km * 0.621371f;
     if (dist < 10) snprintf(b, sizeof b, "%.1f", (double)dist);
     else snprintf(b, sizeof b, "%d", (int)(dist + 0.5f));
-    value_block(fb, UI_CX - 124, oy, DOT_ICON_ROUTE, b, metric ? "KM" : "MI", m_stagger(p, 0, 3, 0.6f));
+    value_block(fb, UI_CX - 124, oy, DOT_ICON_ROUTE, b, dist < 0.05f, metric ? "KM" : "MI", m_stagger(p, 0, 3, 0.6f));
     snprintf(b, sizeof b, "%d", (int)(s_act.kcal + 0.5f));
-    value_block(fb, UI_CX, oy, DOT_ICON_FLAME, b, "KCAL", m_stagger(p, 1, 3, 0.6f));
+    value_block(fb, UI_CX, oy, DOT_ICON_FLAME, b, s_act.kcal < 0.5f, "KCAL", m_stagger(p, 1, 3, 0.6f));
     snprintf(b, sizeof b, "%d", s_act.active_min);
-    value_block(fb, UI_CX + 124, oy, DOT_ICON_TIMER, b, "ACTIVE", m_stagger(p, 2, 3, 0.6f));
+    value_block(fb, UI_CX + 124, oy, DOT_ICON_TIMER, b, s_act.active_min == 0, "ACTIVE", m_stagger(p, 2, 3, 0.6f));
 
     /* hourly chart: 24 dot columns; past = grey, this hour = white, future = grid only */
     const int rows = 7;
     const float pitch = 13.0f, d = 9.0f;
-    float x0 = UI_CX - 12 * pitch, y0 = 238 + oy;
+    float x0 = UI_CX - 12 * pitch, y0 = 252 + oy;
     int maxv = 400;
     for (int i = 0; i < 24; i++) if (s_act.hourly[i] > maxv) maxv = s_act.hourly[i];
-    uint8_t past[24], now[1];
+    uint8_t past[24], now[1] = { 0 };
     float pb = bezier_ease(&EASE_STANDARD, m_clamp((p - 0.15f) / 0.85f, 0, 1));
     for (int i = 0; i < 24; i++) {
         float g = bezier_ease(&EASE_STANDARD, m_stagger(pb, i, 24, 0.5f));
-        float v = (float)s_act.hourly[i] / (float)maxv;
-        if (s_act.hourly[i] > 0 && v < 0.5f / rows) v = 0.5f / rows;   /* any activity shows */
-        v = floorf(v * rows + 0.5f) / rows;                           /* whole dots at rest */
-        if (s_act.hourly[i] > 0 && v < 1.0f / rows) v = 1.0f / rows;
-        int q = (int)lroundf(m_clamp(v * g, 0, 1) * 255.0f);
-        past[i] = i < s_hour ? (uint8_t)(q > 255 ? 255 : q) : 0;
-        if (i == s_hour) now[0] = (uint8_t)(q > 255 ? 255 : q);
+        uint8_t q = col_value((float)s_act.hourly[i] / (float)maxv, rows, g, s_act.hourly[i] > 0);
+        past[i] = i < s_hour ? q : 0;
+        if (i == s_hour) now[0] = q;
     }
     dot_columns(fb, x0, y0, 24, rows, pitch, d, past, C_SEC, C_GHOST);
     if (s_hour >= 0 && s_hour < 24)
         dot_columns(fb, x0 + s_hour * pitch, y0, 1, rows, pitch, d, now, C_WHITE, C_GHOST);
     /* now marker (the screen's one red element unless the goal ring overflows) */
     float nx = x0 + (s_hour + 0.5f) * pitch, ny = y0 + rows * pitch + 10;
-    if (pb > 0.5f) dot_disc(fb, nx, ny, 6.0f, A.over ? C_WHITE : C_RED);
+    if (pb > 0.5f) dot_disc(fb, nx, ny, 6.0f, A.hero.over ? C_WHITE : C_RED);
     static const char *k_ax[4] = { "00", "06", "12", "18" };
     for (int i = 0; i < 4; i++) {
         float ax = x0 + (i * 6 + 0.5f) * pitch;
@@ -349,40 +330,37 @@ static void draw_week(gfx_fb *fb, float oy)
         if (v) { sum += v; ndays++; }
         if (v > maxv) maxv = v;
     }
-    ui_label(fb, UI_CX, (int)(96 + oy), "THIS WEEK", C_SEC, UI_CENTER);
+    ui_label(fb, UI_CX, (int)(UI_TITLE_Y + oy), "THIS WEEK", C_SEC, UI_CENTER);
     char b[16];
-    snprintf(b, sizeof b, "%u", (unsigned)(ndays ? sum / (uint32_t)ndays : 0));
-    dot_style st = { DOT_FONT_TALL, 5.0f, 4.0f, ndays ? C_WHITE : C_DIS, 0, 1, 1 };
-    dot_text_anim(fb, &st, UI_CX, 118 + oy, b, 1, m_clamp(p * 1.5f, 0, 1), DOT_REVEAL_RAIN, 5);
-    ui_label(fb, UI_CX, (int)(190 + oy), "DAILY AVG", C_DIS, UI_CENTER);
+    fmt_steps(b, sizeof b, ndays ? (int)(sum / (uint32_t)ndays) : 0);
+    dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, ndays ? C_WHITE : C_DIS, 0, 1, 1 };
+    dot_text_anim(fb, &st, UI_CX, 112 + oy, b, 1, m_clamp(p * 1.5f, 0, 1), DOT_REVEAL_RANDOM, 5);
+    ui_label(fb, UI_CX, (int)(180 + oy), "DAILY AVG", C_DIS, UI_CENTER);
 
     const int rows = 9;
     const float pitch = 10.0f, d = 7.6f, slot = 42.0f;
     float y0 = 222 + oy, chart_h = rows * pitch;
     float scale = (float)maxv * 1.08f;
     float pb = bezier_ease(&EASE_STANDARD, m_clamp((p - 0.1f) / 0.9f, 0, 1));
+    /* goal line first (bars paint over it), on a gap between dot rows */
+    float gy = y0 + chart_h - chart_h * ((float)s_act.goal / scale);
+    gy = y0 + floorf((gy - y0) / pitch + 0.5f) * pitch;
+    if (pb > 0.3f && gy > y0 && gy < y0 + chart_h) {
+        float gx0 = UI_CX - 3 * slot - pitch, gx1 = UI_CX + 3 * slot + pitch;
+        dot_bar(fb, gx0, gy, 41, (gx1 - gx0) / 40.0f, 2.2f, 41, C_DIS, 0);
+        ui_label(fb, (int)(gx1 + 12), (int)(gy + 6), "GOAL", C_DIS, UI_LEFT);
+    }
     for (int i = 0; i < 7; i++) {
         uint32_t v = i == 6 ? (uint32_t)s_act.steps : s_act.week[i];
         if (i == 6 && s_act.week[6] > v) v = s_act.week[6];
         float g = bezier_ease(&EASE_STANDARD, m_stagger(pb, i, 7, 0.5f));
-        float f = scale > 0 ? (float)v / scale : 0;
-        if (v > 0 && f < 0.5f / rows) f = 0.5f / rows;
-        f = floorf(f * rows + 0.5f) / rows;
-        if (v > 0 && f < 1.0f / rows) f = 1.0f / rows;
-        uint8_t q = (uint8_t)lroundf(m_clamp(f * g, 0, 1) * 255.0f);
+        uint8_t q = col_value(scale > 0 ? (float)v / scale : 0, rows, g, v > 0);
         uint8_t vals[2] = { q, q };
         float cx = UI_CX + (i - 3) * slot;
         dot_columns(fb, cx - pitch, y0, 2, rows, pitch, d, vals, i == 6 ? C_WHITE : C_SEC, C_GHOST);
         static const char *k_d = "SMTWTFS";
         char l[2] = { k_d[((s_wday - (6 - i)) % 7 + 7) % 7], 0 };
         ui_label(fb, (int)cx, (int)(y0 + chart_h + 32), l, i == 6 ? C_WHITE : C_DIS, UI_CENTER);
-    }
-    /* goal line: a fine dotted rule across the chart */
-    float gy = y0 + chart_h - chart_h * ((float)s_act.goal / scale);
-    if (pb > 0.3f && gy > y0) {
-        float gx0 = UI_CX - 3 * slot - pitch, gx1 = UI_CX + 3 * slot + pitch;
-        dot_bar(fb, gx0, gy, 41, (gx1 - gx0) / 40.0f, 2.2f, 41, C_DIS, 0);
-        ui_label(fb, (int)(gx1 + 12), (int)(gy + 6), "GOAL", C_DIS, UI_LEFT);
     }
 }
 
@@ -392,7 +370,7 @@ static void act_draw(gfx_fb *fb)
     for (int pg = 0; pg < NPAGES; pg++) {
         float oy = pg * PAGE_H - off;
         if (oy <= -PAGE_H || oy >= PAGE_H) continue;
-        if (pg == 0) draw_hero(fb, oy, &A.cnt, A.lit, A.over, A.shown, 1);
+        if (pg == 0) draw_hero(fb, oy, &A.hero, 0);
         else if (pg == 1) draw_today(fb, oy);
         else draw_week(fb, oy);
     }
@@ -407,51 +385,32 @@ static int act_input(const nos_input *in)
 const nos_screen scr_activity = { "ACTIVITY", act_enter, 0, act_tick, act_draw, act_input, 0 };
 
 /* ============================================================== WIDGET
- * While the page is off screen it rests in its pre-build state (ring unlit, "0"), so
- * when the pager settles on it shown() plays the same fill + count-up as the app. */
+ * Builds (0.30 s, the same as the app) as soon as the page slides into view; off screen
+ * it rests unbuilt so the next arrival builds again. */
 static struct {
-    float t;
-    int started;          /* shown() ran since the page last became visible */
-    counter cnt;
-    int lit, over, shown;
+    int started;
+    hero hero;
 } W;
-
-static void wg_reset(void)
-{
-    W.t = 0; W.started = 0; W.shown = 0;
-    seg_counts(s_act.steps, s_act.goal, &W.lit, &W.over);
-    counter_hold(&W.cnt, s_act.steps);
-}
 
 static void wg_shown(void)
 {
     if (W.started) return;              /* already building since the page slid in */
     read_data();
-    wg_reset();
+    hero_start(&W.hero, 0);
     W.started = 1;
 }
 
 static void wg_tick(float dt, int visible)
 {
-    if (!visible) { if (W.started || W.cnt.target != s_act.steps) { read_data(); wg_reset(); } return; }
     read_data();
-    if (!W.started) { wg_reset(); W.started = 1; }   /* build while the page slides in */
-    W.t += dt;
-    int lit, over;
-    seg_counts(s_act.steps, s_act.goal, &lit, &over);
-    if (W.t > FILL_S + 0.1f) {
-        W.lit = lit; W.over = over; W.shown = lit + over;
-        if (W.cnt.mode == 2) counter_set(&W.cnt, s_act.steps);
-    } else {
-        float e = bezier_ease(&EASE_STANDARD, m_clamp(W.t / FILL_S, 0, 1));
-        W.shown = (int)floorf(e * (float)(W.lit + W.over) + 0.0001f);
-    }
-    counter_tick(&W.cnt, dt);
+    if (!visible) { W.started = 0; hero_start(&W.hero, 0); return; }
+    if (!W.started) { hero_start(&W.hero, 0); W.started = 1; }
+    hero_tick(&W.hero, dt, 0);
 }
 
 static void wg_draw(gfx_fb *fb)
 {
-    draw_hero(fb, 0, &W.cnt, W.lit, W.over, W.shown, 0);
+    draw_hero(fb, 0, &W.hero, 1);
 }
 
 static void wg_tap(int x, int y) { nos_open(&scr_activity, x, y); }
