@@ -48,7 +48,8 @@ void set_modules_open_lte(void);     /* the modem page, without the wiring */
 void set_settings_open_radio(int bt, int from_modules);
 
 #define PRESS_FLASH 0.10f        /* a quick tap still shows its pressed state 3 frames */
-#define PRESS_HOLD  0.20f        /* a held finger shows it only once it is clearly not a scroll */
+#define PRESS_HOLD  0.05f        /* a held row shows its pill after 50 ms...   */
+#define PRESS_TRAVEL 8           /* ...and drops it once the finger has moved 8 px (a scroll) */
 #define ARM_S       3.0f         /* arm-then-tap-again window */
 #define ROW_GAP     24           /* least gap between a row's label and its value */
 #define VALUE_XF    0.24f        /* a changed value: old out, new in */
@@ -694,7 +695,7 @@ static void draw_entry(gfx_fb *fb, int e, float y, float h, int pressed)
 static int pressed_entry(void)
 {
     if (S.flash_e >= 0 && nos_t - S.flash_t < PRESS_FLASH) return S.flash_e;
-    if (S.L.pressed >= 0 && S.L.pressed < S.nunits && nos_t - S.L.press_t > PRESS_HOLD) return S.unit_e[S.L.pressed];
+    if (S.L.pressed >= 0 && S.L.pressed < S.nunits && nos_t - S.L.press_t > PRESS_HOLD && nos_touch_travel() <= PRESS_TRAVEL) return S.unit_e[S.L.pressed];
     return -1;
 }
 

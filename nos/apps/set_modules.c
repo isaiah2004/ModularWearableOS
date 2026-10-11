@@ -37,7 +37,8 @@ enum { M_TOUCH = 0, M_IMU, M_RTC, M_SD, M_BATT, M_WIFI, M_BLE,
        M_HAPTIC, M_MIC, M_SPK, M_GPS, M_LTE, M_ENV, M_LIGHT, M_MAG, M_HR, M_COUNT };
 #define M_BOARD_N 7
 #define PRESS_FLASH 0.10f        /* a quick tap still shows its pressed state 3 frames */
-#define PRESS_HOLD  0.20f        /* a held finger shows it only once it is clearly not a scroll */
+#define PRESS_HOLD  0.05f        /* a held row shows its pill after 50 ms...   */
+#define PRESS_TRAVEL 8           /* ...and drops it once the finger has moved 8 px (a scroll) */
 #define ROW_GAP     24           /* least gap between a row's name and its value */
 #define LIVE_S 1.0f              /* live text readings refresh at 1 Hz */
 #define MORPH_S 0.28f
@@ -459,7 +460,7 @@ static void modules_draw(gfx_fb *fb)
     ui_title(fb, "MODULES", off);
     int pe = -1;
     if (ML.flash_e >= 0 && nos_t - ML.flash_t < PRESS_FLASH) pe = ML.flash_e;
-    else if (ML.L.pressed >= 0 && ML.L.pressed < ML.nunits && nos_t - ML.L.press_t > PRESS_HOLD) pe = ML.unit_e[ML.L.pressed];
+    else if (ML.L.pressed >= 0 && ML.L.pressed < ML.nunits && nos_t - ML.L.press_t > PRESS_HOLD && nos_touch_travel() <= PRESS_TRAVEL) pe = ML.unit_e[ML.L.pressed];
     for (int e = 0; e < NLE; e++) {
         float h = (float)(lunits(LE[e].kind) * MU);
         float y = MTOP + ML.start[e] * MU - off;
@@ -835,7 +836,7 @@ static void detail_draw(gfx_fb *fb)
         ui_title(fb, mi->title, off);
         int n = D.L.n;
         int pr = D.flash_row >= 0 && nos_t - D.flash_rt < PRESS_FLASH ? D.flash_row :
-                 (D.L.pressed >= 0 && nos_t - D.L.press_t > PRESS_HOLD ? D.L.pressed : -1);
+                 (D.L.pressed >= 0 && nos_t - D.L.press_t > PRESS_HOLD && nos_touch_travel() <= PRESS_TRAVEL ? D.L.pressed : -1);
         for (int i = 0; i < n; i++) {
             float y = PLAY_TOP + i * PLAY_ROW - off;
             if (y + PLAY_ROW < 0) continue;
