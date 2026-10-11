@@ -988,6 +988,7 @@ static struct {
     float v;                 /* 0-100, continuous while dragging */
     float v0;
     int dragging;
+    int touch;               /* a finger is on the track: it shows pressed, as in the control centre */
     mspring sp;              /* tap-to-position animation */
     int animating;
     int shown;               /* integer shown / committed */
@@ -1014,7 +1015,7 @@ static float slide_hero_y(void) { return bright_auto_row() ? 100.0f : 132.0f; }
 
 static void slider_draw(gfx_fb *fb, float x, float y, float w, float h, float v, int icon, int live)
 {
-    if (live) { ui_slider(fb, x, y, w, h, v, icon); return; }
+    if (live) { ui_slider_p(fb, x, y, w, h, v, icon, SL.touch || SL.dragging); return; }
     float r = h * 0.5f;
     gfx_fill_pill(fb, x + r, y + r, x + w - r, r, C_SURF2);
     float fw = h + (w - h) * m_clamp(v, 0, 1);
@@ -1046,7 +1047,7 @@ static void slide_enter(void)
 {
     SL.v = *slide_pref(SL.id);
     SL.shown = (int)SL.v;
-    SL.dragging = SL.animating = 0;
+    SL.dragging = SL.animating = SL.touch = 0;
     SL.pressed_row = 0;
     SL.row_flash = -100;
     char b[8]; snprintf(b, sizeof b, "%d%%", SL.shown);
@@ -1112,10 +1113,11 @@ static int slide_input(const nos_input *in)
     switch (in->type) {
     case IN_DOWN:
         SL.pressed_row = bright_auto_row() && in->y > 310 && in->y < 400;
+        SL.touch = in_slider(in->x, in->y);
         return 1;
     case IN_DRAG_START:
         SL.pressed_row = 0;
-        if (in->axis != AXIS_X || !in_slider(in->x0, in->y0)) return 0;
+        if (in->axis != AXIS_X || !in_slider(in->x0, in->y0)) { SL.touch = 0; return 0; }
         SL.dragging = 1; SL.animating = 0;
         SL.v0 = m_clamp(SL.v, 0, 100);
         SL.v = m_clamp(SL.v0 + in->dx / (SL_W - SL_H) * 100.0f, slide_min(), 100);
@@ -1125,6 +1127,7 @@ static int slide_input(const nos_input *in)
         SL.v = m_clamp(SL.v0 + in->dx / (SL_W - SL_H) * 100.0f, slide_min(), 100);
         return 1;
     case IN_DRAG_END:
+        SL.touch = 0;
         if (!SL.dragging) return 0;
         SL.dragging = 0;
         return 1;
@@ -1144,9 +1147,11 @@ static int slide_input(const nos_input *in)
             SL.row_flash = nos_t;
         }
         SL.pressed_row = 0;
+        SL.touch = 0;
         return 1;
     case IN_UP:
         SL.pressed_row = 0;
+        SL.touch = 0;
         return 1;
     default: return 0;
     }
