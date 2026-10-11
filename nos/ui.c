@@ -679,12 +679,12 @@ void ui_list_draw(gfx_fb *fb, ui_list *l)
 }
 
 /* ----------------------------------------------------- engine overlays */
-void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, float y)
+void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, float y, int pressed)
 {
     /* top 52 / width 300 keeps the rounded corners inside the glass; two body lines */
     const float w = 300, h = 136, top = UI_BANNER_TOP + y;
     float x = UI_CX - w / 2;
-    ui_rrect(fb, x, top, w, h, 40, C_SURF2);
+    ui_rrect(fb, x, top, w, h, 40, pressed ? C_LINE2 : C_SURF2);   /* pressed cards: C_LINE2 */
     float iy = top + 34;
     dot_icon(fb, icon ? icon : DOT_ICON_BELL, x + 42, iy, 2.6f, 2.1f, C_WHITE);   /* never a red */
     char t[40];

@@ -174,7 +174,7 @@ float ui_list_offset(const ui_list *l);
 int  ui_list_at_top(const ui_list *l);
 
 /* ---- engine overlays (called by nos.c) ---- */
-void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, float y);
+void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, float y, int pressed);
 void ui_draw_toast(gfx_fb *fb, const char *text, float t01);
 
 /* ---- formatting helpers ---- */

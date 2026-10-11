@@ -184,9 +184,6 @@ void nos_pop_with(int tx)
     nos_pop();
 }
 
-/* A button close: moves on the first frame (slope 1.4), leaves faster than it starts
- * (slope 2). Its end is off the glass, so it needs no settle. */
-static const bezier EASE_BTN_EXIT = { 0.25f, 0.35f, 0.8f, 0.6f };
 void nos_home(void)
 {
     if (s_depth <= 1) return;
@@ -208,9 +205,8 @@ void nos_home(void)
     if (from <= 0.001f) { T.popping = 1; T.p = 0; tx_complete(); return; }
     T.popping = 1; T.replacing = 0; T.cancel_pops = 0;
     tx_begin(geo, s_stack[0].s, top, from, 0.0f);
-    T.use_tween = 1;
-    mtw_start(&T.tw, from, 0.0f, 0.22f * (from > 0.4f ? from : 0.4f), &EASE_BTN_EXIT);
-    T.tw.t0 -= nos_dt;
+    T.use_tween = 0;
+    T.lin_v = 1.0f / 0.22f;      /* constant speed: any ease reads as a mid-exit hesitation */
 }
 
 void nos_home_now(void)
@@ -266,9 +262,22 @@ static struct {
     mspring y;            /* 0 = hidden above, 1 = shown (px units of its height) */
     float shown_t;
     int dragging;
+    mtween tw;            /* timed arrival / exit; the spring only for the finger */
+    int tweening;
+    int tap_hold;         /* tapped: the card stays pressed while it leaves */
 } B;
 #define BANNER_H 190.0f      /* travel: card top 52 + height 136 + margin */
 #define BANNER_SHOW_S 4.0f
+/* timed moves are tweens: a spring brakes into the bezel, crawling its last px */
+static void banner_tween(float to, float dur, const bezier *curve)
+{
+    float span = to > B.y.x ? to - B.y.x : B.y.x - to;
+    if (span < 0.5f) return;
+    mtw_start(&B.tw, B.y.x, to, dur * (0.4f + 0.6f * span / BANNER_H), curve);
+    B.tw.t0 -= nos_dt;                              /* move on the first frame */
+    B.tweening = 1;
+    B.y.target = to; B.y.v = 0;
+}
 
 void nos_banner(const char *title, const char *body, int icon, void (*on_tap)(void))
 {
@@ -278,7 +287,7 @@ void nos_banner(const char *title, const char *body, int icon, void (*on_tap)(vo
     B.on_tap = on_tap;
     if (!B.active) msp_init(&B.y, 0, SPRING_SHEET);
     B.active = 1;
-    msp_to(&B.y, BANNER_H);
+    if (!B.dragging) banner_tween(BANNER_H, 0.30f, &EASE_STANDARD);
     B.shown_t = nos_t;
     if (!nos_prefs.dnd) nos_feedback(FB_NOTIFY);
     nos_keep_awake();
@@ -287,7 +296,7 @@ void nos_banner(const char *title, const char *body, int icon, void (*on_tap)(vo
 /* A system sheet (notifications, control centre) coming in pushes the banner away. */
 static void banner_yield(int type)
 {
-    if ((type == TX_RISE || type == TX_DROP) && B.active && !B.dragging) msp_to(&B.y, 0);
+    if ((type == TX_RISE || type == TX_DROP) && B.active && !B.dragging) banner_tween(0, 0.20f, &EASE_ACCEL);
 }
 
 static struct { char text[40]; float t0; int active; } TO;
@@ -466,7 +475,7 @@ static void press_begin(int x, int y)
     P.t_down = nos_t;
     P.sx[0] = x; P.sy[0] = y; P.st[0] = hal_millis(); P.ns = 1;
     nos_keep_awake();
-    if (in_banner(x, y)) { P.owner = 2; B.dragging = 1; return; }
+    if (in_banner(x, y)) { P.owner = 2; B.dragging = 1; B.tweening = 0; return; }
     if (T.state == TXS_AUTO && !T.use_tween && !T.lin_v &&
         fabsf(T.sp.v) > 150.0f && fabsf(T.sp.x - T.sp.target) > 6.0f) {
         /* grab a moving transition mid-flight: the finger takes over from the spring */
@@ -550,7 +559,8 @@ static void process_touch(void)
         if (P.y - P.y0 < -24 || vy < -500) msp_kick(&B.y, 0, vy);           /* flick away */
         else if (P.y - P.y0 > 60 || (abs(P.x - P.x0) < SLOP && abs(P.y - P.y0) < SLOP)) {
             /* a tap, or pulling the banner down, opens it */
-            msp_to(&B.y, 0);
+            banner_tween(0, 0.20f, &EASE_ACCEL);
+            B.tap_hold = 1;
             nos_feedback(FB_TAP);
             if (B.on_tap) B.on_tap();
         } else msp_to(&B.y, BANNER_H);
@@ -894,7 +904,8 @@ static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_scree
 
 static void draw_overlays(gfx_fb *fb)
 {
-    if (B.active && B.y.x > 0.5f) ui_draw_banner(fb, B.title, B.body, B.icon, B.y.x - BANNER_H);
+    if (B.active && B.y.x > 0.5f) ui_draw_banner(fb, B.title, B.body, B.icon, B.y.x - BANNER_H,
+                                                  B.tap_hold || (P.down && P.owner == 2 && nos_touch_travel() <= 8));
     if (TO.active && !B.active) ui_draw_toast(fb, TO.text, (nos_t - TO.t0) / TOAST_S);
 }
 
@@ -1160,11 +1171,17 @@ static void tx_finish(void)
 static void tick_overlays(float dt)
 {
     if (B.active) {
-        if (!B.dragging && B.y.target > 0 && nos_t - B.shown_t > BANNER_SHOW_S) msp_to(&B.y, 0);
+        if (!B.dragging && B.y.target > 0 && nos_t - B.shown_t > BANNER_SHOW_S) banner_tween(0, 0.20f, &EASE_ACCEL);
         if (B.dragging && P.down && P.owner == 2) {
             float d = (float)(P.y - P.y0);
             B.y.x = BANNER_H + (d < 0 ? d : rubber_band(d, 200.0f));
-        } else if (!msp_step(&B.y, dt) && B.y.target <= 0) B.active = 0;
+        } else if (B.tweening) {
+            B.y.x = mtw_value(&B.tw);
+            if (mtw_done(&B.tw)) {
+                B.tweening = 0; B.y.x = B.tw.to; B.y.v = 0; B.y.moving = 0;
+                if (B.tw.to <= 0) B.active = 0, B.tap_hold = 0;
+            }
+        } else if (!msp_step(&B.y, dt) && B.y.target <= 0) B.active = 0, B.tap_hold = 0;
     }
     if (TO.active && B.active) TO.t0 = nos_t;       /* queued: shown once the banner leaves */
     if (TO.active && nos_t - TO.t0 > TOAST_S) TO.active = 0;
