@@ -40,7 +40,7 @@ typedef struct {
     sprite   q[4];
     unsigned key[4];
     uint16_t drawn[NRING][NSEG];          /* colour currently in the sprite, 0 = none */
-    int16_t  span[GFX_H][2];              /* per row: the ring band's left span [x0, x1) */
+    int16_t  span[GFX_H][NRING][2];       /* per row and ring: the ring's left span [x0, x1) */
     int      ok;
 } seg_cache;
 
@@ -140,20 +140,21 @@ static void cache_init(void)
         memset(G->q[q].px, 0, (size_t)G->q[q].w * (size_t)G->q[q].h * 2);
         G->key[q] = 0x5E600000u + (unsigned)q * 4096u;
     }
-    /* the band the segments can touch (2 px clear of their AA), as spans per row: the
-     * sprites are black everywhere else, so the blit copies only these */
-    const float ri = k_r[NRING - 1] - SEG_TH * 0.5f - 2.0f, ro = k_r[0] + SEG_TH * 0.5f + 2.0f;
-    for (int y = 0; y < GFX_H; y++) {
-        float dy = (float)y + 0.5f - UI_CY, ady = dy < 0 ? -dy : dy;
-        int x0 = 0, x1 = 0;
-        if (ady < ro) {
-            x0 = (int)(UI_CX - gfx_fast_sqrt(ro * ro - dy * dy)) - 1;
-            x1 = ady < ri ? (int)(UI_CX - gfx_fast_sqrt(ri * ri - dy * dy)) + 2 : UI_CX;
-            if (x0 < 0) x0 = 0;
-            if (x1 > UI_CX) x1 = UI_CX;
+    /* the bands the segments can touch (2 px clear of their AA), as spans per row and
+     * ring: the sprites are black everywhere else, so the blit copies only these */
+    for (int y = 0; y < GFX_H; y++)
+        for (int k = 0; k < NRING; k++) {
+            const float ri = k_r[k] - SEG_TH * 0.5f - 2.0f, ro = k_r[k] + SEG_TH * 0.5f + 2.0f;
+            float dy = (float)y + 0.5f - UI_CY, ady = dy < 0 ? -dy : dy;
+            int x0 = 0, x1 = 0;
+            if (ady < ro) {
+                x0 = (int)(UI_CX - gfx_fast_sqrt(ro * ro - dy * dy)) - 1;
+                x1 = ady < ri ? (int)(UI_CX - gfx_fast_sqrt(ri * ri - dy * dy)) + 2 : UI_CX;
+                if (x0 < 0) x0 = 0;
+                if (x1 > UI_CX) x1 = UI_CX;
+            }
+            G->span[y][k][0] = (int16_t)x0; G->span[y][k][1] = (int16_t)x1;
         }
-        G->span[y][0] = (int16_t)x0; G->span[y][1] = (int16_t)x1;
-    }
     G->ok = 1;
 }
 
@@ -358,9 +359,9 @@ static void draw_values(gfx_fb *fb, float a)
     }
 }
 
-/* sprite_blit for a ring quadrant, copying only the ring band's spans (the rest of the
- * sprite is black over a cleared frame): ~3.7x fewer pixels, which matters most under
- * an ink dim (wake, picker), where every pixel goes through gfx_ink */
+/* sprite_blit for a ring quadrant, copying only the three rings' spans (the rest of the
+ * sprite is black over a cleared frame): ~6x fewer pixels, which matters most under an
+ * ink dim (wake, picker), where pixels go through gfx_ink - once per run of one colour */
 static void blit_quad(gfx_fb *fb, const sprite *s, int x, int y, unsigned key)
 {
     if (fb->rec || !s->px) { sprite_blit(fb, s, x, y, key); return; }
@@ -372,21 +373,28 @@ static void blit_quad(gfx_fb *fb, const sprite *s, int x, int y, unsigned key)
     for (int r = 0; r < s->h; r++) {
         int ly = y + r, by = ly + fb->oy - fb->y_base;
         if ((unsigned)by >= (unsigned)fb->h || ly < 0 || ly >= GFX_H) continue;
-        int a0 = G->span[ly][0], a1 = G->span[ly][1];
-        if (a1 <= a0) continue;
-        int sp[2][2] = { { a0, a1 }, { GFX_W - a1, GFX_W - a0 } };
-        uint16_t *row = gfx_row(fb, by);
+        uint16_t *row = 0;
         const uint16_t *src = &s->px[r * s->w];
-        for (int k = 0; k < 2; k++) {
-            int l0 = sp[k][0] > x ? sp[k][0] : x, l1 = sp[k][1] < x + s->w ? sp[k][1] : x + s->w;
+        for (int k = 0; k < 2 * NRING; k++) {
+            int a0 = G->span[ly][k >> 1][0], a1 = G->span[ly][k >> 1][1];
+            if (a1 <= a0) continue;
+            if (k & 1) { int t = a0; a0 = GFX_W - a1; a1 = GFX_W - t; }
+            int l0 = a0 > x ? a0 : x, l1 = a1 < x + s->w ? a1 : x + s->w;
             if (l0 + fb->ox < c0) l0 = c0 - fb->ox;
             if (l1 + fb->ox > c1) l1 = c1 - fb->ox;
             if (l1 <= l0) continue;
+            if (!row) row = gfx_row(fb, by);
             uint16_t *d = row + l0 + fb->ox;
             const uint16_t *p = src + (l0 - x);
             int m = l1 - l0;
-            if (fb->dim) for (int i = 0; i < m; i++) d[i] = gfx_ink(fb, p[i]);
-            else memcpy(d, p, (size_t)m * 2);
+            if (fb->dim) {
+                uint16_t lp = 0, ld = gfx_ink(fb, 0);
+                for (int i = 0; i < m; i++) {
+                    uint16_t v = p[i];
+                    if (v != lp) { lp = v; ld = gfx_ink(fb, v); }
+                    d[i] = ld;
+                }
+            } else memcpy(d, p, (size_t)m * 2);
             n += (unsigned)m;
         }
     }
