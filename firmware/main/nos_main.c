@@ -318,8 +318,7 @@ static void cmd_exec(char *s)
     } else if (!strcmp(s, "btn")) { nos_button(1); vTaskDelay(pdMS_TO_TICKS(80)); nos_button(0); }
     else if (sscanf(s, "face %d", &a) == 1) {          /* bench: set the face directly */
         if (a >= 0 && a < nos_face_count) { nos_prefs.face = (uint8_t)a; sys_home_build_in(); nos_invalidate(); }
-        printf("FACE %d
-", nos_prefs.face);
+        printf("FACE %d\n", nos_prefs.face);
     }
     else if (sscanf(s, "full %d", &a) == 1) nos_debug_force_full = a;   /* bench: every frame a full repaint */
     else if (!strncmp(s, "open ", 5)) {
