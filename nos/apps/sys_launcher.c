@@ -73,8 +73,8 @@ enum { M_IDLE = 0, M_DRAG, M_DECAY, M_SPRING };
 
 /* §8 pressed state: hidden for the first 100 ms (a scroll's slop passes first and cancels
  * it silently), then on until release; a quick tap still shows it for 3 frames. */
-static struct { int id, down; float t0, until; } P = { -1, 0, 0, 0 };
-static void press_down(int id) { P.id = id; P.down = id >= 0; P.t0 = nos_t; P.until = 0; }
+static struct { int id, down, shown; float t0, until; } P = { -1, 0, 0, 0, 0 };
+static void press_down(int id) { P.id = id; P.down = id >= 0; P.shown = 0; P.t0 = nos_t; P.until = 0; }
 static void press_cancel(void) { P.id = -1; P.down = 0; P.until = 0; }
 static void press_up(void)
 {
@@ -86,12 +86,18 @@ static void press_up(void)
 static int press_on(int id)
 {
     if (id < 0 || P.id != id) return 0;
-    if (P.down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
-    return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
+    if (P.down) return P.shown && nos_touch_travel() <= 8;
+    return nos_t < P.until;
+}
+/* a held press lights once 90 ms have passed with the finger still (<= 3 px), then
+ * stays lit until release unless the finger passes 8 px (a drag starting) */
+static void press_tick(void)
+{
+    if (P.down && !P.shown && nos_t - P.t0 >= 0.09f && nos_touch_travel() <= 3) P.shown = 1;
 }
 
-static const nos_screen *s_last;
-const nos_screen *sys_launcher_last(void) { return s_last; }
+/* the last app opened from anywhere (widget, complication, OPEN, REC chip, here) */
+const nos_screen *sys_launcher_last(void) { return nos_last_app(); }
 
 static int napps(void) { return nos_app_count < MAXAPP ? nos_app_count : MAXAPP; }
 static float max_x(void) { return (napps() - 1) * ROW_P; }
@@ -252,7 +258,7 @@ static void l_enter(void)
 
 static void l_leave(void) { if (P.down) press_up(); if (S.mode == M_DRAG) release(0); }
 
-static void l_tick(float dt) { scroll_tick(dt); }
+static void l_tick(float dt) { press_tick(); scroll_tick(dt); }
 
 /* Layout of row i at the current scroll: centre y, icon x, dim level, icon variant.
  * Returns 0 if the row is off the glass. */
@@ -366,7 +372,6 @@ static int l_input(const nos_input *in)
         row_geo g;
         float xr = floorf(S.x + 0.5f);
         int ix = L && geo(i, xr, &g) ? g.ix : ICON_X, iy = (int)lroundf(UI_CY + i * ROW_P - xr);
-        s_last = nos_app_list[i].scr;
         if (L && geo(i, xr, &g))
             nos_open_icon(nos_app_list[i].scr, ix, iy, nos_app_list[i].icon, k_var_r[g.var]);
         else nos_open(nos_app_list[i].scr, ix, iy);

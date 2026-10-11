@@ -34,8 +34,8 @@ enum { B_SLEEP = 0, B_RESTART, B_OFF, NB };
 
 /* Section 8 pressed state: hidden for the first 100 ms (a drag's slop passes first and
  * cancels it silently), then on until release; a quick tap still shows it for 3 frames. */
-static struct { int id, down; float t0, until; } P = { -1, 0, 0, 0 };
-static void press_down(int id) { P.id = id; P.down = id >= 0; P.t0 = nos_t; P.until = 0; }
+static struct { int id, down, shown; float t0, until; } P = { -1, 0, 0, 0, 0 };
+static void press_down(int id) { P.id = id; P.down = id >= 0; P.shown = 0; P.t0 = nos_t; P.until = 0; }
 static void press_cancel(void) { P.id = -1; P.down = 0; P.until = 0; }
 static void press_up(void)
 {
@@ -47,8 +47,14 @@ static void press_up(void)
 static int press_on(int id)
 {
     if (id < 0 || P.id != id) return 0;
-    if (P.down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
-    return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
+    if (P.down) return P.shown && nos_touch_travel() <= 8;
+    return nos_t < P.until;
+}
+/* a held press lights once 90 ms have passed with the finger still (<= 3 px), then
+ * stays lit until release unless the finger passes 8 px (a drag starting) */
+static void press_tick(void)
+{
+    if (P.down && !P.shown && nos_t - P.t0 >= 0.09f && nos_touch_travel() <= 3) P.shown = 1;
 }
 
 static struct {
@@ -122,6 +128,7 @@ static void p_leave(void)
 
 static void p_tick(float dt)
 {
+    press_tick();
     const svc_sys_t *s = svc_sys();
     S.bat = s->battery_pct > 0 ? s->battery_pct : hal_battery_percent();
     S.charging = s->charging;

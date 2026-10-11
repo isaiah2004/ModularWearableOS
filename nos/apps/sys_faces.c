@@ -27,7 +27,8 @@
 #include <string.h>
 
 const face_ctx *sys_home_ctx(void);
-void sys_home_draw_rec(gfx_fb *fb, float a);   /* sys_home.c: the REC chip as home shows it */
+void sys_home_draw_rec(gfx_fb *fb, float a, int face);   /* sys_home.c: the REC chip on a face */
+void sys_home_rec_tick(float dt);                         /* sys_home.c: its clock, under the picker */
 
 #define PAGE_W 466.0f
 #define PILL_Y 396.0f    /* the name pill's top: clear of DOT's minute digits (to y 392) */
@@ -36,6 +37,7 @@ void sys_home_draw_rec(gfx_fb *fb, float a);   /* sys_home.c: the REC chip as ho
 #define OPEN_S   0.25f              /* in place from home: face recedes, frame builds in */
 #define CLOSE_S  0.18f              /* on choose: frame out (and the face back up), then pop */
 #define SET_CLOSE_S 0.12f           /* from Settings: the frame out, then slide back at once */
+#define CANCEL_S 0.30f              /* the button: back to the face it opened on, frame out with it */
 
 static struct {
     float x;
@@ -49,6 +51,7 @@ static struct {
     int on_home;             /* pushed over home (long press): it is the face underneath */
     int orig;                /* the face it opened on (home's) */
     int cancel;              /* the button: back to orig, nothing saved */
+    mtween cancel_tw;        /* the pager's way back (a tween: no spring creep) */
     face_ctx c;
 } F;
 
@@ -91,15 +94,12 @@ static void f_enter(void)
 }
 
 static void finish(void);
+static float close_s(void) { return F.cancel ? CANCEL_S : F.on_home ? CLOSE_S : SET_CLOSE_S; }
 static void f_tick(float dt)
 {
-    /* a cancel closes once the pager is home on the face it opened on */
-    if (F.cancel && !F.chosen && !F.dragging && F.page == F.orig &&
-        fabsf(F.x - F.orig * PAGE_W) < 3.0f) {   /* the spring's last px ride the close */
-        F.chosen = 1;
-        F.t_chosen = nos_t;
-    }
-    if (F.chosen == 1 && nos_t - F.t_chosen >= (F.on_home ? CLOSE_S : SET_CLOSE_S)) { F.chosen = 2; finish(); }
+    if (F.on_home) sys_home_rec_tick(dt);
+    if (F.cancel) F.x = mtw_value(&F.cancel_tw);           /* back over CANCEL_S, fading as it goes */
+    if (F.chosen == 1 && nos_t - F.t_chosen >= close_s()) { F.chosen = 2; finish(); }
     if (F.settling) {
         int m = msp_step(&F.sp, dt);
         /* the last sub-pixel of a settle would cost a whole-page repaint for nothing */
@@ -205,13 +205,13 @@ static void f_draw(gfx_fb *fb)
         lin = m_clamp((nos_t - F.t_enter) / OPEN_S, 0, 1);
         b = bezier_ease(&EASE_DECEL, lin);
         if (F.chosen) {
-            float c = 1.0f - m_clamp((nos_t - F.t_chosen) / CLOSE_S, 0, 1);
+            float c = 1.0f - m_clamp((nos_t - F.t_chosen) / close_s(), 0, 1);
             if (c < lin) lin = c;
             if (c < b) b = c;
         }
     } else {
         b = m_clamp((nos_t - F.t_enter) / 0.30f, 0, 1);
-        if (F.chosen) b = m_clamp(b - (nos_t - F.t_chosen) / SET_CLOSE_S, 0, 1);
+        if (F.chosen) b = m_clamp(b - (nos_t - F.t_chosen) / close_s(), 0, 1);
     }
     float fa = floorf(b * 8.0f + 0.5f) / 8.0f;
     /* the face recedes with the build (ink dim: no pixel pass). nos_dim records nothing,
@@ -237,7 +237,10 @@ static void f_draw(gfx_fb *fb)
             if (dk < 1.0f) nos_ink_dim(&sub, dk);     /* drawn dimmed: no pixel pass */
             nos_faces[s]->draw(&sub, &F.c);
             /* home's REC chip on the face it opened on: it gives way as the frame builds */
-            if (F.on_home && s == F.orig && fa < 1.0f) sys_home_draw_rec(&sub, 1.0f - fa);
+            /* home's REC chip: it gives way as the frame builds, and comes back with the
+             * frame-out on the face home will show (a new one on choose) */
+            int rf = F.chosen && !F.cancel ? F.page : F.orig;
+            if (F.on_home && s == rf && fa < 1.0f) sys_home_draw_rec(&sub, 1.0f - fa, rf);
             /* the face sinks away around the pill, into its own ground: 6 px, so DOT's
              * last row of minute dots keeps its shape */
             int light = (nos_face_style(nos_faces[s]) & FACE_LIGHT) != 0;
@@ -253,7 +256,8 @@ static void f_draw(gfx_fb *fb)
      * own tick/dot rings), the name pill and page dots. The rim carries on from the 3/8 the
      * long press charged it to on home (drawn as home draws it: on a white face it darkens
      * the ground), and goes out with the frame on choose. */
-    float k = F.chosen || !F.on_home ? fa : (3.0f + floorf(b * 5.0f + 0.5f)) / 8.0f;
+    /* from home it carries on from home's 3/8 at home's rate, an eighth per 0.1 s */
+    float k = F.chosen || !F.on_home ? fa : fminf(1.0f, (3.0f + floorf((nos_t - F.t_enter) / 0.1f)) / 8.0f);
     if (k > 0) {
         int lightp = (nos_face_style(nos_faces[F.page]) & FACE_LIGHT) != 0;
         gfx_ring(fb, UI_CX, UI_CY, UI_R - 3.5f, 3.0f,
@@ -351,7 +355,10 @@ static int f_input(const nos_input *in)
         nos_feedback(FB_BACK);
         if (F.grabbed) F.grabbed = 0;
         F.dragging = 0;
-        if (F.page != F.orig || fabsf(F.x - F.orig * PAGE_W) > 0.5f) settle_to(F.orig * PAGE_W, 0);
+        F.settling = 0;
+        mtw_start(&F.cancel_tw, F.x, F.orig * PAGE_W, CANCEL_S, &EASE_STANDARD);
+        F.chosen = 1;                               /* the frame fades with the way back */
+        F.t_chosen = nos_t;
         return 1;
     default:
         return 0;

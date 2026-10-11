@@ -262,15 +262,15 @@ static int nearest_page(void) { return slot_page((int)floorf(H.x / PAGE_W + 0.5f
 static int at_face(void) { return !H.dragging && !H.settling && H.x == 0.0f; }
 
 /* §8 pressed state, for a face complication (its press rect) or a widget page (its
- * press hook): hidden for the first 60 ms (and dropped at 8 px of travel), so a page drag
- * still in its slop
- * cancels it silently; then on until release. A quick tap still shows it for 3 frames,
+ * press hook): it lights once 60 ms have passed with the finger still (<= 3 px), then
+ * stays on until release unless the finger passes 8 px (a page drag or a sheet starting:
+ * dropped silently). A quick tap still shows it for 3 frames,
  * and a tap that opens something keeps it lit while the iris grows over it. */
 static struct {
     int kind;                /* 0 none, 1 face rect, 2 widget page */
     int page, x, y;          /* widget: page and finger */
     int r[4];                /* face: press rect (screen x0 y0 x1 y1) */
-    int down, lit;           /* finger still down; widget has heard press(1) */
+    int down, lit, shown;    /* finger still down; widget has heard press(1); lit while down */
     float t0, until;
 } PR;
 #define PR_SHOW_S 0.06f      /* a held, still press shows from the 2nd frame */
@@ -278,10 +278,7 @@ static int pr_visible(void)
 {
     if (!PR.kind) return 0;
     if (!PR.down) return nos_t < PR.until;
-    /* a still finger lights from 60 ms; one already moving waits the old 90 ms (by then
-     * a starting drag has passed 8 px and dropped the press: no flash) */
-    float t = nos_t - PR.t0;
-    return t >= PR_SHOW_S && (nos_touch_travel() <= 3 || t >= 0.09f);
+    return PR.shown;
 }
 static void pr_cancel(void)
 {
@@ -298,6 +295,7 @@ static void pr_release(float hold)
 }
 static void pr_tick(void)
 {
+    if (PR.kind && PR.down && !PR.shown && nos_t - PR.t0 >= PR_SHOW_S && nos_touch_travel() <= 3) PR.shown = 1;
     int on = pr_visible();
     if (PR.kind == 2 && k_wg[PR.page - 1]->press && on != PR.lit) {
         k_wg[PR.page - 1]->press(PR.x, PR.y, on);
@@ -426,6 +424,18 @@ const face_ctx *sys_home_ctx(void)
     return &H.c;
 }
 
+static void rec_step(float dt, int snap)
+{
+    char lbl[16];
+    int rk = sys_rec_state(lbl, sizeof lbl);
+    if (rk) { H.rec_kind = rk; memcpy(H.rec_lbl, lbl, sizeof lbl); }
+    if (snap) H.rec_raw = rk ? 1.0f : 0.0f;
+    else H.rec_raw = m_clamp(H.rec_raw + (rk ? 1.0f : -1.0f) * dt / (4.0f / NOS_FPS), 0, 1);
+}
+/* the face picker over home: home doesn't tick under it, so the picker keeps the chip's
+ * clock (and its fade) running (sys_faces.c) */
+void sys_home_rec_tick(float dt) { rec_step(dt, 0); }
+
 static void home_tick(float dt)
 {
     if (H.rec_open_t > 0 && nos_t >= H.rec_open_t) {   /* the chip was lit 3 frames */
@@ -492,11 +502,7 @@ static void home_tick(float dt)
 
     /* REC chip: in and out over 4 frames on a settled home; while home is coming back
      * (an iris closing over it) it is already as it is now, no stale chip fading out */
-    char lbl[16];
-    int rk = sys_rec_state(lbl, sizeof lbl);
-    if (rk) { H.rec_kind = rk; memcpy(H.rec_lbl, lbl, sizeof lbl); }
-    if (nos_top() != &scr_home || nos_transitioning()) H.rec_raw = rk ? 1.0f : 0.0f;
-    else H.rec_raw = m_clamp(H.rec_raw + (rk ? 1.0f : -1.0f) * dt / (4.0f / NOS_FPS), 0, 1);
+    rec_step(dt, nos_top() != &scr_home || nos_transitioning());
 
     /* face + widgets */
     build_ctx(dt);
@@ -561,10 +567,10 @@ static int status_w(char *b, int n)
 }
 
 /* the chip line on the current face: x0, baseline, total width; 0 = not shown */
-static int rec_line(int *x0, int *y, int *w)
+static int rec_line_f(const nos_face *f, int *x0, int *y, int *w)
 {
     if (H.rec_raw <= 0.0f || !H.rec_kind || H.c.aod) return 0;   /* AOD: draw_rec_aod */
-    const rec_slot *sl = rec_slot_of(cur_face());
+    const rec_slot *sl = rec_slot_of(f);
     char b[8];
     *w = sl->no_dot ? ui_label_width(H.rec_lbl) : sys_rec_width(H.rec_lbl);
     if (sl->shares_status && status_shown()) *w += 16 + status_w(b, sizeof b);
@@ -572,6 +578,7 @@ static int rec_line(int *x0, int *y, int *w)
     *y = sl->y;
     return 1;
 }
+static int rec_line(int *x0, int *y, int *w) { return rec_line_f(cur_face(), x0, y, w); }
 /* its backing / pressed rect (screen), 30 px tall around the caps */
 static void rec_rect(int x0, int y, int w, int r[4])
 {
@@ -635,16 +642,20 @@ static void rec_back(gfx_fb *fb, const int rr[4], uint16_t to, float a, float rm
 
 static float q4(float x) { return floorf(m_clamp(x, 0, 1) * 4.0f + 0.5f) / 4.0f; }
 
-static void draw_rec_a(gfx_fb *fb, float a)
+static void draw_rec_aod_a(gfx_fb *fb, const nos_face *f, float a);
+static void draw_rec_a(gfx_fb *fb, float a, const nos_face *f)
 {
     int x0, y, w;
-    if (!rec_line(&x0, &y, &w)) return;
+    if (!rec_line_f(f, &x0, &y, &w)) return;
+    int light = (nos_face_style(f) & FACE_LIGHT) != 0;
     /* fades with the face build-in, and comes up with the face out of AOD (4 steps), so
-     * neither a wake nor a build ever pops it in at full */
-    float k = q4(H.rec_raw) * q4(H.c.enter) * q4((nos_t - H.wake_t) / (6.0f / NOS_FPS)) * a;
+     * neither a wake nor a build ever pops it in at full; out of AOD the grey AOD chip
+     * hands over to it (it never blinks out between) */
+    float kw = q4((nos_t - H.wake_t) / (6.0f / NOS_FPS));
+    if (kw < 1.0f && !light) draw_rec_aod_a(fb, f, (1.0f - kw) * a);
+    float k = q4(H.rec_raw) * q4(H.c.enter) * kw * a;
     if (k <= 0.0f) return;
-    int light = (nos_face_style(cur_face()) & FACE_LIGHT) != 0;
-    const rec_slot *sl = rec_slot_of(cur_face());
+    const rec_slot *sl = rec_slot_of(f);
     int r[4];
     rec_rect(x0, y, w, r);
     /* a backing that clears the face art under it (ghost dots, hands, its own status) */
@@ -666,23 +677,28 @@ static void draw_rec_a(gfx_fb *fb, float a)
     }
 }
 
-static void draw_rec(gfx_fb *fb) { draw_rec_a(fb, 1.0f); }
-/* the face picker opening in place over home: the chip as home shows it, at a (sys_faces.c) */
-void sys_home_draw_rec(gfx_fb *fb, float a) { draw_rec_a(fb, a); }
+static void draw_rec(gfx_fb *fb) { draw_rec_a(fb, 1.0f, cur_face()); }
+/* the face picker over home: the chip as home would show it on face `face`, at a
+ * (sys_faces.c) */
+void sys_home_draw_rec(gfx_fb *fb, float a, int face)
+{
+    if (face >= 0 && face < nos_face_count) draw_rec_a(fb, a, nos_faces[face]);
+}
 
 /* In AOD: "REC" in C_DIS after a 6 px C_SEC dot (no red, no backing; ~0.1 % lit) on the
  * face's slot, drifting a few px with the minute like the AOD faces. */
-static void draw_rec_aod(gfx_fb *fb)
+static void draw_rec_aod_a(gfx_fb *fb, const nos_face *f, float a)
 {
-    if (!H.rec_kind || H.rec_raw <= 0.0f) return;
-    const rec_slot *sl = rec_slot_of(cur_face());
+    if (!H.rec_kind || H.rec_raw <= 0.0f || a <= 0.0f) return;
+    const rec_slot *sl = rec_slot_of(f);
     const char *t = "REC";
     int lw = ui_label_width(t), w = sl->no_dot ? lw : 6 + 8 + lw;
     int m = H.c.dt.minute;
     int x0 = UI_CX - w / 2 + (m * 7) % 5 - 2, y = sl->y + (m * 3) % 5 - 2;
-    if (!sl->no_dot) { dot_disc(fb, x0 + 3.0f, y - 6.5f, 6, C_SEC); x0 += 14; }
-    ui_label(fb, x0, y, t, C_DIS, UI_LEFT);
+    if (!sl->no_dot) { dot_disc(fb, x0 + 3.0f, y - 6.5f, 6, gdim(C_SEC, a)); x0 += 14; }
+    ui_label(fb, x0, y, t, gdim(C_DIS, a), UI_LEFT);
 }
+static void draw_rec_aod(gfx_fb *fb) { draw_rec_aod_a(fb, cur_face(), 1.0f); }
 
 /* the finger is on the chip: its line, grown to the 88 px touch target */
 static int rec_hit(int x, int y, int r[4])
@@ -785,7 +801,7 @@ static int home_input(const nos_input *in)
                    k_wg[H.grab_page - 1]->press) {
             PR.kind = 2; PR.page = H.grab_page; PR.x = in->x; PR.y = in->y;
         }
-        if (PR.kind) { PR.down = 1; PR.lit = 0; PR.t0 = nos_t; PR.until = 0; }
+        if (PR.kind) { PR.down = 1; PR.lit = PR.shown = 0; PR.t0 = nos_t; PR.until = 0; }
         return 1;
     case IN_DRAG_START:
         H.holding = 0;

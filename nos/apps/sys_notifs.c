@@ -56,8 +56,8 @@ static int body_lh(void) { return UI_F_BODY->line_height + 2; }
 /* Section 8 pressed state: hidden for the first 100 ms (a scroll or swipe passes the slop
  * first and cancels it silently), then on until release; a quick tap still shows it for
  * 3 frames. */
-typedef struct { int id, down; float t0, until; } press_t;
-static void press_down(press_t *p, int id) { p->id = id; p->down = id >= 0; p->t0 = nos_t; p->until = 0; }
+typedef struct { int id, down, shown; float t0, until; } press_t;
+static void press_down(press_t *p, int id) { p->id = id; p->down = id >= 0; p->shown = 0; p->t0 = nos_t; p->until = 0; }
 static void press_cancel(press_t *p) { p->id = -1; p->down = 0; p->until = 0; }
 static void press_up(press_t *p)
 {
@@ -69,8 +69,14 @@ static void press_up(press_t *p)
 static int press_on(const press_t *p, int id)
 {
     if (id < 0 || p->id != id) return 0;
-    if (p->down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
-    return p->down ? nos_t - p->t0 >= 0.09f : nos_t < p->until;
+    if (p->down) return p->shown && nos_touch_travel() <= 8;
+    return nos_t < p->until;
+}
+/* a held press lights once 90 ms have passed with the finger still (<= 3 px), then
+ * stays lit until release unless the finger passes 8 px (a drag starting) */
+static void press_tick(press_t *p)
+{
+    if (p->down && !p->shown && nos_t - p->t0 >= 0.09f && nos_touch_travel() <= 3) p->shown = 1;
 }
 #define ID_CLEAR 1000
 
@@ -124,7 +130,7 @@ static struct {
     int out_i;                /* index flying (still in the list), -1 */
     int fly;                  /* a dismissed card still crossing the glass (drawn from s_fly) */
     float fly_y;              /* its content y */
-    mspring gap;              /* rows from gap_i down: extra y offset closing to 0 */
+    mtween gap;               /* rows from gap_i down: extra y offset closing to 0 (0.25 s) */
     int gap_i;
     float t_enter, t_empty;
     int clearing; float t_clear; int clear_n;   /* CLEAR ALL: cards leave top first */
@@ -168,8 +174,7 @@ static void update_bounds(void)
 
 static void gap_start(int i, float h)
 {
-    msp_init(&N.gap, h, SPRING_PAGE);
-    msp_to(&N.gap, 0);
+    mtw_start(&N.gap, h, 0, 0.25f, &EASE_STANDARD);
     N.gap_i = i;
 }
 
@@ -206,7 +211,7 @@ static void n_enter(void)
     press_cancel(&N.pr); N.sw = -1; N.out_i = -1; N.gap_i = -1; N.fly = 0; N.clearing = 0;
     N.sw_live = 0; N.dragging = 0;
     msp_init(&N.out, 0, SPRING_SNAPPY);
-    msp_init(&N.gap, 0, SPRING_PAGE);
+    mtw_start(&N.gap, 0, 0, 0.0f, &EASE_STANDARD);
     /* pulled in by the finger: the sheet reveals its content as it moves, no build-in */
     N.t_enter = N.t_empty = nos_entered_by_finger() ? nos_t - 2.0f : nos_enter_t();
     N.cnt_from = N.cnt_to = N.n; N.cnt_t = -10;
@@ -224,6 +229,7 @@ static float clear_x(int k)              /* x offset of the k-th visible card wh
 
 static void n_tick(float dt)
 {
+    press_tick(&N.pr);
     int n = svc_notif_count();
     if (n != N.n) {
         if (n == 0 && N.n) N.t_empty = nos_t;
@@ -242,7 +248,7 @@ static void n_tick(float dt)
         msp_step(&N.out, dt);
         if (N.out.x <= -CARD_W - CARD_X - 4) N.fly = 0;
     }
-    if (N.gap_i >= 0 && !msp_step(&N.gap, dt)) N.gap_i = -1;
+    if (N.gap_i >= 0 && mtw_done(&N.gap)) N.gap_i = -1;
     if (N.clearing && clear_x(N.clear_n - 1) <= -CARD_W - CARD_X - 4) {
         N.clearing = 0;
         svc_notif_clear();
@@ -257,7 +263,7 @@ static void n_tick(float dt)
 static float card_y(int i, float off)
 {
     float y = TOP_Y + card_yi(i) - off;
-    if (N.gap_i >= 0 && i >= N.gap_i) y += N.gap.x;
+    if (N.gap_i >= 0 && i >= N.gap_i) y += floorf(mtw_value(&N.gap) + 0.5f);
     /* build-in: cards rise 24 px into place, 2 frames apart */
     float e = (nos_t - N.t_enter - i * (2.0f / NOS_FPS)) / 0.26f;
     e = bezier_ease(&EASE_DECEL, m_clamp(e, 0, 1));
@@ -366,7 +372,7 @@ static void n_draw(gfx_fb *fb)
     }
     /* CLEAR ALL closes the list; while clearing it leaves with the cards, last */
     float cy = TOP_Y + list_h() + 20 + CLEAR_H * 0.5f - off;
-    if (N.gap_i >= 0) cy += N.gap.x;
+    if (N.gap_i >= 0) cy += floorf(mtw_value(&N.gap) + 0.5f);
     if (N.n && cy > -CLEAR_H && cy < GFX_H + CLEAR_H && (!N.clearing || N.clear_k >= 0)) {
         float e = m_clamp((nos_t - N.t_enter - N.n * (2.0f / NOS_FPS)) / 0.2f, 0, 1);
         float bx = UI_CX + (N.clearing ? floorf(clear_x(N.clear_k) + 0.5f) : 0);
@@ -559,6 +565,7 @@ static void d_enter(void)
 
 static void d_tick(float dt)
 {
+    press_tick(&D.pr);
     /* follow the notification by id */
     const svc_notif *n = D.idx >= 0 ? svc_notif_get(D.idx) : 0;
     if (!n || n->id != D.id) {

@@ -88,8 +88,8 @@ int sys_rec_width(const char *label);
 void sys_rec_draw(gfx_fb *fb, int x0, int y, const char *label, uint16_t dot, uint16_t ink);
 #define ID_REC 100           /* press id of the header REC chip */
 
-static struct { int id, down; float t0, until; } P = { -1, 0, 0, 0 };
-static void press_down(int id) { P.id = id; P.down = id >= 0; P.t0 = nos_t; P.until = 0; }
+static struct { int id, down, shown; float t0, until; } P = { -1, 0, 0, 0, 0 };
+static void press_down(int id) { P.id = id; P.down = id >= 0; P.shown = 0; P.t0 = nos_t; P.until = 0; }
 static void press_cancel(void) { P.id = -1; P.down = 0; P.until = 0; }
 static void press_up(void)
 {
@@ -101,8 +101,14 @@ static void press_up(void)
 static int press_on(int id)
 {
     if (id < 0 || P.id != id) return 0;
-    if (P.down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
-    return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
+    if (P.down) return P.shown && nos_touch_travel() <= 8;
+    return nos_t < P.until;
+}
+/* a held press lights once 90 ms have passed with the finger still (<= 3 px), then
+ * stays lit until release unless the finger passes 8 px (a drag starting) */
+static void press_tick(void)
+{
+    if (P.down && !P.shown && nos_t - P.t0 >= 0.09f && nos_touch_travel() <= 3) P.shown = 1;
 }
 
 static struct {
@@ -111,6 +117,8 @@ static struct {
     int sl_drag;
     float sl_v0, sl_dx0, sl_val;   /* value and finger dx at grab, live value 0..1 */
     int sl_step;             /* last 10 % step (ticks) */
+    mspring sl_sp;           /* a tap: the fill springs to the nearest 10 % (as Settings) */
+    int sl_anim;
     float t_enter;
     char note[32];           /* "WI-FI OFF" */
     float note_t;
@@ -219,7 +227,7 @@ static void c_enter(void)
         msp_init(&C.on[i], 1.0f, SPRING_SNAPPY);
     }
     press_cancel();
-    C.sl_drag = 0;
+    C.sl_drag = 0; C.sl_anim = 0;
     C.note_hold = 0;
     C.sl_val = nos_prefs.brightness / 100.0f;
     C.rec_kind = sys_rec_state(C.rec_lbl, sizeof C.rec_lbl);
@@ -233,19 +241,25 @@ static void c_enter(void)
 
 static void c_leave(void)
 {
-    if (C.sl_drag) { C.sl_drag = 0; prefs_save(); }
+    if (C.sl_drag || C.sl_anim) { C.sl_drag = C.sl_anim = 0; prefs_save(); }
     if (P.down) press_cancel();                /* a released press stays lit through its iris */
 }
 
 static void c_tick(float dt)
 {
+    press_tick();
     for (int i = 0; i < NT; i++) {
         int to = state(i) ? 255 : LV_OFF;                /* follow changes made elsewhere */
         if (C.lv_to[i] != to) morph(i, fill_lv(i));
         msp_step(&C.on[i], dt);
     }
-    if (!C.sl_drag) C.sl_val = nos_prefs.brightness / 100.0f;
-    if (C.note_hold) C.note_t = nos_t - 0.10f;
+    if (C.sl_anim) {
+        if (!msp_step(&C.sl_sp, dt)) { C.sl_anim = 0; C.sl_sp.x = C.sl_sp.target; prefs_save(); }
+        C.sl_val = C.sl_sp.x;
+        apply_brightness(C.sl_val);
+        note_brightness();
+    } else if (!C.sl_drag) C.sl_val = nos_prefs.brightness / 100.0f;
+    if (C.note_hold && nos_t - C.note_t > 0.10f) C.note_t = nos_t - 0.10f;   /* held up, after its fade in */
     const svc_sys_t *s = svc_sys();
     C.bat = s->battery_pct > 0 ? s->battery_pct : hal_battery_percent();
     C.charging = s->charging;
@@ -327,15 +341,18 @@ static void draw_tile(gfx_fb *fb, int i)
 
 static void draw_header(gfx_fb *fb)
 {
-    float age = nos_t - C.note_t;
+    float age = nos_t - C.note_t, kn = 0;
     if (C.note[0] && age < 1.6f) {                       /* the last change, then back */
         float k = age < 0.10f ? age / 0.10f : age < 1.3f ? 1.0f : 1.0f - (age - 1.3f) / 0.3f;
-        k = floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f;
-        if (k > 0) { ui_label(fb, UI_CX, HEAD_Y, C.note, gdim(C_PRI, k), UI_CENTER); return; }
+        kn = floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f;
+        if (kn > 0) ui_label(fb, UI_CX, HEAD_Y, C.note, gdim(C_PRI, kn), UI_CENTER);
     }
+    /* the clock (or the REC chip) gives way to the note and comes back as it goes, in 3 steps */
+    float ko = floorf((1.0f - kn) * 3.0f + 0.5f) / 3.0f;
+    if (ko <= 0) return;
     /* recording: the header is the REC chip (clock and battery out, then the chip in) */
-    float kc = floorf(m_clamp(1.0f - 2.0f * C.rec_raw, 0, 1) * 3.0f + 0.5f) / 3.0f;
-    float kr = floorf(m_clamp(2.0f * C.rec_raw - 1.0f, 0, 1) * 3.0f + 0.5f) / 3.0f;
+    float kc = floorf(m_clamp(1.0f - 2.0f * C.rec_raw, 0, 1) * 3.0f + 0.5f) / 3.0f * ko;
+    float kr = floorf(m_clamp(2.0f * C.rec_raw - 1.0f, 0, 1) * 3.0f + 0.5f) / 3.0f * ko;
     if (kr > 0 && C.rec_kind) {
         int w = sys_rec_width(C.rec_lbl), x0 = UI_CX - w / 2;
         if (press_on(ID_REC)) ui_rrect(fb, x0 - 12, HEAD_Y - 21, w + 24, 30, 15, C_SURF2);
@@ -351,14 +368,10 @@ static void draw_header(gfx_fb *fb)
     ui_label(fb, x0 + wt + 24, HEAD_Y, b, gdim(C.charging ? C_PRI : C_SEC, kc), UI_LEFT);
 }
 
-/* ui_slider's pill (same geometry and inks), with the track one step up while pressed */
+/* the shared pill slider, its track one step up while pressed */
 static void draw_slider(gfx_fb *fb, float y, float v, int pressed)
 {
-    if (!pressed) { ui_slider(fb, SL_X, y, SL_W, SL_H, v, DOT_ICON_BRIGHT); return; }
-    float r = SL_H * 0.5f, ip = SL_H * 0.065f + 1.0f;
-    gfx_fill_pill(fb, SL_X + r, y + r, SL_X + SL_W - r, r, C_LINE2);
-    gfx_fill_pill(fb, SL_X + r, y + r, SL_X + SL_H + SL_RUN * m_clamp(v, 0, 1) - r, r, C_WHITE);
-    dot_icon(fb, DOT_ICON_BRIGHT, SL_X + r, y + r, ip, ip * 0.8f, C_BG);
+    ui_slider_p(fb, SL_X, y, SL_W, SL_H, v, DOT_ICON_BRIGHT, pressed);
 }
 
 static void c_draw(gfx_fb *fb)
@@ -398,7 +411,9 @@ static void tap_tile(int i)
     tile_pos(i, &tx, &ty);
     if (!present(i)) {
         nos_feedback(FB_ERROR);
-        set_note(i == T_SOUND ? "NO SPEAKER" : i == T_HAPTIC ? "NO MOTOR" : i == T_LTE ? "NO LTE MODULE" : "NO GPS MODULE", 0);
+        char n[32];
+        snprintf(n, sizeof n, "NO %s", ui_module_short(k_tile[i].need));   /* as Settings and the toasts */
+        set_note(n, 0);
         return;
     }
     /* the screen grows out of the tile's own icon disc */
@@ -422,6 +437,7 @@ static int c_input(const nos_input *in)
     case IN_DRAG_START:
         if (P.down && P.id == NT && in->axis == AXIS_X) {
             C.sl_drag = 1;
+            if (C.sl_anim) { C.sl_anim = 0; prefs_save(); }   /* the finger takes it where it is */
             C.sl_v0 = C.sl_val;
             C.sl_dx0 = in->dx;                 /* absorb the slop: no jump when it locks */
             C.sl_step = (int)floorf(C.sl_val * 10.0f + 0.5f);
@@ -468,12 +484,13 @@ static int c_input(const nos_input *in)
         }
         if (i == NT) {            /* tap on the bar: jump there */
             press_up();
-            /* the fill's end goes to the finger, to the percent */
-            float v = m_clamp((in->x - SL_X - SL_H * 0.5f) / SL_RUN, 0.05f, 1.0f);
-            v = floorf(v * 100.0f + 0.5f) / 100.0f;
-            C.sl_val = v;
-            apply_brightness(v);
-            prefs_save();
+            /* the fill springs to the finger's 10 % step (Settings' tap) */
+            float v = m_clamp((in->x - SL_X - SL_H * 0.5f) / SL_RUN, 0, 1);
+            v = fmaxf(0.05f, floorf(v * 10.0f + 0.5f) / 10.0f);
+            msp_init(&C.sl_sp, C.sl_val, SPRING_SNAPPY);
+            msp_to(&C.sl_sp, v);
+            C.sl_anim = 1;
+            C.sl_step = (int)floorf(v * 10.0f + 0.5f);
             nos_feedback(FB_TICK);
             note_brightness();
         } else if (i >= 0) tap_tile(i);
