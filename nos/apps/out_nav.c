@@ -121,8 +121,11 @@ enum { H_NAV = 0, H_FIX, H_REC };                           /* header line kinds
 enum { A_NONE = 0, A_START, A_START_DIS, A_STOP, A_SUMMARY };  /* action row kinds */
 enum { P_NONE = 0, P_REC };
 
+typedef struct { int shown, init, pend; float t; } plug_t;   /* see plug_tick() */
+
 static struct {
-    int present;
+    int present;             /* shown: flips after the unplug fade */
+    plug_t pl;
     hal_gps g;               /* this frame's reading */
     hal_gps last;            /* last valid fix */
     int have_last;
@@ -321,6 +324,32 @@ static void you_place(void)
     N.have_you = 1;
 }
 
+/* A module unplugged (or plugged back) while the app is open, the rule shared with the
+ * connect team: the old content steps to half, then off (2 frames at 30 fps), then the
+ * new page builds in. The shown state only flips after the fade. */
+#define PLUG_A 0.025f            /* frame 1 of the fade: old content at half */
+#define PLUG_B 0.058f            /* frame 2: off; the flip happens on the next tick */
+#define PLUG_STEP (1.0f / 30.0f) /* the new page's build starts one step in */
+/* returns 1 on the tick the shown state flips */
+static int plug_tick(plug_t *p, int real)
+{
+    if (!p->init) { p->init = 1; p->shown = real; p->pend = 0; p->t = -10; return 0; }
+    if (!p->pend) { if (real != p->shown) { p->pend = 1; p->t = nos_t; } return 0; }
+    if (nos_t - p->t < PLUG_B) return 0;
+    p->pend = 0;
+    if (real == p->shown) return 0;   /* back before the fade ended */
+    p->shown = real;
+    return 1;
+}
+/* 0 draw normally, 1 draw at half ink, 2 draw nothing; records the fade's damage */
+static int plug_phase(gfx_fb *fb, const plug_t *p)
+{
+    if (!p->pend) return 0;
+    int ph = nos_t - p->t < PLUG_A ? 1 : 2;
+    if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_u(0x9106u, (unsigned)ph));
+    return ph;
+}
+
 /* ------------------------------------------------------------- lifecycle */
 static void nav_enter(void)
 {
@@ -381,7 +410,10 @@ static void tick_distance(void)
 static void nav_tick(float dt)
 {
     svc_track_tick(dt);                 /* no-op once svc_tick drives it this frame */
-    N.present = hal_gps_get(&N.g) && (hal_ext_present() & EXT_GPS);
+    int real = hal_gps_get(&N.g) && (hal_ext_present() & EXT_GPS);
+    if (plug_tick(&N.pl, real)) { N.t0 = nos_t - PLUG_STEP; N.first = 1; }
+    N.present = N.pl.shown;
+    if (N.pl.pend) return;                         /* the old content is fading */
     if (!N.present) { N.t0 = N.t0 < nos_t ? N.t0 : nos_t; return; }
     hal_gps_enable(1);
     int was = N.fixed;
@@ -770,7 +802,17 @@ static void page_back(gfx_fb *fb)
 }
 
 /* ------------------------------------------------------------- draw / input */
+static void nav_draw_body(gfx_fb *fb);
 static void nav_draw(gfx_fb *fb)
+{
+    int ph = plug_phase(fb, &N.pl);
+    if (ph == 2) return;
+    int d0 = fb->dim;
+    if (ph == 1) nos_ink_dim(fb, 0.5f);
+    nav_draw_body(fb);
+    fb->dim = d0;
+}
+static void nav_draw_body(gfx_fb *fb)
 {
     if (!N.present) {
         ui_title(fb, "NAVIGATE", 0);

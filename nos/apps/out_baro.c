@@ -122,8 +122,11 @@ static void round_btn(gfx_fb *fb, float cx, float cy, float r, int icon, int pre
 }
 
 /* ------------------------------------------------------------- state */
+typedef struct { int shown, init, pend; float t; } plug_t;   /* see plug_tick() */
+
 static struct {
-    int present, valid;
+    int present, valid;      /* shown: flip after the unplug fade */
+    plug_t pl;
     hal_env env;
     float *hist; int nhist;
     float hist_t;            /* nos_t of the last history read */
@@ -259,9 +262,37 @@ static void baro_enter(void)
     B.storm_t = -10;
 }
 
+/* A module unplugged (or plugged back) while the app is open, the rule shared with the
+ * connect team: the old content steps to half, then off (2 frames at 30 fps), then the
+ * new page builds in. The shown state only flips after the fade. */
+#define PLUG_A 0.025f            /* frame 1 of the fade: old content at half */
+#define PLUG_B 0.058f            /* frame 2: off; the flip happens on the next tick */
+#define PLUG_STEP (1.0f / 30.0f) /* the new page's build starts one step in */
+/* returns 1 on the tick the shown state flips */
+static int plug_tick(plug_t *p, int real)
+{
+    if (!p->init) { p->init = 1; p->shown = real; p->pend = 0; p->t = -10; return 0; }
+    if (!p->pend) { if (real != p->shown) { p->pend = 1; p->t = nos_t; } return 0; }
+    if (nos_t - p->t < PLUG_B) return 0;
+    p->pend = 0;
+    if (real == p->shown) return 0;   /* back before the fade ended */
+    p->shown = real;
+    return 1;
+}
+/* 0 draw normally, 1 draw at half ink, 2 draw nothing; records the fade's damage */
+static int plug_phase(gfx_fb *fb, const plug_t *p)
+{
+    if (!p->pend) return 0;
+    int ph = nos_t - p->t < PLUG_A ? 1 : 2;
+    if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_u(0x9106u, (unsigned)ph));
+    return ph;
+}
+
 static void baro_tick(float dt)
 {
-    B.present = (hal_ext_present() & EXT_ENV) != 0;
+    if (plug_tick(&B.pl, (hal_ext_present() & EXT_ENV) != 0)) B.t0 = nos_t - PLUG_STEP;
+    B.present = B.pl.shown;
+    if (B.pl.pend) return;                         /* the old content is fading */
     B.valid = B.present && hal_env_get(&B.env) && B.env.valid;
     if (B.valid && nos_t - B.hist_t > 5.0f) { read_history(); B.hist_t = nos_t; }
     if (B.valid && nos_t - B.val_t >= 1.0f) { refresh_values(); B.val_t = nos_t; }
@@ -365,7 +396,17 @@ static void page_local(gfx_fb *fb)
 }
 
 /* ------------------------------------------------------------- draw / input */
+static void baro_draw_body(gfx_fb *fb);
 static void baro_draw(gfx_fb *fb)
+{
+    int ph = plug_phase(fb, &B.pl);
+    if (ph == 2) return;
+    int d0 = fb->dim;
+    if (ph == 1) nos_ink_dim(fb, 0.5f);
+    baro_draw_body(fb);
+    fb->dim = d0;
+}
+static void baro_draw_body(gfx_fb *fb)
 {
     if (!B.present) {
         ui_title(fb, "BAROMETER", 0);

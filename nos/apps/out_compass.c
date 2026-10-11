@@ -44,6 +44,8 @@
 
 enum { M_ABSENT = 0, M_CAL, M_CAL_DONE, M_DIAL, M_LEVEL };
 
+typedef struct { int shown, init, pend; float t; } plug_t;   /* see plug_tick() */
+
 static struct {
     int mode;
     hal_mag mag;
@@ -70,6 +72,7 @@ static struct {
     int level_init;
     float det_k;           /* details crossfade 0..1 (cardinal out, then details in) */
     int hold; float hold_t0, hold_p;   /* long-press hold ring */
+    plug_t pl;             /* module unplugged / back: the 2-frame fade */
     int out_mode; float out_t, out_hold;   /* the face fading out after a dial <-> level swap */
 } C;
 static int S_OLD;          /* draw: the face being drawn is the outgoing one (fully built) */
@@ -229,17 +232,50 @@ static void tick_level(float dt)
     C.level_init = 0;
 }
 
+/* A module unplugged (or plugged back) while the app is open, the rule shared with the
+ * connect team: the old content steps to half, then off (2 frames at 30 fps), then the
+ * new page builds in. The shown state only flips after the fade. */
+#define PLUG_A 0.025f            /* frame 1 of the fade: old content at half */
+#define PLUG_B 0.058f            /* frame 2: off; the flip happens on the next tick */
+#define PLUG_STEP (1.0f / 30.0f) /* the new page's build starts one step in */
+/* returns 1 on the tick the shown state flips */
+static int plug_tick(plug_t *p, int real)
+{
+    if (!p->init) { p->init = 1; p->shown = real; p->pend = 0; p->t = -10; return 0; }
+    if (!p->pend) { if (real != p->shown) { p->pend = 1; p->t = nos_t; } return 0; }
+    if (nos_t - p->t < PLUG_B) return 0;
+    p->pend = 0;
+    if (real == p->shown) return 0;   /* back before the fade ended */
+    p->shown = real;
+    return 1;
+}
+/* 0 draw normally, 1 draw at half ink, 2 draw nothing; records the fade's damage */
+static int plug_phase(gfx_fb *fb, const plug_t *p)
+{
+    if (!p->pend) return 0;
+    int ph = nos_t - p->t < PLUG_A ? 1 : 2;
+    if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_u(0x9106u, (unsigned)ph));
+    return ph;
+}
+
 static void compass_tick(float dt)
 {
-    int present = hal_mag_get(&C.mag) && (hal_ext_present() & EXT_MAG);
-    if (!present) {
-        if (C.mode != M_ABSENT) { set_mode(M_ABSENT); }
+    int real = hal_mag_get(&C.mag) && (hal_ext_present() & EXT_MAG);
+    int flip = plug_tick(&C.pl, real);
+    if (C.pl.pend) return;                /* the old content is fading */
+    if (!C.pl.shown) {
+        if (C.mode != M_ABSENT) {
+            if (C.mode == M_CAL) hal_mag_calibrate(0);
+            set_mode(M_ABSENT);
+            if (flip) C.t_mode -= PLUG_STEP;
+        }
         C.build = m_clamp((nos_t - C.t_mode) / UI_ENTRY_S, 0, 1);
         return;
     }
     if (C.mode == M_ABSENT) {             /* module plugged in while open */
         if (!C.mag.calibrated) start_cal(0);
         else set_mode(M_DIAL);
+        if (flip) C.t_mode -= PLUG_STEP;
     }
     float age = nos_t - C.t_mode;
     /* hold ring: shows from 0.1 s, full at the long press; a released hold unwinds */
@@ -474,7 +510,17 @@ static void level_draw(gfx_fb *fb)
 
 /* ------------------------------------------------------------- draw / input */
 static void face_draw(gfx_fb *fb, int mode);
+static void compass_draw_body(gfx_fb *fb);
 static void compass_draw(gfx_fb *fb)
+{
+    int ph = plug_phase(fb, &C.pl);
+    if (ph == 2) return;
+    int d0 = fb->dim;
+    if (ph == 1) nos_ink_dim(fb, 0.5f);
+    compass_draw_body(fb);
+    fb->dim = d0;
+}
+static void compass_draw_body(gfx_fb *fb)
 {
     /* dial <-> level: one full-screen command keyed by the fade (ink dim is not in the
      * primitives' hashes), the old face dimmed by ink, then the level's rings fade in
