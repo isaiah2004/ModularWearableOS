@@ -45,6 +45,7 @@
 #include "hal_ext.h"
 #include "svc.h"
 #include "apps/nos_apps.h"
+#include "faces/face.h"
 
 #if CONFIG_WATCH_BOARD_143C
 #error "nos_main.c targets the 1.43-B; the 1.43C build still uses main.c"
@@ -315,6 +316,12 @@ static void cmd_exec(char *s)
         s_inj_ms = (sscanf(s, "swipe %d %d %d %d %d", &a, &b, &c, &d, &e) == 5) ? e : 220;
         s_inj_t0 = esp_timer_get_time(); s_inj_active = 1;
     } else if (!strcmp(s, "btn")) { nos_button(1); vTaskDelay(pdMS_TO_TICKS(80)); nos_button(0); }
+    else if (sscanf(s, "face %d", &a) == 1) {          /* bench: set the face directly */
+        if (a >= 0 && a < nos_face_count) { nos_prefs.face = (uint8_t)a; sys_home_build_in(); nos_invalidate(); }
+        printf("FACE %d
+", nos_prefs.face);
+    }
+    else if (sscanf(s, "full %d", &a) == 1) nos_debug_force_full = a;   /* bench: every frame a full repaint */
     else if (!strncmp(s, "open ", 5)) {
         const nos_screen *sc = screen_by_name(s + 5);
         if (sc) { go_state(PWR_ON); nos_open(sc, GFX_W / 2, GFX_H / 2); printf("OPEN %s\n", sc->name); }
