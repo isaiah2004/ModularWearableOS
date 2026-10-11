@@ -522,6 +522,9 @@ static void press_begin(int x, int y)
     /* a screen on its way out keeps going: the touch is spent (landing it would be a
      * cut, grabbing it would bring back a screen that already acted) */
     if (T.state == TXS_AUTO && T.popping && (T.use_tween || T.lin_v > 0)) { P.owner = 3; return; }
+    /* nor does one on its way in: landing it and passing the tap through would act on a
+     * screen nobody has seen (a double-tapped EDIT CITIES removed a city) */
+    if (T.state == TXS_AUTO && T.use_tween) { P.owner = 3; return; }
     if (T.state == TXS_AUTO) tx_finish();          /* nearly settled / tween: land it, tap through */
     send(IN_DOWN);
 }
