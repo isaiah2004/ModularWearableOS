@@ -26,7 +26,7 @@ void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float li
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
 #define PRESS_HOLD 0.1f          /* a pressed pill shows >= 0.1 s (3 frames) even on a quick tap */
 /* the label of a pill that builds by scale: in from k 0.6, 3 steps of fill -> ink */
-static float ink_k(float k) { return qz(m_clamp((k - 0.6f) / 0.4f, 0, 1), 3); }
+static float ink_k(float k) { return qz(m_clamp((k - 0.3f) / 0.4f, 0, 1), 3); }   /* from the 2nd scale step */
 
 /* ============================================================ state */
 static svc_stopwatch_t SL;          /* local fallback */
@@ -127,7 +127,7 @@ static struct {
     int pressed, press_live;     /* press_live: the left pill was enabled at the touch */
     float press_t0, unpress_at;
     svc_stopwatch_t sw;          /* snapshot for this frame */
-    dgm dig;
+    dgm dig, ten;                /* ten: the tenths cell, morphs on RESET only */
     char tenths[4];
     mspring lay;                 /* 0 = no laps (digits centred), 1 = laps shown */
     mspring ins;                 /* new-row slide-in offset, px */
@@ -167,6 +167,7 @@ static float list_max(void)
 
 static void sw_snapshot(int morph)
 {
+    uint32_t was = S.sw.elapsed_ms;
     S.sw = *time_sw();
     uint32_t ms = S.sw.elapsed_ms, s = ms / 1000;
     char b[16];
@@ -174,6 +175,8 @@ static void sw_snapshot(int morph)
     else snprintf(b, sizeof b, "%02u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
     dgm_set(&S.dig, b, morph);
     snprintf(S.tenths, sizeof S.tenths, ".%u", (unsigned)(ms / 100 % 10));
+    if (morph && was && !ms) dgm_set(&S.ten, S.tenths, 1);          /* RESET: .8 -> .0 morphs */
+    else if (!morph || strcmp(S.ten.cur, S.tenths)) dgm_set(&S.ten, S.tenths, 0);
     int n = S.sw.nlaps;
     snprintf(S.cur_lbl, sizeof S.cur_lbl, "LAP %02d", n + 1);
     fmt_lap(S.cur_time, sizeof S.cur_time, ms - (n ? S.sw.laps[n - 1] : 0));
@@ -303,8 +306,20 @@ static void draw_list(gfx_fb *fb)
     }
 }
 
+/* distance from (x, y) to the nearest button pill's edge (negative inside) */
+static float pill_d(float x, float y)
+{
+    float r = UI_BTN_H * 0.5f, best = 1e9f;
+    for (int p = 0; p < 2; p++) {
+        float c = p ? BTN_RX : BTN_LX, ax = c - BTN_W / 2 + r, bx = c + BTN_W / 2 - r;
+        float qx = x < ax ? ax : x > bx ? bx : x, dx = x - qx, dy = y - BTN_Y;
+        float d = gfx_fast_sqrt(dx * dx + dy * dy) - r;
+        if (d < best) best = d;
+    }
+    return best;
+}
 /* the bezel track: time_ring's 60 dots, less the ones within 6 px of a button pill (the
- * standard pair at y 372 reaches r 218, over the track); the hand passes under the pills */
+ * standard pair at y 372 reaches r 218, over the track); the hand gives way the same way */
 static uint8_t s_trk_skip[60];
 static int s_trk_ok;
 static void sw_track(gfx_fb *fb, float lit)
@@ -312,15 +327,7 @@ static void sw_track(gfx_fb *fb, float lit)
     if (!s_trk_ok) {                             /* once: which dots give way */
         for (int i = 0; i < 60; i++) {
             float a = 6.2831853f * (float)i / 60.0f;
-            float x = UI_CX + RING_R * gfx_fast_sin(a), y = UI_CY - RING_R * gfx_fast_cos(a);
-            float r = UI_BTN_H * 0.5f, best = 1e9f;
-            for (int p = 0; p < 2; p++) {
-                float c = p ? BTN_RX : BTN_LX, ax = c - BTN_W / 2 + r, bx = c + BTN_W / 2 - r;
-                float qx = x < ax ? ax : x > bx ? bx : x, dx = x - qx, dy = y - BTN_Y;
-                float d = gfx_fast_sqrt(dx * dx + dy * dy) - r;
-                if (d < best) best = d;
-            }
-            s_trk_skip[i] = best < 6.0f;
+            s_trk_skip[i] = pill_d(UI_CX + RING_R * gfx_fast_sin(a), UI_CY - RING_R * gfx_fast_cos(a)) < 6.0f;
         }
         s_trk_ok = 1;
     }
@@ -350,8 +357,11 @@ static void sw_draw(gfx_fb *fb)
             turn = from * (1.0f - bezier_ease(&EASE_STANDARD, m_clamp(hp, 0, 1)));
         }
         float a = 6.2831853f * turn;
-        float d = 10.0f * qz(m_clamp((b - 0.3f) * 3, 0, 1), 4);
-        dot_disc(fb, UI_CX + RING_R * gfx_fast_sin(a), UI_CY - RING_R * gfx_fast_cos(a), d, C_RED);
+        float hx = UI_CX + RING_R * gfx_fast_sin(a), hy = UI_CY - RING_R * gfx_fast_cos(a);
+        /* near a pill the hand shrinks away in 4 steps and grows back past it: never under */
+        float g = qz(m_clamp((pill_d(hx, hy) - 2.0f) / 8.0f, 0, 1), 4);
+        float d = 10.0f * qz(m_clamp((b - 0.3f) * 3, 0, 1), 4) * g;
+        dot_disc(fb, hx, hy, d > 0.05f ? d : 0.05f, C_RED);      /* always recorded */
     }
     ui_title(fb, "STOPWATCH", 0);
 
@@ -369,8 +379,7 @@ static void sw_draw(gfx_fb *fb)
     if (pk > 0.01f) ui_state(fb, UI_CX, 150, "PAUSED", ui_dim(C_SEC, qz(pk, 6)));
     dgm_draw(fb, &S.dig, &st, x0, top, 0.2f, b);
     float ty = floorf(top + (pitch - UI_LIST_PITCH) * 9 + 0.5f);
-    if (b < 1) dot_text_anim(fb, &ts, x0 + w1 + gap, ty, S.tenths, 0, b, DOT_REVEAL_RANDOM, 9);
-    else dot_text(fb, &ts, x0 + w1 + gap, ty, S.tenths);
+    dgm_draw(fb, &S.ten, &ts, x0 + w1 + gap, ty, 0.2f, b);
 
     draw_list(fb);
 

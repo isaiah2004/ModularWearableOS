@@ -36,7 +36,7 @@ static float ease_o(float t) { t = m_clamp(t, 0, 1); float u = 1 - t; return 1 -
 static float s_alpha = 1.0f;
 static uint16_t AL(uint16_t c) { return s_alpha < 1.0f ? ui_dim(c, s_alpha) : c; }
 /* the label of a pill that builds by scale: in from k 0.6, 3 steps of fill -> ink */
-static float ink_k(float k) { return qz(m_clamp((k - 0.6f) / 0.4f, 0, 1), 3); }
+static float ink_k(float k) { return qz(m_clamp((k - 0.3f) / 0.4f, 0, 1), 3); }   /* from the 2nd scale step */
 
 /* A dot ring like dot_ring() (n dots from 12 o'clock clockwise, [0, lit) lit with a
  * partially grown end dot, others `off`, 0 = skip). One damage command per dot
@@ -480,8 +480,11 @@ static void timer_tick(float dt)
     s_timer_seen = nos_t;
     tm_poll();
     tm_get(&T.tm);
-    if (T.view == V_RUN && T.tm.state == 0) { T.dig_keep = 0; timer_set_view(V_SETUP, 0); }
-    else if (T.view == V_SETUP && T.tm.state != 0) { T.dig_keep = 0; timer_set_view(V_RUN, 0); }
+    /* not on top (a cover lifting, e.g. TIME'S UP -> STOP): switch without a departure, so
+     * no stale view is uncovered; the new one builds as the cover lifts */
+    int fresh = nos_top() != &scr_timer;
+    if (T.view == V_RUN && T.tm.state == 0) { T.dig_keep = 0; timer_set_view(V_SETUP, fresh); }
+    else if (T.view == V_SETUP && T.tm.state != 0) { T.dig_keep = 0; timer_set_view(V_RUN, fresh); }
     T.out = T.out_on ? 1.0f - m_clamp((nos_t - T.out_t0) / OUT_S, 0, 1) : 0;   /* linear */
     if (T.out_on && nos_t - T.out_t0 >= OUT_S) T.out_on = 0;
     if (T.unpress_at > 0 && nos_t >= T.unpress_at) { T.pressed = P_NONE; T.unpress_at = 0; }
@@ -554,21 +557,25 @@ static void timer_draw_run(gfx_fb *fb, float b, float dig_b, int pressed)
     /* controls: pressed discs are C_SEC with black ink */
     float bp = m_clamp(b * 2.5f - 1.0f, 0, 1);
     if (bp <= 0) return;
-    float k = qz(bp, 8);
+    /* all three build by scale at full colour; their ink comes in through the fill */
+    float sc = build_scale(bp), ink = ink_k(bp);
     float lx = UI_CX - BTN_SIDE, rx = UI_CX + BTN_SIDE, sy = BTN_Y - 6;
     int pc = pressed == P_CANCEL, pa = pressed == P_ADD;
-    ui_circle(fb, lx, sy, 40, AL(ui_dim(pc ? C_SEC : C_SURF2, k)));
-    dot_icon(fb, DOT_ICON_CROSS, lx, sy, 2.6f, 2.1f, AL(pc ? C_BG : ui_dim(C_PRI, k)));
+    uint16_t cf = pc ? C_SEC : C_SURF2, af = pa ? C_SEC : C_SURF2;
+    ui_circle(fb, lx, sy, 40 * sc, AL(cf));
+    if (ink > 0) dot_icon(fb, DOT_ICON_CROSS, lx, sy, 2.6f, 2.1f, AL(ui_mix(cf, pc ? C_BG : C_PRI, ink)));
     uint16_t disc = pressed == P_PAUSE ? C_SEC : C_WHITE;
-    ui_circle(fb, UI_CX, BTN_Y, 46 * build_scale(bp), AL(disc));
+    ui_circle(fb, UI_CX, BTN_Y, 46 * sc, AL(disc));
     /* pause <-> play: one icon fades into the disc, the other fades out of it */
     float ik = pz < 0.5f ? 1 - pz * 2 : pz * 2 - 1;
-    if (k >= 1) dot_icon(fb, pz >= 0.5f ? DOT_ICON_PLAY : DOT_ICON_PAUSE, UI_CX + (pz >= 0.5f ? 2 : 0), BTN_Y,
-                         3.0f, 2.4f, AL(ui_mix(disc, C_BG, ik)));
-    ui_circle(fb, rx, sy, 40, AL(ui_dim(pa ? C_SEC : C_SURF2, k)));
-    dot_style ps = { DOT_FONT_5X7, 2.8f, 2.3f, AL(pa ? C_BG : ui_dim(C_PRI, k)), 0, 1, 0 };
-    dot_text_a(fb, &ps, rx, sy - 17, "+1", 1);
-    ui_text(fb, UI_F_SMALL, (int)rx, (int)sy + 21, "MIN", AL(pa ? C_BG : ui_dim(C_SEC, k)), UI_CENTER, 1);
+    if (ink > 0) dot_icon(fb, pz >= 0.5f ? DOT_ICON_PLAY : DOT_ICON_PAUSE, UI_CX + (pz >= 0.5f ? 2 : 0), BTN_Y,
+                          3.0f, 2.4f, AL(ui_mix(disc, C_BG, ik * ink)));
+    ui_circle(fb, rx, sy, 40 * sc, AL(af));
+    if (ink > 0) {
+        dot_style ps = { DOT_FONT_5X7, 2.8f, 2.3f, AL(ui_mix(af, pa ? C_BG : C_PRI, ink)), 0, 1, 0 };
+        dot_text_a(fb, &ps, rx, sy - 17, "+1", 1);
+        ui_text(fb, UI_F_SMALL, (int)rx, (int)sy + 21, "MIN", AL(ui_mix(af, pa ? C_BG : C_SEC, ink)), UI_CENTER, 1);
+    }
 }
 
 static void timer_draw_view(gfx_fb *fb, int v, float b, float dig_b, int pressed)
@@ -737,12 +744,14 @@ const nos_screen scr_timer_pick = { "TIMER SET", pick_enter, pick_leave, pick_ti
 static struct {
     float t0, build; int pressed; uint32_t total; int haptic_on; float press_t0, unpress_at;
     int fire; float fire_at;     /* a quick tap acts once its press has shown PRESS_HOLD */
+    int leaving;                 /* acted: the pill stays pressed as the screen falls */
 } RG;
 enum { RGP_NONE = 0, RGP_STOP, RGP_ADD };
 
 static void ring_enter(void)
 {
     RG.t0 = nos_enter_t(); RG.build = 0; RG.pressed = RGP_NONE; RG.unpress_at = 0; RG.fire = RGP_NONE;
+    RG.leaving = 0;
     tm_t t; tm_get(&t); RG.total = t.total;
     /* the timer service runs the alarm haptics/sound (svc ringer); only the local
      * fallback (link-stub svc) buzzes from here */
@@ -764,7 +773,7 @@ static void ring_tick(float dt)
     tm_poll();
     RG.build = m_clamp((nos_t - RG.t0) / 0.4f, 0, 1);
     if (RG.fire != RGP_NONE && nos_t >= RG.fire_at) { int h = RG.fire; RG.fire = RGP_NONE; ring_act(h); return; }
-    if (RG.unpress_at > 0 && nos_t >= RG.unpress_at) { RG.pressed = RGP_NONE; RG.unpress_at = 0; }
+    if (!RG.leaving && RG.unpress_at > 0 && nos_t >= RG.unpress_at) { RG.pressed = RGP_NONE; RG.unpress_at = 0; }
     nos_keep_awake();
     /* stop buzzing after a minute; the screen stays until dismissed */
     if (RG.haptic_on && nos_t - RG.t0 > 60.0f) { hal_haptic_stop(); RG.haptic_on = 0; }
@@ -804,6 +813,7 @@ static void ring_stop(void)
 }
 static void ring_act(int h)
 {
+    RG.leaving = 1; RG.unpress_at = 0;
     if (h == RGP_STOP) ring_stop();
     else if (h == RGP_ADD) {
         tm_cancel();
@@ -814,7 +824,7 @@ static void ring_act(int h)
 }
 static int ring_input(const nos_input *in)
 {
-    if (RG.fire != RGP_NONE) return 1;           /* leaving */
+    if (RG.fire != RGP_NONE || RG.leaving) return 1;   /* leaving */
     switch (in->type) {
     case IN_DOWN: RG.pressed = ring_hit(in->x, in->y); RG.press_t0 = nos_t; RG.unpress_at = 0; return 1;
     case IN_DRAG_START: RG.pressed = RGP_NONE; RG.unpress_at = 0; return 1;

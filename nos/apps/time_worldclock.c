@@ -20,7 +20,7 @@ void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float li
 
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
 #define PRESS_HOLD 0.1f          /* a pressed control shows >= 0.1 s (3 frames) even on a quick tap */
-static float ink_k(float k) { return qz(m_clamp((k - 0.6f) / 0.4f, 0, 1), 3); }
+static float ink_k(float k) { return qz(m_clamp((k - 0.3f) / 0.4f, 0, 1), 3); }   /* from the 2nd scale step */
 
 /* Standard offsets plus the city's daylight-saving rule. */
 enum { DST_NONE = 0, DST_EU, DST_US, DST_AU, DST_NZ, DST_EG };
@@ -291,7 +291,7 @@ static void pk_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
     if (cx0 > UI_CX - 170) cx0 = UI_CX - 170;
     if (cx1 < UI_CX + 170) cx1 = UI_CX + 170;
     pressed = pressed || (i == s_pk_tap_i && nos_t - s_pk_tap_t < PRESS_HOLD);
-    if (pressed) ui_rrect(fb, (float)cx0, y + 4, (float)(cx1 - cx0), h - 8.0f, 32, ui_dim(C_SURF2, f));
+    if (pressed) ui_rrect(fb, (float)cx0, y + 4, (float)(cx1 - cx0), h - 8.0f, 40, ui_dim(C_LINE2, f));   /* the pressed-card look */
     char nm[24], off[16];
     upper(nm, sizeof nm, k_city[i].name);
     hal_datetime dt;
@@ -305,7 +305,7 @@ static void pk_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, 
     if (sel) {
         ui_circle(fb, cx, cy, 17, ui_dim(C_WHITE, f));
         dot_icon(fb, DOT_ICON_CHECK, cx, cy, 2.0f, 1.6f, C_BG);
-    } else ui_circle_line(fb, cx, cy, 17, 2, ui_dim(C_LINE2, f));
+    } else ui_circle_line(fb, cx, cy, 17, 2, ui_dim(pressed ? C_SEC : C_LINE2, f));   /* visible on the pressed fill */
 }
 static void pk_tap(int i)
 {

@@ -34,7 +34,7 @@ void time_alert_dot(gfx_fb *fb);
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
 #define PRESS_HOLD 0.1f          /* a pressed control shows >= 0.1 s (3 frames) even on a quick tap */
 /* the label of a pill that builds by scale: in from k 0.6, 3 steps of fill -> ink */
-static float ink_k(float k) { return qz(m_clamp((k - 0.6f) / 0.4f, 0, 1), 3); }
+static float ink_k(float k) { return qz(m_clamp((k - 0.3f) / 0.4f, 0, 1), 3); }   /* from the 2nd scale step */
 static int in_rect(int x, int y, float cx, float cy, float w, float h)
 {
     return fabsf(x - cx) <= w * 0.5f && fabsf(y - cy) <= h * 0.5f;
@@ -476,7 +476,7 @@ const nos_screen scr_alarm = { "ALARMS", alarm_enter, 0, alarm_tick, alarm_draw,
 #define E_MAX      190.0f
 #define E_ARM_S    3.0f            /* delete stays armed 3 s (one red dot per second) */
 #define E_DEL_W    ((float)UI_BTN_W)
-#define E_ARM_W    284.0f
+#define E_ARM_W    320.0f          /* the arm standard (Power, Settings) */
 #define E_CHIP_S   0.15f           /* a chip's on/off colour step */
 #define E_XF_S     0.24f           /* label swaps: old out, new in, 4 levels each */
 static struct {
@@ -742,6 +742,7 @@ static struct {
     char label[24];
     mspring knob;            /* 0..1 along the track */
     int grab, committed, haptic_on, snz_pressed, last_step, at_end;
+    int leaving;             /* snoozed / stopped: SNOOZE stays pressed as the screen falls */
     float grab_k, snz_t0, snz_unpress, snz_fire;   /* snz_fire: a quick tap snoozes once the press has shown */
 } R;
 static float sl_x0(void) { return UI_CX - R_SL_W / 2 + R_SL_R; }
@@ -749,7 +750,7 @@ static float sl_x1(void) { return UI_CX + R_SL_W / 2 - R_SL_R; }
 
 static void ring_enter(void)
 {
-    R.t0 = nos_enter_t(); R.build = 0; R.snz_unpress = 0; R.snz_fire = 0;
+    R.t0 = nos_enter_t(); R.build = 0; R.snz_unpress = 0; R.snz_fire = 0; R.leaving = 0;
     int i = svc_alarm_ringing();
     hal_datetime dt; hal_get_datetime(&dt);
     R.h = dt.hour; R.m = dt.minute;
@@ -781,7 +782,7 @@ static void ring_tick(float dt)
     nos_keep_awake();
     R.build = m_clamp((nos_t - R.t0) / 0.4f, 0, 1);
     if (R.snz_fire > 0 && nos_t >= R.snz_fire) { R.snz_fire = 0; snooze(); return; }
-    if (R.snz_unpress > 0 && nos_t >= R.snz_unpress) { R.snz_pressed = 0; R.snz_unpress = 0; }
+    if (!R.leaving && R.snz_unpress > 0 && nos_t >= R.snz_unpress) { R.snz_pressed = 0; R.snz_unpress = 0; }
     if (!R.grab) msp_step(&R.knob, dt);
     if (R.committed && !R.knob.moving) {
         R.committed = 0;
@@ -825,6 +826,7 @@ static void ring_draw(gfx_fb *fb)
 }
 static void snooze(void)
 {
+    R.leaving = 1; R.snz_unpress = 0;
     svc_alarm_snooze();                          /* svc remembers which alarm, and when */
     nos_toast("Snoozed");                        /* the list row says until when */
     ring_leave();
@@ -832,7 +834,7 @@ static void snooze(void)
 }
 static int ring_input(const nos_input *in)
 {
-    if (R.snz_fire > 0) return 1;                /* snoozing */
+    if (R.snz_fire > 0 || R.leaving) return 1;   /* snoozing / leaving */
     float span = sl_x1() - sl_x0();
     switch (in->type) {
     case IN_DOWN: {
