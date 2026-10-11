@@ -17,7 +17,7 @@
 #endif
 #define TRACK_DIR TRACK_ROOT "/tracks"
 
-#define MAXPTS  4096                   /* 96 KB of PSRAM, ~20 km at 5 m spacing */
+#define MAXPTS  SVC_TRACK_MAXPTS       /* 96 KB of PSRAM, ~20 km at 5 m spacing */
 #define D2R     0.017453292519943295
 #define EARTH_R 6371000.0
 
@@ -141,3 +141,9 @@ int svc_track_points(const svc_track_pt **out) { if (out) *out = T.pts; return T
 double svc_track_distance(void) { return T.dist; }
 uint32_t svc_track_elapsed_ms(void) { return T.active ? hal_millis() - T.t0_ms : T.elapsed_ms; }
 unsigned svc_track_version(void) { return T.ver; }
+void svc_track_label(char *out, int n)
+{
+    uint32_t s = svc_track_elapsed_ms() / 1000;
+    if (s >= 3600) snprintf(out, (size_t)n, "REC %u:%02u:%02u", (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
+    else snprintf(out, (size_t)n, "REC %02u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+}

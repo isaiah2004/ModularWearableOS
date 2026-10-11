@@ -2,8 +2,9 @@
  *
  * Three pages in a horizontal pager (SCR_HDRAG; back swipe from the left edge):
  *   1 PRESSURE  hPa in dot-matrix, 3 h trend, 24 h dot chart whose "now" column is
- *               topped by the screen's one red dot; a storm warning (red) when it falls
- *               > 3 hPa in 3 h.
+ *               topped by the screen's one red dot; when it falls > 3 hPa in 3 h a
+ *               red dot + [ STORM ] line fades in above the (kept) trend line and
+ *               takes the red.
  *   2 ALTITUDE  metres, sea-level reference, CALIBRATE pushes the sea-level picker
  *               (scr_baro_cal: drag / - + with auto-repeat, Use GPS when the GPS has a
  *               3D fix, Set; back = cancel).
@@ -118,7 +119,7 @@ static void btn(gfx_fb *fb, float cx, float cy, float w, const char *label, int 
 static void round_btn(gfx_fb *fb, float cx, float cy, float r, int icon, int pressed)
 {
     gfx_fill_circle(fb, cx, cy, r, pressed ? C_SEC : C_SURF2);
-    dot_icon(fb, icon, cx, cy, 4.0f, 3.2f, pressed ? C_BG : C_PRI);
+    dot_icon(fb, icon, cx, cy, 5.0f, 3.0f, pressed ? C_BG : C_PRI);   /* 2 px gaps: dots, not a line */
 }
 
 /* ------------------------------------------------------------- state */
@@ -132,8 +133,8 @@ static struct {
     int ncols;
     float lo, hi;            /* chart range */
     float d3h; int have3h;   /* change over 3 h */
-    int storm;
-    float sea;               /* derived sea-level reference */
+    int storm; float storm_t; int hist_read;
+    float sea;               /* sea-level reference shown (stable, see s_sea) */
     pager pg;
     float t0;                /* entry build start */
     mval m_hpa, m_alt, m_temp;
@@ -144,6 +145,18 @@ static struct {
 } B;
 
 enum { P_NONE = 0, P_CAL, P_MINUS, P_PLUS, P_GPS, P_SET };
+
+/* The reference the altimeter uses. It is derived from pressure + altitude, which
+ * wobbles in the last digit, so it only follows a real change (> 0.35 hPa) or a Set. */
+static float s_sea;
+
+static float q8(float k) { return floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f; }
+static uint16_t fadec(uint16_t c, float k) { return k >= 1.0f ? c : ui_mix(C_BG, c, k); }
+/* a label whose text already has the right case (units keep theirs) */
+static int lbl(gfx_fb *fb, int x, int y, const char *s, uint16_t col, int align)
+{
+    return ui_text(fb, UI_F_LABEL, x, y, s, col, align, 2);
+}
 
 static float alt_from(float p, float p0)
 {
@@ -210,7 +223,9 @@ static void read_history(void)
         B.d3h = now - B.hist[B.nhist - 1 - 18];
     } else B.d3h = 0;
     if (storm_knob()) { B.have3h = 1; B.d3h = -3.6f; }
-    B.storm = B.have3h && B.d3h < -3.0f;
+    int storm = B.have3h && B.d3h < -3.0f;
+    if (storm != B.storm) { B.storm = storm; B.storm_t = B.hist_read ? nos_t : -10; }   /* fades unless on entry */
+    B.hist_read = 1;
 }
 
 static void fmt1(char *o, int n, float v) { snprintf(o, (size_t)n, "%.1f", (double)(floorf(v * 10.0f + 0.5f) / 10.0f)); }
@@ -218,10 +233,13 @@ static void fmt1(char *o, int n, float v) { snprintf(o, (size_t)n, "%.1f", (doub
 static void refresh_values(void)
 {
     char t[16];
-    B.sea = sea_from(B.env.pressure_hpa, B.env.altitude_m);
+    float d = sea_from(B.env.pressure_hpa, B.env.altitude_m);
+    if (s_sea <= 0 || fabsf(d - s_sea) > 0.35f) s_sea = d;
+    B.sea = s_sea;
     fmt1(t, sizeof t, B.env.pressure_hpa); mv_set(&B.m_hpa, t, 0.28f);
     snprintf(t, sizeof t, "%d", (int)lroundf(B.env.altitude_m)); mv_set(&B.m_alt, t, 0.28f);
-    snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(B.env.temp_c * 10.0f + 0.5f) / 10.0f)); mv_set(&B.m_temp, t, 0.28f);
+    float tc = nos_prefs.units_metric ? B.env.temp_c : B.env.temp_c * 9.0f / 5.0f + 32.0f;
+    snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(tc * 10.0f + 0.5f) / 10.0f)); mv_set(&B.m_temp, t, 0.28f);
 }
 
 static void baro_enter(void)
@@ -239,6 +257,7 @@ static void baro_enter(void)
     B.t0 = nos_t + IRIS_LAG;
     B.hist_t = -100; B.val_t = -100;
     B.saved_t = -100;
+    B.storm_t = -10;
 }
 
 static void baro_tick(float dt)
@@ -261,20 +280,25 @@ static void page_pressure(gfx_fb *fb)
     /* trend row */
     char t[40];
     int icon; const char *word;
-    if (!B.have3h) { icon = 0; word = "TREND IN 3 H"; }
+    if (!B.have3h) { icon = 0; word = "TREND IN 3 h"; }
     else if (B.d3h > 1.0f) { icon = DOT_ICON_ARROW_UP; word = "RISING"; }
     else if (B.d3h < -1.0f) { icon = DOT_ICON_ARROW_DOWN; word = "FALLING"; }
     else { icon = DOT_ICON_ARROW_RIGHT; word = "STEADY"; }
-    if (B.storm) {
-        ui_state(fb, UI_CX, 118, "STORM WARNING", C_RED);          /* the screen's one red */
-    } else {
-        if (B.have3h) snprintf(t, sizeof t, "%s %+.1f / 3H", word, (double)B.d3h);
-        else snprintf(t, sizeof t, "%s", word);
-        int w = ui_text_width(UI_F_LABEL, t, 2) + (icon ? 24 : 0);
-        int x = UI_CX - w / 2;
-        if (icon) dot_icon(fb, icon, x + 8, 112, 1.8f, 1.5f, C_PRI);
-        ui_label(fb, x + (icon ? 24 : 0), 118, t, C_SEC, UI_LEFT);
+    /* storm: a red dot + [ STORM ] above the trend line (the screen's one red),
+     * fading in / out over 0.2 s; the trend that triggered it stays readable */
+    float su = (nos_t - B.storm_t) / 0.2f;
+    float sk = q8(B.storm ? su : 1.0f - su);
+    if (sk > 0) {
+        int w = ui_text_width(UI_F_LABEL, "[ STORM ]", 2) + 20;
+        dot_disc(fb, UI_CX - w / 2 + 4, 98 - 6, 9, fadec(C_RED, sk));
+        ui_label(fb, UI_CX - w / 2 + 20, 98, "[ STORM ]", fadec(C_PRI, sk), UI_LEFT);
     }
+    if (B.have3h) snprintf(t, sizeof t, "%s %+.1f hPa / 3 h", word, (double)B.d3h);
+    else snprintf(t, sizeof t, "%s", word);
+    int tw = ui_text_width(UI_F_LABEL, t, 2) + (icon ? 24 : 0);
+    int tx = UI_CX - tw / 2;
+    if (icon) dot_icon(fb, icon, tx + 8, 116, 1.8f, 1.5f, C_PRI);
+    lbl(fb, tx + (icon ? 24 : 0), 122, t, C_SEC, UI_LEFT);
     /* hero */
     dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
     mv_draw(fb, &st, UI_CX, 142, &B.m_hpa, b);
@@ -294,7 +318,7 @@ static void page_pressure(gfx_fb *fb)
     int cells = (v[NCOL - 1] * CROWS + 127) / 255;
     if (cells > 0) {
         float cx = x0 + (NCOL - 1) * pitch + pitch * 0.5f, cy = y0 + (CROWS - cells) * pitch + pitch * 0.5f;
-        dot_disc(fb, cx, cy, d + 1.0f, B.storm ? C_WHITE : C_RED);
+        dot_disc(fb, cx, cy, d + 1.0f, ui_mix(C_RED, C_WHITE, sk));
     }
     ui_label(fb, (int)x0, 370, "-24H", C_DIS, UI_LEFT);
     ui_label(fb, (int)(x0 + NCOL * pitch), 370, "NOW", C_DIS, UI_RIGHT);
@@ -306,7 +330,7 @@ static void page_altitude(gfx_fb *fb)
     float b = build_of();
     dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
     mv_draw(fb, &st, UI_CX, 118, &B.m_alt, b);
-    ui_label(fb, UI_CX, 228, "METRES", C_SEC, UI_CENTER);
+    lbl(fb, UI_CX, 228, "m", C_SEC, UI_CENTER);
     char t[40];
     if (nos_t - B.saved_t < 1.6f) ui_state(fb, UI_CX, 284, "SAVED", C_PRI);
     else {
@@ -320,10 +344,15 @@ static void page_local(gfx_fb *fb)
 {
     ui_title(fb, "LOCAL", 0);
     float b = build_of();
-    /* the number and its degree are centred as a group; the unit sits under it */
+    /* the number, its degree ring and the unit letter hung top-right (as Weather's
+     * hero) are centred as one group */
     dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
-    mv_draw(fb, &st, UI_CX, 118, &B.m_temp, b);
-    ui_label(fb, UI_CX, 222, nos_prefs.units_metric ? "TEMPERATURE C" : "TEMPERATURE F", C_SEC, UI_CENTER);
+    const char *unit = nos_prefs.units_metric ? "C" : "F";
+    int wh = dot_text_width(&st, B.m_temp.cur), wu = 6 + ui_text_width(UI_F_LABEL, unit, 2);
+    float hx = UI_CX - wu * 0.5f;
+    mv_draw(fb, &st, hx, 118, &B.m_temp, b);
+    if (b >= 0.5f) ui_label(fb, (int)(hx + wh * 0.5f + 6), 118 + 14, unit, C_SEC, UI_LEFT);
+    ui_label(fb, UI_CX, 222, "TEMPERATURE", C_SEC, UI_CENTER);
     /* humidity as 20 whole dots (5% each) */
     float h = m_clamp(B.env.humidity, 0, 100);
     const float pitch = 14.0f;
@@ -402,6 +431,7 @@ static struct {
     int drag; float last_dy, acc;
     int gps_ok; float gps_alt, gps_t;   /* gps_t: when the fix arrived (enable fade) */
     hal_env env;
+    char alt_txt[24];
 } K;
 
 static void cal_show(void)
@@ -423,10 +453,11 @@ static void cal_enter(void)
 {
     memset(&K, 0, sizeof K);
     hal_env_get(&K.env);
-    float sea = sea_from(K.env.pressure_hpa, K.env.altitude_m);
+    float sea = s_sea > 0 ? s_sea : sea_from(K.env.pressure_hpa, K.env.altitude_m);   /* what the page showed */
     K.v = floorf((sea > 800 ? sea : 1013.25f) * 10.0f + 0.5f) / 10.0f;
     cal_show();
     K.m.t0 = -10;
+    snprintf(K.alt_txt, sizeof K.alt_txt, "ALTITUDE %d", (int)lroundf(alt_from(K.env.pressure_hpa, K.v)));
     K.t0 = nos_t;
     K.gps_t = -10;
     hal_gps_enable(1);
@@ -451,6 +482,7 @@ static void cal_tick(float dt)
         }
     }
     if ((K.pressed == P_SET || K.pressed == P_GPS) && K.press_until > 0 && nos_t > K.press_until) K.pressed = 0;
+    snprintf(K.alt_txt, sizeof K.alt_txt, "ALTITUDE %d", (int)lroundf(alt_from(K.env.pressure_hpa, K.v)));
 }
 
 static void cal_draw(gfx_fb *fb)
@@ -462,9 +494,7 @@ static void cal_draw(gfx_fb *fb)
     ui_text(fb, UI_F_LABEL, UI_CX, 200, "hPa", C_SEC, UI_CENTER, 2);
     round_btn(fb, UI_CX - PM_DX, PM_Y, 34, DOT_ICON_MINUS, K.pressed == P_MINUS);
     round_btn(fb, UI_CX + PM_DX, PM_Y, 34, DOT_ICON_PLUS, K.pressed == P_PLUS);
-    char t[24];
-    snprintf(t, sizeof t, "ALTITUDE %d", (int)lroundf(alt_from(K.env.pressure_hpa, K.v)));
-    ui_label_unit(fb, UI_CX, 316, t, "m", C_DIS, UI_CENTER);
+    ui_label_unit(fb, UI_CX, 316, K.alt_txt, "m", C_DIS, UI_CENTER);
     /* both buttons always: Use GPS waits disabled for a 3D fix, then fades in place */
     float gk = K.gps_ok ? m_clamp((nos_t - K.gps_t) / 0.15f, 0, 1) : 0;
     btn(fb, UI_BTN_PAIR_X0, UI_BTN_Y, UI_BTN_PAIR_W, "Use GPS", 0, K.pressed == P_GPS && K.gps_ok, gk);
@@ -504,6 +534,7 @@ static int cal_input(const nos_input *in)
             K.press_until = nos_t + 0.1f;
         } else if (h == P_SET) {
             hal_env_set_sea_level(K.v);
+            s_sea = K.v; B.sea = K.v;
             B.saved_t = nos_t;
             nos_feedback(FB_SUCCESS);
             K.press_until = nos_t + 0.1f;

@@ -12,7 +12,10 @@
  * per dot). A moving dial repaints the dial's box (bus-bound ~20 ms).
  *
  * States: module absent; needs calibration (figure-8 prompt + dot progress ring);
- * dial (tap: field strength + Calibrate + the Level hint); level (long press toggles). */
+ * dial (tap: field strength + Calibrate + the Level hint, crossfaded; dial labels and
+ * ticks recede where they pass the Calibrate pill); level (long press toggles, with a
+ * dot hold ring filling round the bezel). The level readout is read off the bubble
+ * the user sees, so the number, the bubble and [ FLAT ] always agree. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -36,9 +39,9 @@
 #define N_TICK   72
 #define IRIS_LAG 0.17f      /* iris entries start their build at 40% of the iris */
 
-/* details: Calibrate button */
-#define CAL_W    150
-#define CAL_Y    336
+#define LONG_S   0.45f      /* the engine's long press */
+#define R_HOLD   222.0f     /* hold ring: the band between the ticks and the glass */
+#define SWAP_OUT 0.12f      /* dial <-> level: the old face fades out this long first */
 
 enum { M_ABSENT = 0, M_CAL, M_CAL_DONE, M_DIAL, M_LEVEL };
 
@@ -63,7 +66,14 @@ static struct {
     float tilt_x, tilt_y;  /* degrees */
     int level_ok;
     float bub_x, bub_y;    /* quantised bubble offset */
+    float tilt_shown;      /* degrees, read off the bubble */
+    float flat_t;          /* when level_ok last changed (crossfade) */
+    int level_init;
+    float det_k;           /* details crossfade 0..1 (cardinal out, then details in) */
+    int hold; float hold_t0, hold_p;   /* long-press hold ring */
+    int out_mode; float out_t, out_hold;   /* the face fading out after a dial <-> level swap */
 } C;
+static int S_OLD;          /* draw: the face being drawn is the outgoing one (fully built) */
 
 /* ------------------------------------------------------------- helpers */
 static int rows_hit(const gfx_fb *fb, float y0, float y1)
@@ -84,6 +94,15 @@ static float wrap360(float a)
     a = fmodf(a, 360.0f);
     return a < 0 ? a + 360.0f : a;
 }
+static float q8(float k) { return floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f; }
+static uint16_t fadec(uint16_t c, float k) { return k >= 1.0f ? c : ui_mix(C_BG, c, k); }
+/* distance from (x, y) to the edge of the details' Calibrate pill (§8 single button) */
+static float pill_clear(float x, float y)
+{
+    float dx = fabsf(x - UI_CX) - (UI_BTN_W / 2 - UI_BTN_H / 2), dy = y - UI_BTN_Y;
+    if (dx < 0) dx = 0;
+    return gfx_fast_sqrt(dx * dx + dy * dy) - UI_BTN_H / 2;
+}
 
 static const char *cardinal8(float h)
 {
@@ -98,9 +117,22 @@ static void set_mode(int m)
     C.mode = m;
     C.t_mode = nos_t;
     C.build = 0;
-    C.details = 0;
     C.pressed = 0;
+    C.hold = 0; C.hold_p = 0;
+    C.out_t = -10;
+    /* the face being left keeps its state for its fade-out; the one entered starts clean */
+    if (m == M_DIAL) { C.details = 0; C.det_k = 0; }
+    if (m == M_LEVEL) { C.level_ok = 0; C.flat_t = -10; C.level_init = 1; }
     nos_invalidate();
+}
+/* dial <-> level: the old face fades out, then the new one builds in */
+static void swap_mode(int m)
+{
+    int from = C.mode;
+    float hp = C.hold_p;
+    set_mode(m);
+    C.out_mode = from; C.out_t = nos_t; C.out_hold = hp;
+    C.t_mode = nos_t + SWAP_OUT;
 }
 
 static void start_cal(int manual)
@@ -178,16 +210,24 @@ static void tick_level(float dt)
     C.tilt_x = tx; C.tilt_y = ty;
     /* the bubble floats uphill: opposite the gravity vector's tilt; 1 deg = 6 px */
     float px = m_clamp(-tx * 6.0f, -122.0f, 122.0f), py = m_clamp(ty * 6.0f, -122.0f, 122.0f);
-    float r = sqrtf(px * px + py * py);
+    float r = gfx_fast_sqrt(px * px + py * py);
     if (r > 112.0f) { px *= 112.0f / r; py *= 112.0f / r; }
+    if (C.level_init) { msp_init(&C.bx, px, SPRING_SNAPPY); msp_init(&C.by, py, SPRING_SNAPPY); }   /* no glide from the centre */
     msp_to(&C.bx, px); msp_to(&C.by, py);
     msp_step(&C.bx, dt); msp_step(&C.by, dt);
     C.bub_x = floorf(C.bx.x * 2.0f + 0.5f) / 2.0f;
     C.bub_y = floorf(C.by.x * 2.0f + 0.5f) / 2.0f;
-    /* FLAT follows the bubble the user sees, not the raw tilt */
-    int ok = sqrtf(C.bub_x * C.bub_x + C.bub_y * C.bub_y) < 6.0f;
-    if (ok && !C.level_ok) nos_feedback(FB_TICK);
+    /* the readout and FLAT follow the bubble the user sees (6 px per degree); a bubble
+     * pinned at the ring falls back to the raw tilt */
+    float rb = gfx_fast_sqrt(C.bub_x * C.bub_x + C.bub_y * C.bub_y);
+    C.tilt_shown = rb < 111.0f ? rb / 6.0f : gfx_fast_sqrt(tx * tx + ty * ty);
+    int ok = C.level_ok ? rb < 9.0f : rb < 6.0f;          /* 1.0 deg in, 1.5 deg out */
+    if (ok != C.level_ok) {
+        if (ok && !C.level_init) nos_feedback(FB_TICK);
+        C.flat_t = C.level_init ? -10 : nos_t;
+    }
     C.level_ok = ok;
+    C.level_init = 0;
 }
 
 static void compass_tick(float dt)
@@ -203,6 +243,13 @@ static void compass_tick(float dt)
         else set_mode(M_DIAL);
     }
     float age = nos_t - C.t_mode;
+    /* hold ring: shows from 0.1 s, full at the long press; a released hold unwinds */
+    if (C.hold) C.hold_p = m_clamp((nos_t - C.hold_t0 - 0.1f) / (LONG_S - 0.1f), 0, 1);
+    else if (C.hold_p > 0) C.hold_p = m_clamp(C.hold_p - dt / 0.15f, 0, 1);
+    C.hold_p = floorf(C.hold_p * 60.0f) / 60.0f;
+    float dw = C.details ? 1.0f : 0.0f;
+    if (C.det_k < dw) C.det_k = fminf(dw, C.det_k + dt / 0.2f);
+    else if (C.det_k > dw) C.det_k = fmaxf(dw, C.det_k - dt / 0.2f);
     switch (C.mode) {
     case M_CAL: {
         float p = m_clamp(C.mag.cal_progress, 0, 1);
@@ -243,9 +290,10 @@ static void compass_tick(float dt)
 /* ------------------------------------------------------------- dial */
 static void dial_draw(gfx_fb *fb)
 {
-    const float H = C.shown, b = C.build;
+    const float H = C.shown, b = S_OLD ? 1.0f : C.build;
+    const float dq = q8(2.0f * C.det_k - 1.0f);           /* the details pill is in */
     if (fb->rec) {
-        unsigned h = gfx_hash_f(gfx_hash_f(0xC0A5u, H), floorf(b * 64.0f));
+        unsigned h = gfx_hash_f(gfx_hash_f(gfx_hash_f(0xC0A5u, H), floorf(b * 64.0f)), dq);
         int e = (int)(R_TICK + 6.0f);
         gfx_rec_cmd(fb, UI_CX - e, UI_CY - e, UI_CX + e, UI_CY + e, h);
         return;
@@ -266,7 +314,11 @@ static void dial_draw(gfx_fb *fb)
             else if (i % 2 == 0) { d = 4.0f; col = C_SEC; }
             else { d = 3.2f; col = C_DIS; }
             d *= g;
-            if (rows_hit(fb, y - d, y + d)) dot_disc(fb, x, y, d, col);
+            if (dq > 0) {          /* ticks by the pill's corners recede */
+                float e = q8(1.0f - dq * (1.0f - m_clamp((pill_clear(x, y) - d * 0.5f - 2.0f) / 8.0f, 0, 1)));
+                col = e > 0 ? fadec(col, e) : 0;
+            }
+            if (col && rows_hit(fb, y - d, y + d)) dot_disc(fb, x, y, d, col);
         }
         float ns = s * cs + c * ss, nc = c * cs - s * ss;
         s = ns; c = nc;
@@ -280,18 +332,21 @@ static void dial_draw(gfx_fb *fb)
         if (g <= 0) continue;
         float a = ((float)(k * 30) - H) * DEG2RAD;
         float sn = gfx_fast_sin(a), cn = gfx_fast_cos(a);
+        float rr = k % 3 == 0 ? R_CARD : R_NUM;
+        float x = UI_CX + sn * rr, y = UI_CY - cn * rr;
+        /* labels passing the details pill fade out before they reach it (never sliced) */
+        float e = dq > 0 ? q8(1.0f - dq * (1.0f - m_clamp((pill_clear(x, y) - 15.0f) / 16.0f, 0, 1))) : 1.0f;
+        if (e <= 0) continue;
         if (k % 3 == 0) {
             static const char *card[] = { "N", "E", "S", "W" };
-            float x = UI_CX + sn * R_CARD, y = UI_CY - cn * R_CARD;
             if (!rows_hit(fb, y - 16, y + 16)) continue;
-            cs_st.color = k == 0 ? C_WHITE : C_PRI;
+            cs_st.color = fadec(k == 0 ? C_WHITE : C_PRI, e);
             dot_text_anim(fb, &cs_st, x, y - 14.7f, card[k / 3], 1, g, DOT_REVEAL_CENTER, 1u);
         } else {
-            float x = UI_CX + sn * R_NUM, y = UI_CY - cn * R_NUM;
             if (g < 1 || !rows_hit(fb, y - 10, y + 10)) continue;
             char t[4];
             snprintf(t, sizeof t, "%d", k * 30);
-            ui_text(fb, UI_F_SMALL, (int)lroundf(x), (int)lroundf(y + 5), t, C_SEC, UI_CENTER, 0);
+            ui_text(fb, UI_F_SMALL, (int)lroundf(x), (int)lroundf(y + 5), t, fadec(C_SEC, e), UI_CENTER, 0);
         }
     }
 }
@@ -308,20 +363,41 @@ static void lubber_draw(gfx_fb *fb)
 static void readout_draw(gfx_fb *fb)
 {
     dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
-    float p = m_clamp((C.build - 0.2f) / 0.8f, 0, 1);
+    float p = S_OLD ? 1.0f : m_clamp((C.build - 0.2f) / 0.8f, 0, 1);
     float mp = (nos_t - C.ro_t0) / 0.28f;
     /* the number and its degree mark are centred as one group */
     if (p < 1) dot_text_anim(fb, &st, UI_CX, UI_CY - 52, C.ro_cur, 1, p, DOT_REVEAL_RANDOM, 7u);
     else if (mp < 1) dot_text_morph(fb, &st, UI_CX, UI_CY - 52, C.ro_prev, C.ro_cur, 1, mp);
     else dot_text_a(fb, &st, UI_CX, UI_CY - 52, C.ro_cur, 1);
-    if (C.details) {
-        ui_label(fb, UI_CX, 150, "HOLD FOR LEVEL", C_DIS, UI_CENTER);
+    /* tap: the cardinal fades out, then the details fade in (and back) */
+    float ck = q8(1.0f - 2.0f * C.det_k), dk = q8(2.0f * C.det_k - 1.0f);
+    if (dk > 0) {
+        ui_label(fb, UI_CX, 150, "HOLD FOR LEVEL", fadec(C_DIS, dk), UI_CENTER);
         char v[12];
         snprintf(v, sizeof v, "FIELD %d", (int)lroundf(C.mag.field_ut));
-        ui_label_unit(fb, UI_CX, UI_CY + 52, v, "uT", C_SEC, UI_CENTER);
-        ui_button(fb, UI_CX, CAL_Y, CAL_W, UI_BTN_H, "Calibrate", BTN_SECONDARY, C.pressed);
-    } else if (p > 0) {
-        ui_label(fb, UI_CX, UI_CY + 60, cardinal8(C.shown), C_SEC, UI_CENTER);
+        ui_label_unit(fb, UI_CX, UI_CY + 52, v, "uT", fadec(C_SEC, dk), UI_CENTER);
+        uint16_t fill = C.pressed ? C_SEC : C_SURF2, ink = C.pressed ? C_BG : C_PRI;
+        ui_rrect(fb, UI_CX - UI_BTN_W / 2, UI_BTN_Y - UI_BTN_H / 2, UI_BTN_W, UI_BTN_H, UI_BTN_H / 2, fadec(fill, dk));
+        ui_label(fb, UI_CX, UI_BTN_Y + UI_F_LABEL->ascent / 2 - 2, "Calibrate", fadec(ink, dk), UI_CENTER);
+    } else if (p > 0 && ck > 0) {
+        ui_label(fb, UI_CX, UI_CY + 60, cardinal8(C.shown), fadec(C_SEC, ck), UI_CENTER);
+    }
+}
+
+/* long press: dots fill clockwise round the bezel band from 12 o'clock (past the
+ * lubber) and reach the end as the press fires; each dot is its own small command */
+static void hold_ring_draw(gfx_fb *fb)
+{
+    float hp = S_OLD ? C.out_hold : C.hold_p;
+    if (hp <= 0) return;
+    const int n = 60;
+    float lit = hp * (n - 1);
+    for (int i = 1; i < n; i++) {
+        float g = m_clamp(lit - (float)(i - 1), 0, 1);
+        if (g <= 0) break;
+        float a = (float)i / n * 2.0f * PI_F;
+        float x = UI_CX + gfx_fast_sin(a) * R_HOLD, y = UI_CY - gfx_fast_cos(a) * R_HOLD;
+        if (rows_hit(fb, y - 3, y + 3)) dot_disc(fb, x, y, 4.4f * g, C_WHITE);
     }
 }
 
@@ -366,11 +442,14 @@ static void cal_done_draw(gfx_fb *fb)
 static void level_draw(gfx_fb *fb)
 {
     ui_title(fb, "LEVEL", 0);
-    float b = C.build;
+    float b = S_OLD ? 1.0f : C.build;
     const float cy = UI_CY - 10;
     /* fixed scale: outer ring, 1 deg target ring, crosshair dots */
+    /* FLAT changes crossfade: the look goes white over 0.2 s, the readout swaps out-in */
+    float fu = (nos_t - C.flat_t) / 0.2f;
+    float lv = q8(C.level_ok ? fu : 1.0f - fu);
     ui_circle_line(fb, UI_CX, cy, 140, 2, C_LINE2);
-    ui_circle_line(fb, UI_CX, cy, 38, 2, C.level_ok ? C_WHITE : C_DIS);
+    ui_circle_line(fb, UI_CX, cy, 38, 2, ui_mix(C_DIS, C_WHITE, lv));
     for (int k = 1; k <= 4; k++) {
         float o = 38 + k * 20.4f;
         uint16_t col = C_LINE2;
@@ -378,22 +457,44 @@ static void level_draw(gfx_fb *fb)
         dot_disc(fb, UI_CX, cy - o, 4, col); dot_disc(fb, UI_CX, cy + o, 4, col);
     }
     /* the bubble */
-    ui_circle(fb, UI_CX + C.bub_x, cy + C.bub_y, 26.0f * b, C.level_ok ? C_WHITE : C_PRI);
-    /* readout, clear of the ring (ring bottom y 363) */
-    float tilt = sqrtf(C.tilt_x * C.tilt_x + C.tilt_y * C.tilt_y);
-    if (C.level_ok) ui_state(fb, UI_CX, 398, "FLAT", C_PRI);
+    ui_circle(fb, UI_CX + C.bub_x, cy + C.bub_y, 26.0f * b, ui_mix(C_PRI, C_WHITE, lv));
+    /* readout, clear of the ring (ring bottom y 363): the old one out, then the new in */
+    float u = (nos_t - C.flat_t) / 0.1f;
+    int flat = u < 1.0f ? !C.level_ok : C.level_ok;
+    float k = u < 1.0f ? q8(1.0f - u) : q8(u - 1.0f);
+    if (k <= 0) return;
+    if (flat) ui_state(fb, UI_CX, 398, "FLAT", fadec(C_PRI, k));
     else {
         char t[16];
-        snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(tilt * 10 + 0.5f) / 10));
-        dot_style st = { DOT_FONT_TALL, 3.6f, 2.9f, C_PRI, 0, 1, 1 };   /* tall font: ring degree glyph */
+        snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(C.tilt_shown * 10 + 0.5f) / 10));
+        dot_style st = { DOT_FONT_TALL, 3.6f, 2.9f, fadec(C_PRI, k), 0, 1, 1 };   /* tall font: ring degree glyph */
         dot_text_a(fb, &st, UI_CX, 380, t, 1);
     }
 }
 
 /* ------------------------------------------------------------- draw / input */
+static void face_draw(gfx_fb *fb, int mode);
 static void compass_draw(gfx_fb *fb)
 {
-    switch (C.mode) {
+    /* dial <-> level: one full-screen command keyed by the fade (ink dim is not in the
+     * primitives' hashes), the old face dimmed by ink, then the level's rings fade in
+     * with its build (the dial has its own sweep) */
+    float u = nos_t - C.out_t, k = -1;
+    if (u < SWAP_OUT) k = q8(1.0f - u / SWAP_OUT);
+    else if (C.mode == M_LEVEL && C.build < 0.5f) k = q8(C.build * 2.0f);
+    if (k < 0) { face_draw(fb, C.mode); return; }
+    if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(gfx_hash_u(0xF0DEu, u < SWAP_OUT), k));
+    if (k <= 0) return;
+    int d0 = fb->dim;
+    nos_ink_dim(fb, k);
+    S_OLD = u < SWAP_OUT;
+    face_draw(fb, S_OLD ? C.out_mode : C.mode);
+    S_OLD = 0;
+    fb->dim = d0;
+}
+static void face_draw(gfx_fb *fb, int mode)
+{
+    switch (mode) {
     case M_ABSENT:
         ui_title(fb, "COMPASS", 0);
         ui_absent(fb, DOT_ICON_COMPASS, "Not connected", "Add the compass to see your heading",
@@ -405,14 +506,15 @@ static void compass_draw(gfx_fb *fb)
         dial_draw(fb);
         lubber_draw(fb);
         readout_draw(fb);
+        hold_ring_draw(fb);
         break;
-    case M_LEVEL: level_draw(fb); break;
+    case M_LEVEL: level_draw(fb); hold_ring_draw(fb); break;
     }
 }
 
 static int in_cal_button(int x, int y)
 {
-    return C.details && abs(x - UI_CX) < CAL_W / 2 + 4 && abs(y - CAL_Y) < UI_BTN_H / 2;
+    return C.details && C.det_k > 0.5f && abs(x - UI_CX) < UI_BTN_W / 2 + 4 && abs(y - UI_BTN_Y) < UI_BTN_H / 2;
 }
 
 static int compass_input(const nos_input *in)
@@ -420,11 +522,16 @@ static int compass_input(const nos_input *in)
     switch (in->type) {
     case IN_DOWN:
         C.pressed = C.mode == M_DIAL && in_cal_button(in->x, in->y);
+        if (!C.pressed && (C.mode == M_DIAL || C.mode == M_LEVEL)) { C.hold = 1; C.hold_t0 = nos_t; }
         return 1;
     case IN_UP:
-        C.pressed = 0;
+        C.pressed = 0; C.hold = 0;
         return 1;
+    case IN_DRAG_START:
+        C.hold = 0;
+        return 0;
     case IN_TAP:
+        C.hold = 0;
         if (C.mode == M_DIAL) {
             if (in_cal_button(in->x, in->y)) {
                 nos_feedback(FB_TAP);
@@ -437,8 +544,8 @@ static int compass_input(const nos_input *in)
         }
         return 0;
     case IN_LONG:
-        if (C.mode == M_DIAL) { set_mode(M_LEVEL); return 1; }
-        if (C.mode == M_LEVEL) { set_mode(M_DIAL); return 1; }
+        if (C.mode == M_DIAL) { swap_mode(M_LEVEL); return 1; }
+        if (C.mode == M_LEVEL) { swap_mode(M_DIAL); return 1; }
         return 0;
     default:
         return 0;

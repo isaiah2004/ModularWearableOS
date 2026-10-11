@@ -10,8 +10,13 @@
  *   2 TRACK   the recorded path as a dot polyline scaled to fit, you = red dot
  *   3 BACK    an arrow to the track's start (rotated by the compass when calibrated,
  *             else by the course over ground) and the distance.
- * A lost fix keeps the last values (dimmed, "[ NO FIX ] 0:12 AGO") for 30 s before the
- * sky plot returns. */
+ * A lost fix keeps the last values (dimmed and frozen, "[ NO FIX ] 0:12 AGO") for 30 s
+ * before the sky plot returns.
+ *
+ * State changes are never cuts: the sky builds out while the NOW page builds in
+ * (~250 ms); the header line and the action row (START / STOP / [ SAVED ]) crossfade
+ * through the colour-step ladder; the recorded distance counts over to a new value
+ * after a jump (refix). */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -38,6 +43,10 @@
 #define STALE_S 30.0f        /* lost fix: keep the last values this long */
 #define HOLD_S  0.6f         /* hold to stop a track */
 #define SUMMARY_S 3.0f
+#define FADE_S  0.15f        /* each half of a state crossfade (out, then in) */
+#define HDR_S   0.10f        /* each half of the header crossfade */
+#define NOW_LAG 0.08f        /* fix arrival: the NOW page starts this long after the sky */
+#define ARRIVE_S 0.17f       /* ... and builds in this long (all in ~250 ms) */
 
 /* ------------------------------------------------------------- pager */
 typedef struct { mspring sp; int n, page, dragging; float x0; } pager;
@@ -109,6 +118,10 @@ static void mv_draw(gfx_fb *fb, const dot_style *st, float x, float y, const mva
 }
 
 /* ------------------------------------------------------------- state */
+enum { H_NAV = 0, H_FIX, H_REC };                           /* header line kinds */
+enum { A_NONE = 0, A_START, A_START_DIS, A_STOP, A_SUMMARY };  /* action row kinds */
+enum { P_NONE = 0, P_REC };
+
 static struct {
     int present;
     hal_gps g;               /* this frame's reading */
@@ -118,7 +131,10 @@ static struct {
     int fixed;               /* g.valid now */
     int show_now;            /* NOW page instead of the sky (fixed or recently fixed) */
     int stale;               /* showing the last values without a fix */
-    float fix_t;             /* when the current fix arrived */
+    float dim;               /* 0 live .. 1 stale (8-step ramp) */
+    float fix_t;             /* when the current fix arrived (sky -> NOW) */
+    float lost_t;            /* when the stale values gave way to the sky */
+    int first;               /* first tick after entry */
     pager pg;
     float t0;                /* entry build */
     float sat_d[16];         /* displayed satellite dot size (grows in) */
@@ -128,8 +144,13 @@ static struct {
     int holding; float hold_t0; float hold_p;
     float hint_t;            /* "HOLD TO STOP" after a short tap */
     /* summary after stop */
-    int saved_state;         /* 0 none, 1 saved, 2 no card */
+    int saved_state;         /* 0 none, 1 saved, 2 no card, 3 too short */
     float saved_t; double sum_m; uint32_t sum_ms;
+    /* crossfades */
+    int hk, hk_prev; float hk_t;
+    int ak, ak_prev; float ak_t; uint16_t fill0; int pressed0;
+    /* recorded distance as shown (counts over a jump) */
+    double d_from, d_to, d_shown; float d_t0; int d_init;
     /* values (refreshed 1 Hz) */
     float val_t;
     mval m_speed, m_dist;
@@ -137,6 +158,7 @@ static struct {
     float (*dots)[2]; int ndots;
     unsigned track_ver, view_ver;
     float view_t;
+    float v_s, v_cx, v_cy;   /* local metres -> screen */
     float you_x, you_y; int have_you;
     float start_x, start_y;
     float scale_m;           /* metres per 100 px */
@@ -147,8 +169,16 @@ static struct {
     int head_src;            /* 0 north up, 1 compass, 2 course */
 } N;
 
-enum { P_NONE = 0, P_REC };
+/* track points in local metres (float), appended as the track grows */
+static struct { float (*xy)[2]; int n; double la0, lo0, k, kl; float minx, maxx, miny, maxy; } L;
 
+static float q8(float k) { return floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f; }
+static uint16_t fadec(uint16_t c, float k) { return k >= 1.0f ? c : ui_mix(C_BG, c, k); }
+/* a label whose text already has the right case (units keep theirs) */
+static int lbl(gfx_fb *fb, int x, int y, const char *s, uint16_t col, int align)
+{
+    return ui_text(fb, UI_F_LABEL, x, y, s, col, align, 2);
+}
 static int rows_hit(const gfx_fb *fb, float y0, float y1)
 {
     if (fb->rec) return 1;
@@ -176,74 +206,118 @@ static double bearing_deg(double la1, double lo1, double la2, double lo2)
 }
 static void fmt_dist(char *o, int n, double m)
 {
-    if (m < 1000) snprintf(o, (size_t)n, "%d M", (int)m);
-    else snprintf(o, (size_t)n, "%.2f KM", m / 1000.0);
+    if (m < 1000) snprintf(o, (size_t)n, "%d m", (int)m);
+    else snprintf(o, (size_t)n, "%.2f km", m / 1000.0);
 }
 
 /* ------------------------------------------------------------- track view */
-static void rebuild_track_view(void)
+static void loc_sync(void)
 {
     const svc_track_pt *P;
     int np = svc_track_points(&P);
+    if (np > SVC_TRACK_MAXPTS) np = SVC_TRACK_MAXPTS;
+    if (np <= 0) { L.n = 0; return; }
+    if (!L.xy) L.xy = (float (*)[2])hal_big_alloc(SVC_TRACK_MAXPTS * 2 * sizeof(float));
+    if (!L.xy) { L.n = 0; return; }
+    /* a new track (or the service halved a full one): start over */
+    if (np < L.n || (L.n && (P[0].lat != L.la0 || P[0].lon != L.lo0))) L.n = 0;
+    if (!L.n) {
+        L.la0 = P[0].lat; L.lo0 = P[0].lon;
+        L.k = cos(L.la0 * D2R) * D2R * EARTH_R; L.kl = D2R * EARTH_R;
+        L.minx = L.miny = 1e30f; L.maxx = L.maxy = -1e30f;
+    }
+    for (int i = L.n; i < np; i++) {             /* equirectangular metres around the first point */
+        float x = (float)((P[i].lon - L.lo0) * L.k), y = (float)((P[i].lat - L.la0) * L.kl);
+        L.xy[i][0] = x; L.xy[i][1] = y;
+        if (x < L.minx) L.minx = x;
+        if (x > L.maxx) L.maxx = x;
+        if (y < L.miny) L.miny = y;
+        if (y > L.maxy) L.maxy = y;
+    }
+    L.n = np;
+}
+
+#define VIEW_BOX 236.0f      /* px: the path fits the circle with margin */
+#define VIEW_SX  ((float)UI_CX)
+#define VIEW_SY  ((float)(UI_CY - 8))
+
+static void you_local(float *x, float *y)
+{
+    *x = (float)((N.last.lon - L.lo0) * L.k);
+    *y = (float)((N.last.lat - L.la0) * L.kl);
+}
+
+static void rebuild_track_view(void)
+{
+    loc_sync();
     N.ndots = 0; N.have_you = 0;
     N.view_ver++;
+    int np = L.n;
     if (np < 1) return;
     if (!N.dots) N.dots = (float (*)[2])hal_big_alloc(MAXDOTS * 2 * sizeof(float));
     if (!N.dots) return;
-    const hal_gps *g = &N.last;
-    /* equirectangular metres around the first point */
-    double la0 = P[0].lat, lo0 = P[0].lon, k = cos(la0 * D2R) * D2R * EARTH_R, kl = D2R * EARTH_R;
-    double minx = 1e18, maxx = -1e18, miny = 1e18, maxy = -1e18;
-    for (int i = 0; i < np; i++) {
-        double x = (P[i].lon - lo0) * k, y = (P[i].lat - la0) * kl;
-        minx = x < minx ? x : minx; maxx = x > maxx ? x : maxx;
-        miny = y < miny ? y : miny; maxy = y > maxy ? y : maxy;
-    }
+    float minx = L.minx, maxx = L.maxx, miny = L.miny, maxy = L.maxy;
     if (N.have_last) {
-        double x = (g->lon - lo0) * k, y = (g->lat - la0) * kl;
+        float x, y;
+        you_local(&x, &y);
         minx = x < minx ? x : minx; maxx = x > maxx ? x : maxx;
         miny = y < miny ? y : miny; maxy = y > maxy ? y : maxy;
     }
-    double span = maxx - minx > maxy - miny ? maxx - minx : maxy - miny;
+    float span = maxx - minx > maxy - miny ? maxx - minx : maxy - miny;
     if (span < 60) span = 60;
-    const double box = 236.0;                       /* px, fits the circle with margin */
-    double s = box / span, cx = (minx + maxx) / 2, cy = (miny + maxy) / 2;
-    N.scale_m = (float)(100.0 / s);
-    const float sx = UI_CX, sy = UI_CY - 8;
-    double len = 0;
+    float s = VIEW_BOX / span, cx = (minx + maxx) / 2, cy = (miny + maxy) / 2;
+    N.v_s = s; N.v_cx = cx; N.v_cy = cy;
+    N.scale_m = 100.0f / s;
+    /* resample the path at a fixed screen spacing (floats + fast sqrt: ~1 ms for 4096 points) */
+    float len = 0;
     for (int i = 1; i < np; i++) {
-        double ax = (P[i - 1].lon - lo0) * k, ay = (P[i - 1].lat - la0) * kl;
-        double bx = (P[i].lon - lo0) * k, by = (P[i].lat - la0) * kl;
-        len += sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay)) * s;
+        float dx = (L.xy[i][0] - L.xy[i - 1][0]) * s, dy = (L.xy[i][1] - L.xy[i - 1][1]) * s;
+        len += gfx_fast_sqrt(dx * dx + dy * dy);
     }
     float step = 9.0f;
-    if (len / step > MAXDOTS - 2) step = (float)(len / (MAXDOTS - 2));
-    float carry = 0;
+    if (len / step > MAXDOTS - 2) step = len / (MAXDOTS - 2);
+    float carry = 0, ax = 0, ay = 0;
     for (int i = 0; i < np; i++) {
-        float bx = (float)(sx + ((P[i].lon - lo0) * k - cx) * s);
-        float by = (float)(sy - ((P[i].lat - la0) * kl - cy) * s);
+        float bx = VIEW_SX + (L.xy[i][0] - cx) * s;
+        float by = VIEW_SY - (L.xy[i][1] - cy) * s;
         if (i == 0) {
             N.start_x = bx; N.start_y = by;
             N.dots[N.ndots][0] = bx; N.dots[N.ndots][1] = by; N.ndots++;
+            ax = bx; ay = by;
             continue;
         }
-        float ax = (float)(sx + ((P[i - 1].lon - lo0) * k - cx) * s);
-        float ay = (float)(sy - ((P[i - 1].lat - la0) * kl - cy) * s);
-        float dx = bx - ax, dy = by - ay, sl = sqrtf(dx * dx + dy * dy);
-        float t = step - carry;
-        while (t <= sl && N.ndots < MAXDOTS) {
-            N.dots[N.ndots][0] = floorf((ax + dx * t / sl) * 2 + 0.5f) / 2;
-            N.dots[N.ndots][1] = floorf((ay + dy * t / sl) * 2 + 0.5f) / 2;
-            N.ndots++;
-            t += step;
+        float dx = bx - ax, dy = by - ay, sl = gfx_fast_sqrt(dx * dx + dy * dy);
+        if (sl > 1e-3f) {
+            float t = step - carry, inv = 1.0f / sl;
+            while (t <= sl && N.ndots < MAXDOTS) {
+                N.dots[N.ndots][0] = floorf((ax + dx * t * inv) * 2 + 0.5f) / 2;
+                N.dots[N.ndots][1] = floorf((ay + dy * t * inv) * 2 + 0.5f) / 2;
+                N.ndots++;
+                t += step;
+            }
+            carry = sl - (t - step);
         }
-        carry = sl - (t - step);
+        ax = bx; ay = by;
     }
     if (N.have_last) {
-        N.you_x = floorf((float)(sx + ((g->lon - lo0) * k - cx) * s) + 0.5f);
-        N.you_y = floorf((float)(sy - ((g->lat - la0) * kl - cy) * s) + 0.5f);
+        float x, y;
+        you_local(&x, &y);
+        N.you_x = floorf(VIEW_SX + (x - cx) * s + 0.5f);
+        N.you_y = floorf(VIEW_SY - (y - cy) * s + 0.5f);
         N.have_you = 1;
     }
+}
+
+/* ~1 Hz: move the "you" dot on the current view; rebuild only if it left the box */
+static void you_place(void)
+{
+    if (!N.have_last || L.n < 1 || N.v_s <= 0) return;
+    float x, y;
+    you_local(&x, &y);
+    float px = VIEW_SX + (x - N.v_cx) * N.v_s, py = VIEW_SY - (y - N.v_cy) * N.v_s;
+    if (fabsf(px - VIEW_SX) > VIEW_BOX / 2 + 4 || fabsf(py - VIEW_SY) > VIEW_BOX / 2 + 4) { rebuild_track_view(); return; }
+    N.you_x = floorf(px + 0.5f); N.you_y = floorf(py + 0.5f);
+    N.have_you = 1;
 }
 
 /* ------------------------------------------------------------- lifecycle */
@@ -256,7 +330,9 @@ static void nav_enter(void)
     N.dots = dots;
     pg_init(&N.pg, NPAGE, page);
     N.t0 = nos_t + IRIS_LAG;
-    N.fix_t = -10; N.last_fix_t = -100; N.val_t = -100; N.saved_t = -100; N.hint_t = -100;
+    N.fix_t = -10; N.lost_t = -100; N.last_fix_t = -100; N.val_t = -100; N.saved_t = -100; N.hint_t = -100;
+    N.hk = -1; N.hk_t = -10; N.ak_t = -10;
+    N.first = 1;
     N.track_ver = svc_track_version() + 1;          /* force a first build of the view */
     msp_init(&N.arrow, 0, 0.32f, 0.9f);
     hal_gps_enable(1);
@@ -272,9 +348,33 @@ static void stop_track(void)
     N.sum_m = svc_track_distance();
     N.sum_ms = svc_track_elapsed_ms();
     int r = svc_track_stop();
-    N.saved_state = r > 0 ? 1 : 2;
+    N.saved_state = r > 0 ? 1 : r == 0 ? 2 : 3;
     N.saved_t = nos_t;
     nos_feedback(r > 0 ? FB_SUCCESS : FB_ERROR);
+}
+
+static int is_pill(int a) { return a == A_START || a == A_START_DIS || a == A_STOP; }
+static void pill_colors(int a, int pressed, uint16_t *fill, uint16_t *ink)
+{
+    switch (a) {
+    case A_START:     *fill = pressed ? C_SEC : C_WHITE; *ink = C_BG; break;
+    case A_START_DIS: *fill = C_SURF; *ink = C_DIS; break;                  /* waits for a fix */
+    default:          *fill = pressed ? C_SEC : C_SURF2; *ink = pressed ? C_BG : C_PRI; break;
+    }
+}
+
+static void tick_distance(void)
+{
+    double d = svc_track_distance();
+    if (!N.d_init) { N.d_from = N.d_to = N.d_shown = d; N.d_t0 = -10; N.d_init = 1; }
+    if (d != N.d_to) {
+        /* a jump (a refix after walking without one) counts over 0.3 s; 5 m steps just land */
+        N.d_from = fabs(d - N.d_shown) > 20.0 ? N.d_shown : d;
+        N.d_to = d; N.d_t0 = nos_t;
+    }
+    float u = m_clamp((nos_t - N.d_t0) / 0.3f, 0, 1);
+    u = 1.0f - (1.0f - u) * (1.0f - u);
+    N.d_shown = N.d_from + (N.d_to - N.d_from) * u;
 }
 
 static void nav_tick(float dt)
@@ -286,6 +386,10 @@ static void nav_tick(float dt)
     int was = N.fixed;
     N.fixed = N.g.valid;
     if (N.fixed) { N.last = N.g; N.have_last = 1; N.last_fix_t = nos_t; }
+    if (N.first) {                      /* a fix that is already there on entry is not an arrival */
+        N.first = 0;
+        if (N.fixed) { N.show_now = 1; was = 1; N.val_t = -100; }
+    }
     if (N.fixed && !was) {
         if (!N.show_now) { N.fix_t = nos_t; nos_feedback(FB_SUCCESS); }   /* sky -> NOW */
         N.val_t = -100;
@@ -293,7 +397,11 @@ static void nav_tick(float dt)
     int prev_now = N.show_now;
     N.stale = !N.fixed && N.have_last && nos_t - N.last_fix_t < STALE_S;
     N.show_now = N.fixed || N.stale;
-    if (prev_now && !N.show_now) N.t0 = nos_t;      /* back to the sky after 30 s: rebuild it */
+    if (prev_now && !N.show_now) { N.lost_t = nos_t; N.t0 = nos_t + FADE_S * 0.66f; }  /* NOW out, sky in */
+    /* stale values dim in 8 steps (and back on a refix) */
+    float dw = N.stale ? 1.0f : 0.0f;
+    if (N.dim < dw) N.dim = fminf(dw, N.dim + dt / 0.2f);
+    else if (N.dim > dw) N.dim = fmaxf(dw, N.dim - dt / 0.2f);
     /* satellites grow in / out */
     for (int i = 0; i < 16; i++) {
         float t = i < N.g.nsnr && N.g.snr[i] ? 5.0f + N.g.snr[i] * 0.28f : 0.0f;
@@ -301,28 +409,44 @@ static void nav_tick(float dt)
         if (fabsf(t - N.sat_d[i]) < 0.15f) N.sat_d[i] = t;
         N.sat_d[i] = floorf(N.sat_d[i] * 4 + 0.5f) / 4;
     }
-    /* values at 1 Hz */
-    if (N.have_last && nos_t - N.val_t >= 1.0f) {
+    /* values at 1 Hz; frozen while the fix is lost */
+    if (N.have_last && !N.stale && nos_t - N.val_t >= 1.0f) {
         N.val_t = nos_t;
         char t[16];
         float v = N.last.speed_mps * (nos_prefs.units_metric ? 3.6f : 2.23694f);
         snprintf(t, sizeof t, "%.1f", (double)(floorf(v * 10 + 0.5f) / 10));
         mv_set(&N.m_speed, t);
     }
-    /* track view: rebuild when a point lands, and ~1 Hz for the "you" dot */
+    tick_distance();
+    /* track view: rebuild when a point lands; move the "you" dot ~1 Hz */
     unsigned tv = svc_track_version();
-    if (tv != N.track_ver || (svc_track_points(0) && nos_t - N.view_t > 1.0f)) {
-        N.track_ver = tv; N.view_t = nos_t;
-        rebuild_track_view();
-    }
+    if (tv != N.track_ver) { N.track_ver = tv; N.view_t = nos_t; rebuild_track_view(); }
+    else if (svc_track_points(0) && !N.stale && nos_t - N.view_t > 1.0f) { N.view_t = nos_t; you_place(); }
     if (pg_tick(&N.pg, dt)) N.hint_t = -100;
-    /* hold to stop */
+    /* hold to stop; a released hold unwinds */
+    int held = 0;                                    /* the hold just completed under the finger */
     if (N.holding) {
         N.hold_p = m_clamp((nos_t - N.hold_t0) / HOLD_S, 0, 1);
         N.hold_p = floorf(N.hold_p * 40.0f) / 40.0f;
-        if (N.hold_p >= 1.0f) { N.holding = 0; N.pressed = 0; stop_track(); }
-    }
+        if (N.hold_p >= 1.0f) { N.holding = 0; N.pressed = 0; held = 1; stop_track(); }
+    } else if (N.ak == A_STOP && N.hold_p > 0) {
+        N.hold_p = floorf(m_clamp(N.hold_p - dt / 0.15f, 0, 1) * 40.0f) / 40.0f;
+    } else if (N.ak != A_STOP && nos_t - N.ak_t > FADE_S) N.hold_p = 0;
     if (N.pressed && N.press_until > 0 && nos_t > N.press_until && !N.holding) { N.pressed = 0; N.press_until = 0; }
+    /* header and action row: crossfade on a change of kind */
+    int hk = svc_track_active() ? H_REC : (N.show_now && !N.stale) ? H_FIX : H_NAV;
+    if (N.hk < 0) N.hk = N.hk_prev = hk;
+    else if (hk != N.hk) { N.hk_prev = N.hk; N.hk = hk; N.hk_t = nos_t; }
+    int ak = !N.show_now ? A_NONE : svc_track_active() ? A_STOP :
+             N.saved_state && nos_t - N.saved_t < SUMMARY_S ? A_SUMMARY : N.stale ? A_START_DIS : A_START;
+    if (ak != N.ak) {
+        uint16_t f, i;
+        N.pressed0 = N.pressed == P_REC || held;
+        pill_colors(N.ak, N.pressed0, &f, &i);
+        N.fill0 = f;                                 /* the pill's colour at the change */
+        N.ak_prev = N.ak; N.ak = ak;
+        N.ak_t = N.ak_prev == A_NONE ? -10 : nos_t;  /* arriving with the page: no fade */
+    }
     /* back to start */
     const svc_track_pt *P;
     int np = svc_track_points(&P);
@@ -339,7 +463,7 @@ static void nav_tick(float dt)
         if (fabsf(d) > 0.5f) msp_to(&N.arrow, N.arrow.target + d);
         msp_step(&N.arrow, dt);
         N.arrow_q = floorf(N.arrow.x * 2 + 0.5f) / 2;
-        if (nos_t - N.val_t < dt * 1.5f) {        /* same 1 Hz beat as the speed */
+        if (!N.stale && nos_t - N.val_t < dt * 1.5f) {   /* same 1 Hz beat as the speed */
             char t[16];
             if (N.home_dist < 1000) snprintf(t, sizeof t, "%d", (int)(lround(N.home_dist / 5) * 5));
             else snprintf(t, sizeof t, "%.1f", N.home_dist / 1000.0);
@@ -352,36 +476,51 @@ static void nav_tick(float dt)
 /* ------------------------------------------------------------- shared chrome */
 static float build_at(float delay) { return m_clamp((nos_t - N.t0 - delay) / UI_ENTRY_S, 0, 1); }
 
-/* The header slot (title line): recording state, fix state or the screen title. The
- * recording dot is red only where nothing else claims the screen's one red. */
+/* The header slot (title line) in one of its kinds at fade k. The recording dot is
+ * red only where nothing else claims the screen's one red. */
+static void header_kind(gfx_fb *fb, int kind, int red, const char *title, float k)
+{
+    if (k <= 0) return;
+    char t[48];
+    if (kind == H_REC) {
+        char l[20], m[16];
+        svc_track_label(l, sizeof l);
+        fmt_dist(m, sizeof m, N.d_shown);
+        snprintf(t, sizeof t, "%s  %s", l, m);
+        int w = ui_text_width(UI_F_LABEL, t, 2) + 18;
+        dot_disc(fb, UI_CX - w / 2 + 4, UI_TITLE_Y - 6, 8, fadec(red ? C_RED : C_PRI, k));
+        lbl(fb, UI_CX - w / 2 + 18, UI_TITLE_Y, t, fadec(C_SEC, k), UI_LEFT);
+    } else if (kind == H_FIX) {
+        snprintf(t, sizeof t, "%s FIX  %d SATS", N.last.fix3d ? "3D" : "2D", N.last.sats_used);
+        ui_label(fb, UI_CX, UI_TITLE_Y, t, fadec(C_SEC, k), UI_CENTER);
+    } else if (k >= 1) ui_title(fb, title, 0);
+    else ui_label(fb, UI_CX, UI_TITLE_Y, title, fadec(C_SEC, k), UI_CENTER);
+}
 static void header(gfx_fb *fb, int red, const char *title)
 {
-    char t[48];
-    if (svc_track_active()) {
-        char d[16], m[16];
-        ui_fmt_dur(d, sizeof d, svc_track_elapsed_ms(), 0);
-        fmt_dist(m, sizeof m, svc_track_distance());
-        snprintf(t, sizeof t, "REC %s  %s", d, m);
-        int w = ui_text_width(UI_F_LABEL, t, 2) + 18;
-        dot_disc(fb, UI_CX - w / 2 + 4, UI_TITLE_Y - 6, 8, red ? C_RED : C_PRI);
-        ui_label(fb, UI_CX - w / 2 + 18, UI_TITLE_Y, t, C_SEC, UI_LEFT);
-    } else if (title) ui_title(fb, title, 0);
+    header_kind(fb, svc_track_active() ? H_REC : H_NAV, red, title, 1);
+}
+/* page 1's header: the old kind fades out, then the new one in */
+static void header0(gfx_fb *fb)
+{
+    float u = nos_t - N.hk_t;
+    if (u < HDR_S) header_kind(fb, N.hk_prev, 1, "NAVIGATE", q8(1 - u / HDR_S));
+    else header_kind(fb, N.hk, 1, "NAVIGATE", q8((u - HDR_S) / HDR_S));
 }
 
 /* ------------------------------------------------------------- sky plot */
 static void sky_draw(gfx_fb *fb)
 {
     float b = build_at(0);
-    /* leaving: on a new fix the sky builds out for 0.25 s while the NOW page waits */
-    float out = N.fixed ? 1.0f - m_clamp((nos_t - N.fix_t) / 0.25f, 0, 1) : 1.0f;
-    out = floorf(out * 8 + 0.5f) / 8;
+    /* a fix arrived: the sky builds out while the NOW page builds in */
+    float out = N.show_now ? q8(1.0f - (nos_t - N.fix_t) / FADE_S) : 1.0f;
     float k = b * out;
-    header(fb, 1, "NAVIGATE");
+    if (k <= 0) return;
     /* horizon / 30 / 60 deg rings, built dot by dot */
     dot_ring(fb, UI_CX, SKY_CY, SKY_R, 72, 2.6f * out, 0, 72 * b, C_LINE2, 0);
     dot_ring(fb, UI_CX, SKY_CY, SKY_R * 2 / 3, 48, 2.4f * out, 0, 48 * b, C_LINE2, 0);
     dot_ring(fb, UI_CX, SKY_CY, SKY_R / 3, 24, 2.2f * out, 0, 24 * b, C_LINE2, 0);
-    if (b >= 1) ui_text(fb, UI_F_SMALL, UI_CX, (int)(SKY_CY - SKY_R + 22), "N", ui_dim(C_DIS, out), UI_CENTER, 0);
+    if (b >= 1) ui_text(fb, UI_F_SMALL, UI_CX, (int)(SKY_CY - SKY_R + 22), "N", fadec(C_DIS, out), UI_CENTER, 0);
     dot_disc(fb, UI_CX, SKY_CY, 9.0f * k, C_WHITE);              /* you */
     for (int i = 0; i < 16; i++) {
         float d = N.sat_d[i] * k;
@@ -401,23 +540,29 @@ static void sky_draw(gfx_fb *fb)
     if (N.g.sats_used > 0) snprintf(t, sizeof t, "SEARCHING %d/%d", N.g.sats_used, N.g.sats_view);
     else if (N.g.sats_view > 0) snprintf(t, sizeof t, "SEARCHING  %d SATS", N.g.sats_view);
     else snprintf(t, sizeof t, "SEARCHING");
-    ui_state(fb, UI_CX, 392, t, ui_dim(C_SEC, out));
+    ui_state(fb, UI_CX, 392, t, fadec(C_SEC, q8(k)));
 }
 
-/* ------------------------------------------------------------- pages */
-static float now_t0(void) { return (N.t0 > N.fix_t + 0.25f ? N.t0 : N.fix_t + 0.25f); }
-static float now_build(float delay) { return m_clamp((nos_t - now_t0() - delay) / UI_ENTRY_S, 0, 1); }
+/* ------------------------------------------------------------- NOW page */
+static int arriving(void) { return N.fix_t + NOW_LAG > N.t0; }
+static float now_t0(void) { return arriving() ? N.fix_t + NOW_LAG : N.t0; }
+static float now_build(float delay)
+{
+    return m_clamp((nos_t - now_t0() - delay) / (arriving() ? ARRIVE_S : UI_ENTRY_S), 0, 1);
+}
 static int row_on(int i) { return nos_t - now_t0() >= i * 0.034f; }
 
-/* dots around the Stop pill, filling clockwise from 12 o'clock while it is held */
-static void hold_ring(gfx_fb *fb, float cx, float cy, float w, float h, float p)
+/* dots around the Stop pill, filling clockwise from 12 o'clock while it is held;
+ * k shrinks them away (build-out) */
+static void hold_ring(gfx_fb *fb, float cx, float cy, float w, float h, float p, float k)
 {
     const int n = 40;
     const float r = h / 2 + 9, half = w / 2 - h / 2;
     const float straight = 2 * half, arc = PI_F * r, per = 2 * straight + 2 * arc;
+    if (k <= 0) return;
     if (fb->rec) {
         gfx_rec_cmd(fb, (int)(cx - half - r - 4), (int)(cy - r - 4), (int)(cx + half + r + 4), (int)(cy + r + 4),
-                    gfx_hash_f(0x401Du, p));
+                    gfx_hash_f(gfx_hash_f(0x401Du, p), k));
         return;
     }
     for (int i = 0; i < n; i++) {
@@ -429,25 +574,84 @@ static void hold_ring(gfx_fb *fb, float cx, float cy, float w, float h, float p)
         else if ((s -= straight) < arc) { float a = s / r; x = cx - half - r * gfx_fast_sin(a); y = cy + r * gfx_fast_cos(a); }
         else { s -= arc; x = cx - half + s; y = cy - r; }
         if (!rows_hit(fb, y - 4, y + 4)) continue;
-        dot_disc(fb, x, y, 5.0f, (float)i < p * n ? C_WHITE : C_LINE2);
+        dot_disc(fb, x, y, 5.0f * k, (float)i < p * n ? C_WHITE : C_LINE2);
     }
 }
 
-static void page_now(gfx_fb *fb)
+static const char *pill_label(int a)
+{
+    if (a == A_STOP) return nos_t - N.hint_t < 1.5f ? "HOLD TO STOP" : "STOP";
+    return "START TRACK";
+}
+/* the STOP <-> HOLD TO STOP hint swap ramps its ink up from the fill */
+static uint16_t pill_ink(int a, uint16_t fill, uint16_t ink)
+{
+    if (a != A_STOP || N.hint_t < 0) return ink;
+    float sw = nos_t - N.hint_t < 1.5f ? N.hint_t : N.hint_t + 1.5f;
+    return ui_mix(fill, ink, q8((nos_t - sw) / 0.1f));
+}
+static void pill(gfx_fb *fb, uint16_t fill, const char *label, uint16_t ink)
+{
+    ui_rrect(fb, UI_CX - UI_BTN_W / 2, UI_BTN_Y - UI_BTN_H / 2, UI_BTN_W, UI_BTN_H, UI_BTN_H / 2, fill);
+    ui_label(fb, UI_CX, UI_BTN_Y + UI_F_LABEL->ascent / 2 - 2, label, ink, UI_CENTER);
+}
+static void summary_draw(gfx_fb *fb, float k)
+{
+    static const char *word[] = { "", "SAVED", "NO SD CARD", "TOO SHORT" };
+    char d[16], m[16], t[40];
+    ui_state(fb, UI_CX, 356, word[N.saved_state & 3], fadec(C_PRI, k));
+    if (N.saved_state == 3) return;
+    fmt_dist(m, sizeof m, N.sum_m);
+    ui_fmt_dur(d, sizeof d, N.sum_ms, 0);
+    snprintf(t, sizeof t, "%s  %s", m, d);
+    lbl(fb, UI_CX, 392, t, fadec(C_SEC, k), UI_CENTER);
+}
+/* old: the row leaving, drawn in the state it had at the change (a completed hold
+ * fades out from its pressed fill, not from a one-frame release) */
+static void action_one(gfx_fb *fb, int a, float k, int old)
+{
+    if (a == A_NONE || k <= 0) return;
+    if (a == A_SUMMARY) { summary_draw(fb, k); return; }
+    uint16_t fill, ink;
+    pill_colors(a, old ? N.pressed0 : a == N.ak && N.pressed == P_REC, &fill, &ink);
+    if (a == A_STOP && N.hold_p > 0) hold_ring(fb, UI_CX, UI_BTN_Y, UI_BTN_W, UI_BTN_H, N.hold_p, k);
+    pill(fb, fadec(fill, k), pill_label(a), fadec(pill_ink(a, fill, ink), k));
+}
+/* pill -> pill: the fill crossfades and the label swaps through the fill; anything
+ * else: the old row builds out, then the new one builds in */
+static void action_draw(gfx_fb *fb, float pk)
+{
+    float u = nos_t - N.ak_t;
+    int a = N.ak, b = N.ak_prev;
+    if (a == b || u >= 2 * FADE_S) { action_one(fb, a, pk, 0); return; }
+    if (is_pill(a) && is_pill(b)) {
+        if (u >= FADE_S) { action_one(fb, a, pk, 0); return; }
+        float t = q8(u / FADE_S);
+        uint16_t fa, ia, fbb, ib;
+        pill_colors(a, 0, &fa, &ia);
+        pill_colors(b, 0, &fbb, &ib);
+        uint16_t f = ui_mix(N.fill0, fa, t);
+        if (b == A_STOP && N.hold_p > 0) hold_ring(fb, UI_CX, UI_BTN_Y, UI_BTN_W, UI_BTN_H, N.hold_p, pk * (1 - t));
+        if (t < 0.5f) pill(fb, fadec(f, pk), pill_label(b), fadec(ui_mix(f, ib, 1 - 2 * t), pk));
+        else pill(fb, fadec(f, pk), pill_label(a), fadec(ui_mix(f, ia, 2 * t - 1), pk));
+        return;
+    }
+    if (u < FADE_S) action_one(fb, b, pk * q8(1 - u / FADE_S), 1);
+    else action_one(fb, a, pk * q8((u - FADE_S) / FADE_S), 0);
+}
+
+/* k < 1: the page builds out (the stale values giving way to the sky) */
+static void page_now(gfx_fb *fb, float k)
 {
     char t[48];
     const hal_gps *g = &N.last;
-    uint16_t ink = N.stale ? C_DIS : C_PRI;
-    if (N.stale) header(fb, 1, "NAVIGATE");
-    else if (svc_track_active()) header(fb, 1, 0);
-    else {
-        snprintf(t, sizeof t, "%s FIX  %d SATS", g->fix3d ? "3D" : "2D", g->sats_used);
-        ui_label(fb, UI_CX, UI_TITLE_Y, t, C_SEC, UI_CENTER);
-    }
+    float dim = q8(N.dim);
+    uint16_t ink = fadec(ui_mix(C_PRI, C_DIS, dim), k);
     int metric = nos_prefs.units_metric;
-    dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, N.stale ? C_DIS : C_WHITE, 0, 1, 1 };
-    mv_draw(fb, &st, UI_CX, 110, &N.m_speed, now_build(0), 5u);
-    if (row_on(1)) ui_label(fb, UI_CX, 214, metric ? "KM/H" : "MPH", C_SEC, UI_CENTER);
+    dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, ui_mix(C_WHITE, C_DIS, dim), 0, 1, 1 };
+    float hb = now_build(0);
+    mv_draw(fb, &st, UI_CX, 110, &N.m_speed, hb < k ? hb : k, 5u);
+    if (row_on(1)) lbl(fb, UI_CX, 214, metric ? "km/h" : "mph", fadec(C_SEC, k), UI_CENTER);
     if (row_on(2)) {
         snprintf(t, sizeof t, "%.5f %c", fabs(g->lat), g->lat >= 0 ? 'N' : 'S');
         ui_text(fb, UI_F_LABEL, UI_CX, 250, t, ink, UI_CENTER, 2);
@@ -457,37 +661,20 @@ static void page_now(gfx_fb *fb)
         ui_text(fb, UI_F_LABEL, UI_CX, 276, t, ink, UI_CENTER, 2);
     }
     if (row_on(4)) {
-        if (N.stale) {                          /* the fix is lost: say when it was last seen */
+        /* altitude/accuracy and "no fix" swap through the dim ramp */
+        if (dim >= 0.5f) {
             int ago = (int)(nos_t - N.last_fix_t);
             snprintf(t, sizeof t, "[ NO FIX ]  %d:%02d AGO", ago / 60, ago % 60);
-            ui_label(fb, UI_CX, 304, t, C_SEC, UI_CENTER);
+            ui_label(fb, UI_CX, 304, t, fadec(C_SEC, k * (dim * 2 - 1)), UI_CENTER);
         } else {
-            snprintf(t, sizeof t, "ALT %d M   HDOP %.1f", (int)lroundf(g->alt_m), (double)g->hdop);
-            ui_label(fb, UI_CX, 304, t, C_DIS, UI_CENTER);
+            snprintf(t, sizeof t, "ALTITUDE %d m   HDOP %.1f", (int)lroundf(g->alt_m), (double)g->hdop);
+            lbl(fb, UI_CX, 304, t, fadec(C_DIS, k * (1 - dim * 2)), UI_CENTER);
         }
     }
-    /* action row (last, >= 150 ms after the hero) */
-    if (nos_t - now_t0() < 0.15f) return;
-    if (!svc_track_active() && N.saved_state && nos_t - N.saved_t < SUMMARY_S) {
-        char d[16], m[16];
-        fmt_dist(m, sizeof m, N.sum_m);
-        ui_fmt_dur(d, sizeof d, N.sum_ms, 0);
-        ui_state(fb, UI_CX, 356, N.saved_state == 1 ? "SAVED" : "NO SD CARD", C_PRI);
-        snprintf(t, sizeof t, "%s  %s", m, d);
-        ui_label(fb, UI_CX, 392, t, C_SEC, UI_CENTER);
-        return;
-    }
-    if (svc_track_active()) {
-        if (N.holding && N.hold_p > 0) hold_ring(fb, UI_CX, UI_BTN_Y, UI_BTN_W, UI_BTN_H, N.hold_p);
-        int pr = N.pressed == P_REC;
-        ui_rrect(fb, UI_CX - UI_BTN_W / 2, UI_BTN_Y - UI_BTN_H / 2, UI_BTN_W, UI_BTN_H, UI_BTN_H / 2, pr ? C_SEC : C_SURF2);
-        ui_label(fb, UI_CX, UI_BTN_Y + UI_F_LABEL->ascent / 2 - 2, nos_t - N.hint_t < 1.5f ? "HOLD TO STOP" : "STOP",
-                 pr ? C_BG : C_PRI, UI_CENTER);
-    } else {
-        int pr = N.pressed == P_REC;
-        ui_rrect(fb, UI_CX - UI_BTN_W / 2, UI_BTN_Y - UI_BTN_H / 2, UI_BTN_W, UI_BTN_H, UI_BTN_H / 2, pr ? C_SEC : C_WHITE);
-        ui_label(fb, UI_CX, UI_BTN_Y + UI_F_LABEL->ascent / 2 - 2, "START TRACK", C_BG, UI_CENTER);
-    }
+    /* action row last: after the hero, fading in over 80 ms (a fix arrival is done ~260 ms) */
+    float au = nos_t - now_t0() - (arriving() ? 0.10f : 0.15f);
+    if (au < 0) return;
+    action_draw(fb, k * q8(au / 0.08f));
 }
 
 static void page_track(gfx_fb *fb)
@@ -495,7 +682,7 @@ static void page_track(gfx_fb *fb)
     float b = build_at(0);
     if (!svc_track_points(0)) {
         ui_title(fb, "TRACK", 0);
-        ui_absent(fb, DOT_ICON_ROUTE, "No track", "Start one on the NOW page", 0, b);
+        ui_absent(fb, DOT_ICON_ROUTE, "No track", "Start one on\nthe NOW page", 0, b);
         return;
     }
     header(fb, 0, "TRACK");
@@ -510,14 +697,14 @@ static void page_track(gfx_fb *fb)
                 dot_disc(fb, N.dots[i][0], N.dots[i][1], 5.0f, C_PRI);
     }
     ui_circle_line(fb, N.start_x, N.start_y, 8, 2.5f, C_WHITE);       /* start */
-    if (N.have_you) dot_disc(fb, N.you_x, N.you_y, 13.0f * b, N.stale ? C_DIS : C_RED);   /* you, now */
+    if (N.have_you) dot_disc(fb, N.you_x, N.you_y, 13.0f * b, ui_mix(C_RED, C_DIS, q8(N.dim)));   /* you, now */
     char t[24];
     float m = N.scale_m;
-    if (m >= 1000) snprintf(t, sizeof t, "%.1f KM", (double)(m / 1000));
-    else snprintf(t, sizeof t, "%d M", (int)(lroundf(m / 10) * 10));
+    if (m >= 1000) snprintf(t, sizeof t, "%.1f km", (double)(m / 1000));
+    else snprintf(t, sizeof t, "%d m", (int)(lroundf(m / 10) * 10));
     /* scale bar: 100 px */
     gfx_fill_rect(fb, UI_CX - 50, 380, 100, 4, C_DIS);
-    ui_label(fb, UI_CX, 406, t, C_DIS, UI_CENTER);
+    lbl(fb, UI_CX, 406, t, C_DIS, UI_CENTER);
 }
 
 static void arrow_draw(gfx_fb *fb, float cx, float cy, float ang_deg, float b, uint16_t col)
@@ -549,7 +736,7 @@ static void page_back(gfx_fb *fb)
     float b = build_at(0);
     if (!svc_track_points(0)) {
         ui_title(fb, "BACK TO START", 0);
-        ui_absent(fb, DOT_ICON_PIN, "No start point", "Record a track to find your way back", 0, b);
+        ui_absent(fb, DOT_ICON_PIN, "No start point", "Record a track to\nfind your way back", 0, b);
         return;
     }
     header(fb, 1, "BACK TO START");
@@ -558,10 +745,11 @@ static void page_back(gfx_fb *fb)
         ui_state(fb, UI_CX, 300, "YOU ARE AT THE START", C_PRI);
         return;
     }
-    arrow_draw(fb, UI_CX, 184, N.arrow_q, b, N.stale ? C_DIS : C_WHITE);
-    dot_style st = { DOT_FONT_TALL, 7.0f, 5.6f, N.stale ? C_DIS : C_WHITE, 0, 1, 1 };
+    uint16_t col = ui_mix(C_WHITE, C_DIS, q8(N.dim));
+    arrow_draw(fb, UI_CX, 184, N.arrow_q, b, col);
+    dot_style st = { DOT_FONT_TALL, 7.0f, 5.6f, col, 0, 1, 1 };
     mv_draw(fb, &st, UI_CX, 282, &N.m_dist, b, 4u);
-    ui_label(fb, UI_CX, 370, N.home_dist < 1000 ? "METRES" : "KM", C_SEC, UI_CENTER);
+    lbl(fb, UI_CX, 370, N.home_dist < 1000 ? "m" : "km", C_SEC, UI_CENTER);
     ui_label(fb, UI_CX, 400, N.head_src == 1 ? "BY COMPASS" : N.head_src == 2 ? "BY COURSE" : "NORTH UP", C_DIS, UI_CENTER);
 }
 
@@ -574,13 +762,17 @@ static void nav_draw(gfx_fb *fb)
         return;
     }
     float pos = pg_pos(&N.pg);
-    int sky = !N.show_now || nos_t - N.fix_t < 0.25f;
     for (int i = 0; i < NPAGE; i++) {
         float off = i * PAGE_W - pos;
         if (off <= -PAGE_W || off >= PAGE_W) continue;
         gfx_fb sub;
         if (!nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, (int)off, 0)) continue;
-        if (i == 0) { if (sky) sky_draw(&sub); else page_now(&sub); }
+        if (i == 0) {
+            header0(&sub);
+            if (!N.show_now || nos_t - N.fix_t < FADE_S) sky_draw(&sub);
+            if (N.show_now) { if (nos_t - N.fix_t >= NOW_LAG) page_now(&sub, 1); }
+            else if (nos_t - N.lost_t < FADE_S) page_now(&sub, q8(1 - (nos_t - N.lost_t) / FADE_S));
+        }
         else if (i == 1) page_track(&sub);
         else if (N.have_last || !svc_track_points(0)) page_back(&sub);
         else {
@@ -594,9 +786,10 @@ static void nav_draw(gfx_fb *fb)
 
 static int on_rec_button(int x, int y)
 {
-    int summary = !svc_track_active() && N.saved_state && nos_t - N.saved_t < SUMMARY_S;
-    return N.show_now && (N.fixed || svc_track_active()) && nos_t - now_t0() >= 0.15f && N.pg.page == 0 && !N.pg.sp.moving &&
-           !summary && abs(x - UI_CX) < UI_BTN_W / 2 && abs(y - UI_BTN_Y) < UI_BTN_H / 2;
+    int settled = nos_t - N.ak_t >= FADE_S || is_pill(N.ak_prev);
+    return N.show_now && (N.ak == A_START || N.ak == A_STOP) && settled && nos_t - now_t0() >= 0.15f &&
+           N.pg.page == 0 && !N.pg.sp.moving &&
+           abs(x - UI_CX) < UI_BTN_W / 2 && abs(y - UI_BTN_Y) < UI_BTN_H / 2;
 }
 
 static int nav_input(const nos_input *in)
@@ -607,7 +800,7 @@ static int nav_input(const nos_input *in)
     case IN_DOWN:
         N.pressed = on_rec_button(in->x, in->y) ? P_REC : 0;
         N.press_until = 0;
-        if (N.pressed && svc_track_active()) { N.holding = 1; N.hold_t0 = nos_t; N.hold_p = 0; }
+        if (N.pressed && N.ak == A_STOP) { N.holding = 1; N.hold_t0 = nos_t - N.hold_p * HOLD_S; }
         return 1;
     case IN_UP:
         N.holding = 0;
@@ -617,12 +810,13 @@ static int nav_input(const nos_input *in)
     case IN_LONG: return 0;                   /* the hold is timed in tick(); no extra haptic */
     case IN_TAP:
         if (on_rec_button(in->x, in->y)) {
-            if (svc_track_active()) { N.hint_t = nos_t; nos_feedback(FB_LIMIT); }   /* teach the hold */
+            if (N.ak == A_STOP) { N.hint_t = nos_t; nos_feedback(FB_LIMIT); }   /* teach the hold */
             else {
                 svc_track_start();
                 N.saved_state = 0;
+                N.d_init = 0;                 /* the new track's distance starts at 0, no count */
                 nos_feedback(FB_TOGGLE_ON);
-                N.press_until = nos_t + 0.1f;
+                N.press_until = nos_t + 0.1f; /* the crossfade to STOP starts from the pressed fill */
             }
             return 1;
         }

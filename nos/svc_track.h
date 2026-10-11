@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 typedef struct { double lat, lon; float alt; uint32_t epoch; } svc_track_pt;
+#define SVC_TRACK_MAXPTS 4096           /* points kept (then every other is dropped) */
 
 void svc_track_tick(float dt);
 
@@ -27,4 +28,9 @@ int  svc_track_points(const svc_track_pt **out);   /* count; *out = oldest first
 double   svc_track_distance(void);   /* metres along the track */
 uint32_t svc_track_elapsed_ms(void); /* since start (frozen at stop) */
 unsigned svc_track_version(void);    /* changes whenever a point is added or a track starts */
+
+/* System REC chip (face status slot, launcher tile, control centre): show it while
+ * svc_track_active() is true, as a red dot + svc_track_label() ("REC 12:34", or
+ * "REC 1:02:03" past an hour), the same words as Navigate's header. */
+void svc_track_label(char *out, int n);
 #endif
