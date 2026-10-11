@@ -53,6 +53,24 @@ typedef struct {
     const char *wire;      /* bring-up: the part and exactly where it is expected */
 } mod_info;
 
+/* The OS's short module names, for "NO <NAME>" notes, toasts and states (rows say NO
+ * MODULE, pages "Not connected" + "<NAME> MODULE"). Toast-sized: NO + up to 8 caps. */
+const char *set_modules_short(uint32_t ext)
+{
+    switch (ext) {
+    case EXT_HAPTIC: return "HAPTICS";
+    case EXT_MIC: return "MIC";
+    case EXT_SPEAKER: return "SPEAKER";
+    case EXT_GPS: return "GPS";
+    case EXT_LTE: return "LTE";
+    case EXT_ENV: return "CLIMATE";
+    case EXT_LIGHT: return "LIGHT SENSOR";   /* notes only: too long for a toast */
+    case EXT_MAG: return "COMPASS";
+    case EXT_HR: return "HR SENSOR";
+    default: return "MODULE";
+    }
+}
+
 static const mod_info MI[M_COUNT] = {
     { "Touch", "I2C 0x38  FT3168", "TOUCH", DOT_ICON_HAND, 0, "", "", "" },
     { "Motion", "I2C 0x6B  QMI8658", "MOTION", DOT_ICON_LEVEL, 0, "", "", "" },
@@ -61,12 +79,12 @@ static const mod_info MI[M_COUNT] = {
     { "Battery", "ADC GPIO4  3:1", "BATTERY", DOT_ICON_BATTERY, 0, "", "", "" },
     { "Wi-Fi", "ESP32-S3  2.4 GHZ", "WI-FI", DOT_ICON_WIFI, 0, "", "", "" },
     { "Bluetooth", "ESP32-S3  NUS", "BLUETOOTH", DOT_ICON_BT, 0, "", "", "" },
-    { "Haptics", "GPIO16  PWM", "HAPTICS", DOT_ICON_BELL, EXT_HAPTIC, "Add the motor to feel every tap",
-      "HAPTIC MODULE", "PWM DRIVER  GPIO16" },
+    { "Haptics", "GPIO16  PWM", "HAPTICS", DOT_ICON_BELL, EXT_HAPTIC, "Add haptics to feel alerts",
+      "HAPTICS MODULE", "PWM DRIVER  GPIO 16" },
     { "Microphone", "I2S IN  INMP441", "MICROPHONE", DOT_ICON_MIC, EXT_MIC, "Add the mic strap to record voice memos",
       "MIC MODULE", "INMP441  BCLK 1 WS 2 SD 3" },
     { "Speaker", "I2S OUT  MAX98357A", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, "Add the speaker for sounds and alarms",
-      "SPEAKER MODULE", "MAX98357A  BCLK1 LRC2 DIN5 SD6" },
+      "SPEAKER MODULE", "MAX98357A  BCLK 1 LRC 2 DIN 5 SD 6" },
     { "GPS", "UART1  M10", "GPS", DOT_ICON_SAT, EXT_GPS, "Add the GPS for speed and tracks",
       "GPS MODULE", "M10  UART1  RX 7 TX 17" },
     { "Cellular", "UART0  EG800AK", "CELLULAR", DOT_ICON_SIGNAL, EXT_LTE, "Add the LTE strap to text without your phone",
@@ -262,7 +280,7 @@ static void list_values(void)
         if (V.mic_db >= 0) { snprintf(b, sizeof b, "%.0f", V.mic_db); setv(M_MIC, b, "dB"); }
         else setv(M_MIC, "Ready", 0);
     }
-    if (V.ok[M_SPK]) { snprintf(b, sizeof b, "Vol %d%%", nos_prefs.volume); setv(M_SPK, b, 0); }
+    if (V.ok[M_SPK]) { snprintf(b, sizeof b, "%d%%", nos_prefs.volume); setv(M_SPK, b, 0); }
     if (V.ok[M_GPS]) {
         if (V.gps.valid) { snprintf(b, sizeof b, "%d sats", V.gps.sats_used); setv(M_GPS, b, 0); }
         else if (V.gps.sats_view) { snprintf(b, sizeof b, "%d in view", V.gps.sats_view); setv(M_GPS, b, 0); }
@@ -278,7 +296,7 @@ static void list_values(void)
     if (V.ok[M_ENV]) {
         if (V.env_ok) {
             float t = nos_prefs.units_metric ? V.env.temp_c : V.env.temp_c * 1.8f + 32.0f;
-            snprintf(b, sizeof b, "%.0f", t); setv(M_ENV, b, nos_prefs.units_metric ? "\xB0" "C" : "\xB0" "F");
+            snprintf(b, sizeof b, "%.0f\xB0", t); setv(M_ENV, b, 0);   /* 26°, as Weather */
         }
         else setv(M_ENV, "Warming up", 0);
     }
@@ -291,7 +309,7 @@ static void list_values(void)
         else setv(M_MAG, "Ready", 0);
     }
     if (V.ok[M_HR]) setv(M_HR, "Ready", 0);
-    for (int m = M_HAPTIC; m < M_COUNT; m++) if (!V.ok[m]) setv(m, "Absent", 0);
+    for (int m = M_HAPTIC; m < M_COUNT; m++) if (!V.ok[m]) setv(m, "No module", 0);
 }
 
 /* ======================================================================= list */
@@ -489,7 +507,6 @@ static const nos_screen scr_mod_detail, scr_mod_touch;
 static void open_detail(int m, int from_settings);
 /* Settings' Storage and Cellular rows: the same pages, as user pages */
 void set_modules_open_sd(void) { open_detail(M_SD, 1); }
-void set_modules_open_lte(void) { open_detail(M_LTE, 1); }
 
 static int modules_input(const nos_input *in)
 {
@@ -649,7 +666,10 @@ static void detail_values(int init)
                      fabs(V.gps.lon), V.gps.lon >= 0 ? 'E' : 'W');
             dline(0, b, 0);
             snprintf(b, sizeof b, "%s  HDOP %.1f", V.gps.fix3d ? "3D FIX" : "2D FIX", V.gps.hdop); dline(1, b, 0);
-        } else { snprintf(b, sizeof b, "%d IN VIEW, NO FIX YET", V.gps.sats_view); dline(0, b, 0); }
+        } else {                              /* the Navigate word, the count under it */
+            snprintf(D.unit, sizeof D.unit, "SEARCHING"); D.ustate = 1;
+            snprintf(b, sizeof b, "%d IN VIEW", V.gps.sats_view); dline(0, b, 0);
+        }
         break;
     case M_LTE: {
         int reg = V.lte_ok && V.lte.powered && (V.lte.registered == 1 || V.lte.registered == 2) && V.lte.rssi_dbm;
@@ -659,6 +679,7 @@ static void detail_values(int init)
         } else if (V.lte_ok && V.lte.powered) {
             snprintf(h, sizeof h, UI_NONE);
             snprintf(D.unit, sizeof D.unit, "%s", !V.lte.sim ? "NO SIM" : V.lte.sim == 2 ? "SIM LOCKED" : "SEARCHING");
+            D.ustate = 1;
         } else {                              /* words are never dot-matrix heroes */
             snprintf(h, sizeof h, UI_NONE);
             snprintf(D.unit, sizeof D.unit, "%s", D.lte_req > 0 ? "STARTING" : "OFF");
@@ -683,7 +704,7 @@ static void detail_values(int init)
             snprintf(b, sizeof b, "HUMIDITY %.0f%%", V.env.humidity); dline(0, b, 0);
             snprintf(b, sizeof b, "PRESSURE %.1f", V.env.pressure_hpa); dline(1, b, "hPa");
             snprintf(b, sizeof b, "ALTITUDE %.0f", V.env.altitude_m); dline(2, b, "m");
-        } else { snprintf(h, sizeof h, UI_NONE); snprintf(D.unit, sizeof D.unit, "WAITING FOR A SAMPLE"); }
+        } else { snprintf(h, sizeof h, UI_NONE); snprintf(D.unit, sizeof D.unit, "WAITING"); D.ustate = 1; }
         break;
     case M_LIGHT: {
         if (V.light_ok) snprintf(h, sizeof h, "%.0f", V.light.lux); else snprintf(h, sizeof h, UI_NONE);
@@ -701,13 +722,13 @@ static void detail_values(int init)
             snprintf(D.unit, sizeof D.unit, "%s", cardinal(hd));
             snprintf(b, sizeof b, "FIELD %.0f", V.mag.field_ut); dline(0, b, "uT");
             dline(1, D.calibrating ? "MOVE IN A FIGURE 8" : V.mag.calibrated ? "CALIBRATED" : "NOT CALIBRATED", 0);
-        } else { snprintf(h, sizeof h, UI_NONE); snprintf(D.unit, sizeof D.unit, "WAITING FOR A SAMPLE"); }
+        } else { snprintf(h, sizeof h, UI_NONE); snprintf(D.unit, sizeof D.unit, "WAITING"); D.ustate = 1; }
         break;
     case M_HR:
         if (V.hr_ok && V.hr.bpm) snprintf(h, sizeof h, "%d", V.hr.bpm); else snprintf(h, sizeof h, UI_NONE);
         snprintf(D.unit, sizeof D.unit, "BPM");
         if (V.hr_ok && V.hr.spo2) { snprintf(b, sizeof b, "SPO2 %d%%", V.hr.spo2); dline(0, b, 0); }
-        else if (V.hr_ok && V.hr.on_wrist && !V.hr.bpm) dline(0, "LOCKING ON", 0);
+        if (V.hr_ok && V.hr.on_wrist && !V.hr.bpm) { snprintf(D.unit, sizeof D.unit, "MEASURING"); D.ustate = 1; }   /* the Heart app's word */
         break;
     default: break;
     }
@@ -791,7 +812,7 @@ static void absent_page(gfx_fb *fb)
     /* the same body and footer as the module's own app; Modules adds the part and its pins */
     ui_absent(fb, mi->icon, "Not connected", mi->body, mi->foot, bp);
     float k = floorf(m_clamp((bp - 0.3f) / 0.7f, 0, 1) * 8.0f + 0.5f) / 8.0f;
-    if (k > 0 && mi->wire[0] && !D.from_set) ident(fb, UI_CX, 372, mi->wire, ui_dim(C_SEC, k), UI_CENTER);
+    if (k > 0 && mi->wire[0] && !D.from_set) ident(fb, UI_CX, 372, mi->wire, ui_dim(C_DIS, k), UI_CENTER);
 }
 
 static void hero(gfx_fb *fb, float y)
@@ -874,7 +895,7 @@ static void detail_draw(gfx_fb *fb)
         ui_absent(fb, DOT_ICON_SD, "No card", mi->body, D.from_set ? NULL : "SDMMC 1-BIT", bp);
         if (V.sd.message[0] && !D.from_set) {
             char b[44]; snprintf(b, sizeof b, "%.40s", V.sd.message);
-            ident(fb, UI_CX, 372, b, C_SEC, UI_CENTER);
+            ident(fb, UI_CX, 372, b, C_DIS, UI_CENTER);
         }
         return;
     }
@@ -971,9 +992,10 @@ static void detail_draw(gfx_fb *fb)
                 dot_disc(fb, x0 + i * 6.0f, y, i == 47 ? 8.0f : 4.0f, i == 47 ? C_RED : ui_mix(C_LINE2, C_WHITE, (i + 8) / 56.0f));
             }
             ui_segments(fb, 163, 336, 140, 10, 5, V.hr.quality * 5.0f, C_WHITE, C_LINE);
-            lines(fb, 380);
+            ui_label(fb, UI_CX, 368, "SIGNAL", C_DIS, UI_CENTER);
+            lines(fb, 396);
         } else {
-            ui_state(fb, UI_CX, 276, V.hr_ok ? "PLACE ON WRIST" : "STARTING", C_SEC);
+            ui_state(fb, UI_CX, 276, V.hr_ok ? "NO CONTACT" : "STARTING", C_SEC);
             ui_label(fb, UI_CX, 316, "WEAR IT SNUG, SENSOR ON SKIN", C_DIS, UI_CENTER);
         }
         break;

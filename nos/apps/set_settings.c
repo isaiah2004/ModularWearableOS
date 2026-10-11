@@ -43,7 +43,7 @@ void nos_host_power(int mode);   /* firmware/sim: 0 sleep, 1 restart, 2 power of
 /* set_modules.c: one module count and one page per part, shared with Settings */
 int  set_modules_online(int *total);
 void set_modules_open_sd(void);      /* the SD card page, titled STORAGE */
-void set_modules_open_lte(void);     /* the modem page, without the wiring */
+const char *set_modules_short(uint32_t ext);   /* module short names: "SPEAKER", "HAPTICS" ... */
 /* exported to Modules: the radio pages (Modules adds its bus line) */
 void set_settings_open_radio(int bt, int from_modules);
 
@@ -144,16 +144,20 @@ static void ident(gfx_fb *fb, int x, int y, const char *s, uint16_t col, int ali
 
 /* Arm-then-tap-again pill (UI_BTN_H tall). `a` 0..1 is the arm spring: the plain label
  * goes out, then "TAP AGAIN TO ..." and three red dots that expire one per second come
- * in. `red` 0..1 fades the plain outline to grey while another row is armed. */
+ * in. `red` 0..1 fades the plain outline to grey while another row is armed. `surf`:
+ * the plain state is a filled secondary pill (Restart, as on the power sheet) whose fill
+ * fades out as the red outline comes in; else a red-outlined danger pill (Reset). */
 static void arm_pill(gfx_fb *fb, float cy, float w, const char *label, const char *armed_label,
-                     float armed_t, float a, int pressed, float red, float k)
+                     float armed_t, float a, int pressed, float red, float k, int surf)
 {
-    uint16_t line = ui_mix(C_LINE2, C_RED, m_clamp(red + a, 0, 1));
-    uint16_t ink = ui_mix(C_DIS, C_RED, red);
+    uint16_t line = surf ? ui_mix(C_SURF2, C_RED, q8(a)) : ui_mix(C_LINE2, C_RED, m_clamp(red + a, 0, 1));
+    uint16_t ink = surf ? (pressed ? C_BG : C_PRI) : ui_mix(C_DIS, C_RED, red);
     float x = floorf(UI_CX - w * 0.5f + 0.5f), y = cy - UI_BTN_H * 0.5f;
     w = (UI_CX - x) * 2.0f;
-    if (pressed && a <= 0) ui_rrect(fb, x, y, w, UI_BTN_H, UI_BTN_H * 0.5f, ui_dim(C_SURF2, k));
-    ui_rrect_line(fb, x, y, w, UI_BTN_H, UI_BTN_H * 0.5f, 2, ui_dim(line, k));
+    if (surf && a < 1) ui_rrect(fb, x, y, w, UI_BTN_H, UI_BTN_H * 0.5f,
+                                ui_dim(pressed && a <= 0 ? C_SEC : C_SURF2, k * q8(1.0f - a)));
+    else if (pressed && a <= 0) ui_rrect(fb, x, y, w, UI_BTN_H, UI_BTN_H * 0.5f, ui_dim(C_SURF2, k));
+    if (!surf || a > 0) ui_rrect_line(fb, x, y, w, UI_BTN_H, UI_BTN_H * 0.5f, 2, ui_dim(line, k));
     int asc = UI_F_LABEL->ascent;
     float aout = q8(1.0f - a * 2.0f), ain = q8(a * 2.0f - 1.0f);
     if (aout > 0 && label[0])
@@ -266,7 +270,7 @@ static float hero_pitch(const char *s)
 }
 /* one drum column centred on (cx, cyl); `hl` = value index drawn in C_PRI (pressed) */
 static void pk_column(gfx_fb *fb, const pk *p, const pk_txt *t, float cx, float cyl, float bp,
-                      unsigned seed, int hl)
+                      unsigned seed, int hl, float wy0, float wy1)
 {
     for (int j = 0; j < 5; j++) {
         int i = t->c - 2 + j;
@@ -281,6 +285,10 @@ static void pk_column(gfx_fb *fb, const pk *p, const pk_txt *t, float cx, float 
         if (i == hl && a > 0.5f) col = C_PRI;
         dot_style st = { DOT_FONT_TALL, pitch, pitch * 0.8f, col, 0, 1, 1 };
         float y = floorf((cyl + d - 4.5f * pitch) * 2.0f + 0.5f) * 0.5f;
+        /* gone by the time a glyph reaches the window edge: never sliced */
+        float ke = q8(fminf(y - wy0, wy1 - (y + 9.0f * pitch)) / 14.0f);
+        if (ke <= 0) continue;
+        if (ke < 1) { col = ui_dim(col, ke); st.color = col; }
         if (bp < 1) dot_text_anim(fb, &st, cx, y, t->s[j], 1, bp, DOT_REVEAL_RANDOM, seed + (unsigned)i);
         else dot_text_a(fb, &st, cx, y, t->s[j], 1);
     }
@@ -394,7 +402,7 @@ static const sentry E[] = {
 #define NE ((int)(sizeof E / sizeof E[0]))
 #define UNIT 30
 #define LTOP 96
-static int units_of(int kind) { return kind == K_HDR ? 2 : kind == K_DANGER ? 4 : 3; }
+static int units_of(int kind) { return kind == K_HDR ? 2 : kind == K_DANGER || kind == K_ARM ? 4 : 3; }
 
 static struct {
     ui_list L;
@@ -443,7 +451,14 @@ static int tog_absent(int id)
     return id == I_GPS ? !(m & EXT_GPS) : id == I_SOUND ? !(m & EXT_SPEAKER) :
            id == I_HAPTICS ? !(m & EXT_HAPTIC) : 0;
 }
-static const char *tog_missing(int id) { return id == I_GPS ? "NO GPS" : id == I_SOUND ? "NO SPEAKER" : "NO MOTOR"; }
+/* "NO <NAME>" from the OS's one short-name table (set_modules.c) */
+static const char *no_module(uint32_t ext)
+{
+    static char b[24];
+    snprintf(b, sizeof b, "NO %s", set_modules_short(ext));
+    return b;
+}
+static const char *tog_missing(int id) { return no_module(id == I_GPS ? EXT_GPS : id == I_SOUND ? EXT_SPEAKER : EXT_HAPTIC); }
 
 static void set_val(int id, const char *v, const char *u)
 {
@@ -461,7 +476,7 @@ static void set_val(int id, const char *v, const char *u)
 static void update_values(void)
 {
     char b[24];
-    if (nos_prefs.auto_bright && (S.ext & EXT_LIGHT)) set_val(I_BRIGHT, "Auto", 0);
+    if (nos_prefs.auto_bright && (S.ext & EXT_LIGHT)) { snprintf(b, sizeof b, "Auto %d%%", nos_prefs.brightness); set_val(I_BRIGHT, b, 0); }
     else { snprintf(b, sizeof b, "%d%%", nos_prefs.brightness); set_val(I_BRIGHT, b, 0); }
     snprintf(b, sizeof b, "%d", nos_prefs.sleep_s); set_val(I_TIMEOUT, b, "s");
     int nf = nos_face_count;
@@ -631,16 +646,14 @@ static void draw_entry(gfx_fb *fb, int e, float y, float h, int pressed)
         float a = m_clamp(S.arm_sp[1].x, 0, 1);
         float w = m_lerp(260.0f, 320.0f, a);
         arm_pill(fb, cy, w, "RESET SETTINGS", "TAP AGAIN TO RESET", S.arm_t, a, pressed,
-                 1.0f - q8(S.grey_sp.x), k);
+                 1.0f - q8(S.grey_sp.x), k, 0);
         return;
     }
-    if (en->kind == K_ARM) {
+    if (en->kind == K_ARM) {                         /* Restart: the power sheet's pill and morph */
         float a = m_clamp(S.arm_sp[0].x, 0, 1);
-        float ain = q8(a * 2.0f - 1.0f), aout = q8(1.0f - a * 2.0f);
-        if (ain > 0) { arm_pill(fb, cy, 320, "", "TAP AGAIN TO RESTART", S.arm_t, a, 0, 1, k); return; }
-        if (a > 0) pressed = 0;                      /* arming is the feedback */
-        k *= aout;
-        if (k <= 0) return;
+        arm_pill(fb, cy, m_lerp(260.0f, 320.0f, a), "RESTART", "TAP AGAIN TO RESTART", S.arm_t, a,
+                 pressed && a <= 0, 1, k, 1);
+        return;
     }
     if (pressed) ui_rrect(fb, lx - 20, y + 5, rx - lx + 40, h - 10, (h - 10) * 0.5f, C_SURF2);
     int id = en->id;
@@ -781,7 +794,7 @@ static void activate(int e)
     case I_TIMEOUT: case I_TZ: case I_GOAL: open_picker(en->id); break;
     case I_BT: case I_WIFI: set_settings_open_radio(en->id == I_BT, 0); break;
     case I_FACE: nos_push(&scr_faces, TX_PUSH); break;
-    case I_CELL: set_modules_open_lte(); break;
+    case I_CELL: nos_push(&scr_cell, TX_PUSH); break;   /* the one modem page: the Cellular app */
     case I_SETTIME: nos_push(&scr_set_time, TX_PUSH); break;
     case I_MODULES: nos_push(&scr_modules, TX_PUSH); break;
     case I_STORAGE: set_modules_open_sd(); break;
@@ -907,8 +920,8 @@ static void pick_tick(float dt)
 }
 
 /* the drum window: values are clipped to it, the labels below stay clear */
-#define DRUM_Y0 104
-#define DRUM_Y1 352
+#define DRUM_Y0 96
+#define DRUM_Y1 362
 static void pick_draw(gfx_fb *fb)
 {
     ui_title(fb, pick_title(P.id), 0);
@@ -918,7 +931,7 @@ static void pick_draw(gfx_fb *fb)
     gfx_fb sub;
     if (nos_subview(fb, &sub, 0, DRUM_Y0, GFX_W, DRUM_Y1, 0, 0)) {
         int hl = P.pressed == 0 ? P.p.idx - 1 : P.pressed == 1 ? P.p.idx + 1 : -9;
-        pk_column(&sub, &P.p, &P.tx, UI_CX, UI_CY, bp, 7, hl);
+        pk_column(&sub, &P.p, &P.tx, UI_CX, UI_CY, bp, 7, hl, DRUM_Y0, DRUM_Y1);
     }
     ui_label(fb, UI_CX, 376, pick_unit(P.id), C_SEC, UI_CENTER);
     if (P.extra[0]) {
@@ -1081,10 +1094,10 @@ static void slide_draw(gfx_fb *fb)
             ui_label_unit(fb, 104, cap_base(UI_F_LABEL, cy + 16), b, "LUX NOW", C_DIS, UI_LEFT);
         } else ui_label(fb, 104, cap_base(UI_F_LABEL, cy + 16), "READING LIGHT", C_DIS, UI_LEFT);
         toggle_k(fb, 324, cy, SL.tog.x, 1.0f, 0);
-    } else if (SL.id == I_BRIGHT) note = "NO LIGHT MODULE";
-    else if (SL.id == I_VOLUME && !slide_hw()) note = "NO SPEAKER";
+    } else if (SL.id == I_BRIGHT) note = no_module(EXT_LIGHT);
+    else if (SL.id == I_VOLUME && !slide_hw()) note = no_module(EXT_SPEAKER);
     else if (SL.id == I_VOLUME && !nos_prefs.sound) note = "UI SOUNDS OFF";
-    else if (SL.id == I_HSTR && !slide_hw()) note = "NO MOTOR";
+    else if (SL.id == I_HSTR && !slide_hw()) note = no_module(EXT_HAPTIC);
     else if (SL.id == I_HSTR && !nos_prefs.haptics) note = "HAPTICS OFF";
     if (note) ui_state(fb, UI_CX, 362, note, C_DIS);
 }
@@ -1291,8 +1304,8 @@ static void time_draw(gfx_fb *fb)
     float bp = m_clamp((nos_t - T.t0) / UI_ENTRY_S, 0, 1);
     gfx_fb sub;
     if (nos_subview(fb, &sub, 0, TDRUM_Y0, GFX_W, TDRUM_Y1, 0, 0)) {
-        pk_column(&sub, &T.h, &T.ht, UI_CX - TCOL, TCY, bp, 5, -9);
-        pk_column(&sub, &T.m, &T.mt, UI_CX + TCOL, TCY, bp, 90, -9);
+        pk_column(&sub, &T.h, &T.ht, UI_CX - TCOL, TCY, bp, 5, -9, TDRUM_Y0, TDRUM_Y1);
+        pk_column(&sub, &T.m, &T.mt, UI_CX + TCOL, TCY, bp, 90, -9, TDRUM_Y0, TDRUM_Y1);
     }
     dot_style cs = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, C_DIS, 0, 1, 1 };
     dot_text_a(fb, &cs, UI_CX, TCY - 4.5f * UI_HERO_PITCH, ":", 1);

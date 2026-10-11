@@ -9,7 +9,7 @@
  *             ("13/14"), one dot per part (white pass, ring fail, grey absent) and the
  *             fail count beside the one red dot on the screen
  *   rows      status dot, name, PASS / FAIL, and a sub-line: the reading, the reason it
- *             failed, or NOT CONNECTED; a tap pushes the raw values and the threshold
+ *             failed, or NO MODULE; a tap pushes the raw values and the threshold
  *   RE-RUN    a pill at the end
  *
  * Each sensor test is probe -> read -> plausibility, with real thresholds (DI[].check):
@@ -64,10 +64,10 @@ static const dinfo DI[D_N] = {
     { "Haptics", "HAPTICS", "HAPTIC", DOT_ICON_BELL, EXT_HAPTIC, { "YOU FELT THE BUZZ", 0 } },
     { "Microphone", "MICROPHONE", "MIC", DOT_ICON_MIC, EXT_MIC, { "FLOOR 15 TO 105 dB", "LEVEL NOT FROZEN" } },
     { "Speaker", "SPEAKER", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, { "YOU HEARD THE CHIME", 0 } },
-    { "GPS", "GPS", "GPS", DOT_ICON_SAT, EXT_GPS, { "NEW NMEA DATA IN 10 s", "A FIX IS NOT NEEDED" } },
+    { "GPS", "GPS", "GPS", DOT_ICON_SAT, EXT_GPS, { "NMEA SENTENCES IN 10 s", "A FIX IS NOT NEEDED" } },
     { "Cellular", "CELLULAR", "LTE", DOT_ICON_SIGNAL, EXT_LTE, { "ANSWERS AT IN 25 s", 0 } },
     { "Environment", "ENVIRONMENT", "ENV", DOT_ICON_THERMO, EXT_ENV,
-      { "-20 TO 60 \xB0" "C, 0-100 %", "300 TO 1100 hPa" } },
+      { "-20 TO 60\xB0" "C, 0-100%", "300 TO 1100 hPa" } },
     { "Light", "LIGHT", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, { "0 LUX OR MORE", "READING NOT FROZEN" } },
     { "Compass", "COMPASS", "MAG", DOT_ICON_COMPASS, EXT_MAG, { "FIELD 20 TO 70 uT", "READING NOT FROZEN" } },
     { "Heart rate", "HEART RATE", "HR", DOT_ICON_HEART, EXT_HR, { "IR SIGNAL LIVE AND", "SKIN CONTACT IN 8 s" } },
@@ -89,7 +89,7 @@ static struct {
     hal_imu imu_first, imu_last; uint32_t imu_ms; int imu_n, imu_moved; float imu_gsum, imu_gyro;
     int rtc_init; hal_datetime rtc0; uint32_t rtc_ms0;
     int mic_n; float mic_sum, mic_min, mic_max; int mic_rail;
-    int gps_init, gps_seen, gps_sod0, gps_utc0, gps_view0; float gps_hdop0; hal_gps gps;
+    int gps_init; uint32_t gps_n0; hal_gps gps;
     int lte_we_on; hal_lte lte;
     int env_ok; hal_env env;
     int lt_n, lt_pmin, lt_pmax; float lt_min, lt_max, lt_last;
@@ -215,12 +215,12 @@ static void test_batt(dres *r)
     int mv = p.rail_mv > 0 ? p.rail_mv : hal_battery_mv();
     int pct = hal_battery_percent();
     float v = mv / 1000.0f, hi = p.external_power == 1 ? 5.2f : 4.4f;
-    RD(D_BATT, 0, "%.2f V  %d %%", v, pct);
+    RD(D_BATT, 0, "%.2f V  %d%%", v, pct);
     RD(D_BATT, 1, "%s", p.external_power == 1 ? "USB POWER SEEN" : p.external_power == 0 ? "ON THE CELLS" : "SUPPLY UNKNOWN");
     if (mv <= 0) { WHY(D_BATT, "NO RAIL READING"); res(D_BATT, ST_FAIL); }
     else if (v < 3.0f) { WHY(D_BATT, "%.2f V, TOO LOW", v); res(D_BATT, ST_FAIL); }
     else if (v > hi) { WHY(D_BATT, "%.2f V, TOO HIGH", v); res(D_BATT, ST_FAIL); }
-    else if (pct < 0 || pct > 100) { WHY(D_BATT, "%d %%, OUT OF RANGE", pct); res(D_BATT, ST_FAIL); }
+    else if (pct < 0 || pct > 100) { WHY(D_BATT, "%d%%, OUT OF RANGE", pct); res(D_BATT, ST_FAIL); }
     else { WHY(D_BATT, "%.2f V%s", v, p.external_power == 1 ? ", USB" : ""); res(D_BATT, ST_PASS); }
 }
 
@@ -276,8 +276,8 @@ static void test_mic(dres *r)
     else { WHY(D_MIC, "%.0f dB FLOOR", T.mic_min); res(D_MIC, ST_PASS); }
 }
 
-/* NMEA arriving = fields that only sentences write keep changing (UTC, satellites in
- * view, HDOP); a fix isn't needed */
+/* NMEA arriving = the driver's good-checksum sentence counter keeps climbing (a fix
+ * isn't needed); 2 s gives the UTC time to come through for the reading */
 static void test_gps(dres *r)
 {
     hal_gps *g = &T.gps;
@@ -285,23 +285,14 @@ static void test_gps(dres *r)
         if (r->el > 1.0f) { WHY(D_GPS, "NO REPLY"); res(D_GPS, ST_FAIL); }
         return;
     }
-    if (!T.gps_init) {
-        T.gps_init = 1;
-        T.gps_utc0 = g->utc_valid; T.gps_sod0 = g->utc_h * 3600 + g->utc_m * 60 + g->utc_s;
-        T.gps_view0 = g->sats_view; T.gps_hdop0 = g->hdop;
-        return;
-    }
-    int s = g->utc_h * 3600 + g->utc_m * 60 + g->utc_s;
-    if (g->utc_valid && (!T.gps_utc0 || s != T.gps_sod0)) T.gps_seen |= 1;
-    if (g->sats_view != T.gps_view0) T.gps_seen |= 2;
-    if (g->hdop != T.gps_hdop0) T.gps_seen |= 4;
-    if ((!T.gps_seen || r->el < 2.0f) && r->el < 10.0f) return;   /* 2 s: let the UTC through */
-    if (g->utc_valid) RD(D_GPS, 0, "UTC %02d:%02d:%02d", g->utc_h, g->utc_m, g->utc_s);
-    else RD(D_GPS, 0, "NO TIME YET");
+    if (!T.gps_init) { T.gps_init = 1; T.gps_n0 = g->sentences; return; }
+    uint32_t n = g->sentences - T.gps_n0;
+    if ((!n || r->el < 2.0f) && r->el < 10.0f) return;
+    if (g->utc_valid) RD(D_GPS, 0, "UTC %02d:%02d:%02d  %u SENTENCES", g->utc_h, g->utc_m, g->utc_s, (unsigned)n);
+    else RD(D_GPS, 0, "%u SENTENCES  NO TIME YET", (unsigned)n);
     RD(D_GPS, 1, "%d IN VIEW  %s", g->sats_view, g->fix3d ? "3D FIX" : g->valid ? "2D FIX" : "NO FIX");
-    if (!T.gps_seen) { WHY(D_GPS, "NO NMEA IN 10 s"); res(D_GPS, ST_FAIL); return; }
-    if (g->utc_valid && (T.gps_seen & 1)) WHY(D_GPS, "UTC %02d:%02d:%02d", g->utc_h, g->utc_m, g->utc_s);
-    else WHY(D_GPS, "%d IN VIEW", g->sats_view);
+    if (!n) { WHY(D_GPS, "NO NMEA IN 10 s"); res(D_GPS, ST_FAIL); return; }
+    WHY(D_GPS, "%u NMEA IN %.0f s", (unsigned)n, r->el);
     res(D_GPS, ST_PASS);
 }
 
@@ -327,12 +318,12 @@ static void test_env(dres *r)
         WHY(D_ENV, "NO SAMPLE IN 3 s"); res(D_ENV, ST_FAIL); return;
     }
     if (r->el < 1.0f) return;
-    RD(D_ENV, 0, "%.1f \xB0" "C  %.0f %% RH", e->temp_c, e->humidity);
+    RD(D_ENV, 0, "%.1f\xB0" "C  %.0f%% RH", e->temp_c, e->humidity);
     RD(D_ENV, 1, "%.1f hPa", e->pressure_hpa);
-    if (!isfinite(e->temp_c) || e->temp_c < -20 || e->temp_c > 60) { WHY(D_ENV, "%.0f \xB0" "C, OUT OF RANGE", e->temp_c); res(D_ENV, ST_FAIL); }
-    else if (!isfinite(e->humidity) || e->humidity < 0 || e->humidity > 100) { WHY(D_ENV, "%.0f %% RH, OUT", e->humidity); res(D_ENV, ST_FAIL); }
+    if (!isfinite(e->temp_c) || e->temp_c < -20 || e->temp_c > 60) { WHY(D_ENV, "%.0f\xB0" "C, OUT OF RANGE", e->temp_c); res(D_ENV, ST_FAIL); }
+    else if (!isfinite(e->humidity) || e->humidity < 0 || e->humidity > 100) { WHY(D_ENV, "%.0f%% RH, OUT", e->humidity); res(D_ENV, ST_FAIL); }
     else if (!isfinite(e->pressure_hpa) || e->pressure_hpa < 300 || e->pressure_hpa > 1100) { WHY(D_ENV, "%.0f hPa, OUT", e->pressure_hpa); res(D_ENV, ST_FAIL); }
-    else { WHY(D_ENV, "%.1f \xB0" "C  %.0f hPa", e->temp_c, e->pressure_hpa); res(D_ENV, ST_PASS); }
+    else { WHY(D_ENV, "%.1f\xB0  %.0f hPa", e->temp_c, e->pressure_hpa); res(D_ENV, ST_PASS); }
 }
 
 static void test_light(dres *r)
@@ -412,7 +403,7 @@ static void run_start(int first)
     hal_log("DIAG START");
     for (int d = 0; d < D_N; d++) {
         if (DI[d].ext && !(ext & DI[d].ext)) {
-            WHY(d, "NOT CONNECTED");
+            WHY(d, "NO MODULE");                 /* the OS's row word for an absent module */
             R[d].st = ST_ABSENT; R[d].t_done = -100;
             log_res(d);
         } else if (is_card(d)) { R[d].st = ST_WAIT; G.queue[G.nq++] = d; }
@@ -1003,10 +994,10 @@ static void diag_draw(gfx_fb *fb)
 }
 static int diag_input(const nos_input *in)
 {
-    if (nos_t - G.sw_t < FADE_S && G.pview != VIEW_NONE) {
-        if (in->type == IN_BTN || in->type == IN_BTN_LONG || in->type == IN_BTN_DOUBLE) return G.view != VIEW_LIST;
-        return 1;
-    }
+    int btn = in->type == IN_BTN || in->type == IN_BTN_LONG || in->type == IN_BTN_DOUBLE;
+    /* touches wait out a view cross-fade; the side button never does (the button card
+     * takes a press from its first frame) */
+    if (!btn && nos_t - G.sw_t < FADE_S && G.pview != VIEW_NONE) return 1;
     if (G.view != VIEW_LIST) return card_input(in);
     if (in->type == IN_BTN || in->type == IN_BTN_LONG || in->type == IN_BTN_DOUBLE) return 0;
     return list_input(in);
@@ -1042,7 +1033,7 @@ static void row_draw(gfx_fb *fb)
         ui_state(fb, UI_CX, 198, s, ui_dim(C_SEC, tk * (1.0f - kc)));
     }
     if (kc > 0) {
-        const char *s = r->st == ST_PASS ? "PASS" : r->st == ST_FAIL ? "FAIL" : "NOT CONNECTED";
+        const char *s = r->st == ST_PASS ? "PASS" : r->st == ST_FAIL ? "FAIL" : "NO MODULE";
         char b[24];
         snprintf(b, sizeof b, "[ %s ]", s);
         uint16_t c = absent ? C_DIS : C_PRI;
@@ -1051,7 +1042,7 @@ static void row_draw(gfx_fb *fb)
             int w = ui_label_width(b);
             dot_disc(fb, UI_CX - w * 0.5f - 16, 192, 10, ui_dim(C_RED, tk * kc));
         }
-        if (!absent || strcmp(r->why, "NOT CONNECTED")) dlab(fb, UI_CX, 228, r->why, ui_dim(C_SEC, tk * kc), UI_CENTER);
+        if (!absent || strcmp(r->why, "NO MODULE")) dlab(fb, UI_CX, 228, r->why, ui_dim(C_SEC, tk * kc), UI_CENTER);
     }
     ui_label(fb, UI_CX, 268, "READING", ui_dim(C_DIS, tk), UI_CENTER);
     if (kc > 0 && (r->rd[0][0] || r->rd[1][0])) {
