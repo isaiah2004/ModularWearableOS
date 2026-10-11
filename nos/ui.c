@@ -723,6 +723,14 @@ void ui_draw_toast(gfx_fb *fb, const char *text, float t)
         float dx = w * 0.5f - h * 0.5f, dy = UI_CY - (y0 + h * 0.5f);
         if (gfx_fast_sqrt(dx * dx + dy * dy) + h * 0.5f + 12.0f <= UI_R) break;
     }
+#ifdef GFX_COST_MODEL
+    /* sim only: copy past ~9 caps pushes the pill down onto the content */
+    static char s_warned[52];
+    if (y0 > 40 && strcmp(s_warned, b)) {
+        snprintf(s_warned, sizeof s_warned, "%s", b);
+        fprintf(stderr, "WARNING: toast %s is too long for the top slot (drops to y %.0f)\n", b, y0);
+    }
+#endif
     float wmax = 2.0f * (ui_half_width(y0 + h * 0.5f) - 12.0f - h * 0.5f) + h;
     if (w > wmax) w = wmax;
     float y = floorf(y0 - (1 - k) * (y0 + h + 4) + 0.5f);   /* k = 0: fully above the glass */
