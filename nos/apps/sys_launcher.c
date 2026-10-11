@@ -86,6 +86,7 @@ static void press_up(void)
 static int press_on(int id)
 {
     if (id < 0 || P.id != id) return 0;
+    if (P.down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
     return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
 }
 

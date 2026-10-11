@@ -100,6 +100,7 @@ static void press_up(void)
 static int press_on(int id)
 {
     if (id < 0 || P.id != id) return 0;
+    if (P.down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
     return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
 }
 
@@ -118,6 +119,8 @@ static struct {
     float rec_raw;           /* header: clock + battery (0) .. REC chip (1), linear */
     int rec_kind;            /* 1 track, 2 memo (kept while it fades out) */
     char rec_lbl[16];
+    float rec_open_t;        /* a tap on the chip: when its app opens (after the lit frames) */
+    int rec_ox, rec_oy;
 } C;
 
 static void tile_pos(int i, float *x, float *y)
@@ -220,6 +223,7 @@ static void c_enter(void)
     C.sl_val = nos_prefs.brightness / 100.0f;
     C.rec_kind = sys_rec_state(C.rec_lbl, sizeof C.rec_lbl);
     C.rec_raw = C.rec_kind ? 1.0f : 0.0f;  /* the sheet brings its header as it is */
+    C.rec_open_t = 0;
     if (nos_revealed()) return;            /* back from torch/settings: as it was */
     /* the finger is revealing the sheet: show everything at once */
     C.t_enter = nos_entered_by_finger() ? nos_t - 2.0f : nos_enter_t();
@@ -252,6 +256,10 @@ static void c_tick(float dt)
     int rk = sys_rec_state(lbl, sizeof lbl);
     if (rk) { C.rec_kind = rk; memcpy(C.rec_lbl, lbl, sizeof lbl); }
     C.rec_raw = m_clamp(C.rec_raw + (rk ? 1.0f : -1.0f) * dt / (6.0f / NOS_FPS), 0, 1);
+    if (C.rec_open_t > 0 && nos_t >= C.rec_open_t) {
+        C.rec_open_t = 0;
+        nos_open(sys_rec_screen(C.rec_kind), C.rec_ox, C.rec_oy);
+    }
 }
 
 /* build-in: tiles arrive row by row (2 frames apart), growing the last few px */
@@ -335,9 +343,11 @@ static void draw_header(gfx_fb *fb)
     if (kc <= 0) return;
     char b[16];
     snprintf(b, sizeof b, "%d%%", C.bat);
-    ui_label(fb, UI_CX - 12, HEAD_Y, C.time, gdim(C_PRI, kc), UI_RIGHT);
-    dot_disc(fb, UI_CX, HEAD_Y - 6, 4, gdim(C_DIS, kc));
-    ui_label(fb, UI_CX + 12, HEAD_Y, b, gdim(C.charging ? C_PRI : C_SEC, kc), UI_LEFT);
+    /* the group "10:09 . 78%" centred as a whole */
+    int wt = ui_label_width(C.time), wb = ui_label_width(b), x0 = UI_CX - (wt + 24 + wb) / 2;
+    ui_label(fb, x0, HEAD_Y, C.time, gdim(C_PRI, kc), UI_LEFT);
+    dot_disc(fb, (float)(x0 + wt + 12), HEAD_Y - 6, 4, gdim(C_DIS, kc));
+    ui_label(fb, x0 + wt + 24, HEAD_Y, b, gdim(C.charging ? C_PRI : C_SEC, kc), UI_LEFT);
 }
 
 static void c_draw(gfx_fb *fb)
@@ -436,9 +446,10 @@ static int c_input(const nos_input *in)
     case IN_TAP: {
         int i = tile_at(in->x, in->y);
         if (i != P.id) press_cancel();
-        if (i == ID_REC) {        /* the recording: open its app */
-            press_up();
-            nos_open(sys_rec_screen(C.rec_kind), in->x, in->y);
+        if (i == ID_REC) {        /* the recording: lit 3 frames, then its app opens */
+            P.id = ID_REC; P.down = 0; P.until = nos_t + 0.5f;
+            C.rec_open_t = nos_t + 3.0f / NOS_FPS - 0.001f;
+            C.rec_ox = in->x; C.rec_oy = in->y;
             return 1;
         }
         if (i == NT) {            /* tap on the bar: jump there */

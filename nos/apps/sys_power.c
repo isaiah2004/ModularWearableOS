@@ -47,6 +47,7 @@ static void press_up(void)
 static int press_on(int id)
 {
     if (id < 0 || P.id != id) return 0;
+    if (P.down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
     return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
 }
 
@@ -212,8 +213,8 @@ static void draw_pill(gfx_fb *fb, int i, float k, float dy)
     float ka = aa, kd = 0;
     if (S.done == i) {                                  /* commit: armed label out, state in */
         float c = (nos_t - S.done_t) / DONE_S;
-        ka *= q8(1.0f - 2.0f * c);
-        kd = q8(2.0f * c - 1.0f);
+        ka *= q8(1.0f - c);                             /* overlapped: never an empty pill */
+        kd = q8(c);
     }
     if (ka > 0) {
         uint16_t red = ui_dim(ui_mix(fill, C_RED, ka), k);

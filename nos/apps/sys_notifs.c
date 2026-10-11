@@ -69,6 +69,7 @@ static void press_up(press_t *p)
 static int press_on(const press_t *p, int id)
 {
     if (id < 0 || p->id != id) return 0;
+    if (p->down && nos_touch_travel() > 8) return 0;   /* a drag is starting: no flash */
     return p->down ? nos_t - p->t0 >= 0.09f : nos_t < p->until;
 }
 #define ID_CLEAR 1000
@@ -247,8 +248,7 @@ static void n_tick(float dt)
         svc_notif_clear();
         N.n = 0;
         update_bounds();
-        msc_jump(&N.sc, 0);
-        N.t_empty = nos_t;
+        msc_jump(&N.sc, 0);              /* the empty state is already building (start_clear) */
     }
     N.now = hal_epoch_seconds();
     N.phone = svc_sys()->phone_connected || hal_phone_connected();
@@ -327,6 +327,7 @@ static void draw_header(gfx_fb *fb, float off)
 static void n_draw(gfx_fb *fb)
 {
     if (N.n == 0 && N.out_i < 0 && !N.fly) { draw_empty(fb); return; }
+    if (N.clearing && nos_t >= N.t_empty) draw_empty(fb);   /* under the last cards out */
     float off = floorf(N.sc.x + 0.5f);
     draw_header(fb, off);
     int vis = 0;
@@ -408,6 +409,8 @@ static void start_clear(void)
     N.clear_n = vis > 0 ? vis : 1;
     N.clearing = 1;
     N.t_clear = nos_t;
+    /* the empty state builds while the last card exits: no black glass between */
+    N.t_empty = nos_t + (N.clear_n - 1) * (2.0f / NOS_FPS) + 0.05f;
 }
 
 static int n_input(const nos_input *in)
