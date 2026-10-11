@@ -102,19 +102,24 @@ static void tx_begin(int type, const nos_screen *under, const nos_screen *over, 
     T.over = over;
     T.span = tx_span(type);
     T.p = p_from;
-    T.use_tween = (type == TX_IRIS || type == TX_DISSOLVE);
+    /* Nothing here follows a finger (finger releases set their own spring), so no
+     * spring either: a spring's settle is ~6 frames of 1-7 px creep, all full repaints.
+     * Opens ease in on a tween; closes leave at constant speed like the button. A tap
+     * during an open lands it; one during a close is spent (press_begin): neither can
+     * be grabbed back mid-flight. */
+    int closing = type != TX_IRIS && type != TX_DISSOLVE && p_to < p_from && p_to <= 0.0f;
+    T.use_tween = !closing;
+    msp_init(&T.sp, p_from * T.span, SPRING_PAGE);
     if (T.use_tween) {
-        float dur = type == TX_IRIS ? IRIS_S : 0.30f;
-        mtw_start(&T.tw, p_from, p_to, dur, type == TX_IRIS ? &EASE_STANDARD : &EASE_INOUT);
-        T.tw.t0 -= nos_dt;            /* input -> the next frame already moves (springs step too) */
-    } else {
-        msp_init(&T.sp, p_from * T.span, SPRING_PAGE);
-        msp_to(&T.sp, p_to * T.span);
+        float dur = type == TX_IRIS ? IRIS_S : type == TX_DISSOLVE ? 0.30f
+                  : 0.34f * (fabsf(p_to - p_from) > 0.45f ? fabsf(p_to - p_from) : 0.45f);
+        mtw_start(&T.tw, p_from, p_to, dur, type == TX_DISSOLVE ? &EASE_INOUT : &EASE_STANDARD);
+        T.tw.t0 -= nos_dt;            /* input -> the next frame already moves */
     }
     /* which finger travel grows p, so a moving transition can be grabbed */
     T.axis = (type == TX_RISE || type == TX_DROP) ? AXIS_Y : AXIS_X;
     T.sign = type == TX_DROP ? 1 : -1;
-    T.lin_v = 0;
+    T.lin_v = closing ? 1.0f / 0.22f : 0.0f;
     T.state = TXS_AUTO;
     s_force_full = 1;
     if (p_to > p_from) banner_yield(type);
@@ -165,12 +170,21 @@ void nos_replace(const nos_screen *s, int tx)
 
 /* A push still opening shows `s` instead (a double press caught the launcher's iris on
  * its way in): the geometry keeps going, only the screen inside changes. */
+/* the screen a retarget replaced: dims out inside the iris for RT_FRAMES, then leaves */
+#define RT_FRAMES 3
+static const nos_screen *s_rt_old;
+static float s_rt_t0;
+static int s_iris_overk = 32;
+static int rt_frame(void) { return (int)((nos_t - s_rt_t0) * NOS_FPS + 0.5f); }
+static void rt_flush(void) { if (s_rt_old) { const nos_screen *o = s_rt_old; s_rt_old = 0; call_leave(o); } }
+
 int nos_retarget(const nos_screen *s)
 {
     if (s_depth <= 1 || T.state != TXS_AUTO || T.popping || T.over != top_screen() || !s) return 0;
     const nos_screen *old = top_screen();
     if (old == s) return 1;
-    call_leave(old);
+    rt_flush();
+    s_rt_old = old; s_rt_t0 = nos_t;              /* leaves once its dim-out is done */
     s_stack[s_depth - 1].s = s;
     /* its build starts where a fresh iris would reach IRIS_BUILD, or now if past it */
     if (T.type == TX_IRIS && T.use_tween) {
@@ -505,6 +519,9 @@ static void press_begin(int x, int y)
         P.owner = 1;
         return;
     }
+    /* a screen on its way out keeps going: the touch is spent (landing it would be a
+     * cut, grabbing it would bring back a screen that already acted) */
+    if (T.state == TXS_AUTO && T.popping && (T.use_tween || T.lin_v > 0)) { P.owner = 3; return; }
     if (T.state == TXS_AUTO) tx_finish();          /* nearly settled / tween: land it, tap through */
     send(IN_DOWN);
 }
@@ -905,7 +922,7 @@ static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_scree
             if (span[k][1] > span[k][0]) draw_screen(&o, under, span[k][0], 0, span[k][1], GFX_H, 0, 0, dimk);
         uint32_t q1 = hal_micros();
         nos_dbg_us[0] += q1 - q;
-        draw_screen(fb, over, A0, 0, A1, GFX_H, 0, 0, 32);   /* once, straight in */
+        draw_screen(fb, over, A0, 0, A1, GFX_H, 0, 0, s_iris_overk);   /* once, straight in */
         uint32_t q2 = hal_micros();
         nos_dbg_us[1] += q2 - q1;
         unsigned sel = 0;                            /* sim cost model only */
@@ -983,7 +1000,11 @@ static void scene_draw(gfx_fb *fb)
             break;
         }
         if (T.type == TX_IRIS) {
-            iris_draw(fb, T.under, p > 0.001f ? T.over : 0, p, 32 - (int)lroundf(18.0f * p));
+            const nos_screen *over = T.over;
+            int n = s_rt_old ? rt_frame() : RT_FRAMES;
+            if (n < RT_FRAMES) { over = s_rt_old; s_iris_overk = 32 - 8 * (n + 1); }   /* 24, 16, 8 */
+            iris_draw(fb, T.under, p > 0.001f ? over : 0, p, 32 - (int)lroundf(18.0f * p));
+            s_iris_overk = 32;
             break;
         }
         dissolve_draw(fb, T.under, T.over, p);
@@ -1147,6 +1168,7 @@ static void tick_screens(float dt)
 
 static void tx_complete(void)
 {
+    rt_flush();
     if (T.p <= 0.001f && T.popping && s_depth > 1) {      /* the over screen leaves */
         call_leave(top_screen());
         s_depth--;
@@ -1160,6 +1182,7 @@ static void tx_complete(void)
 
 static void tick_transition(float dt)
 {
+    if (s_rt_old && rt_frame() >= RT_FRAMES) rt_flush();
     if (T.state != TXS_AUTO) return;
     int moving;
     if (T.lin_v > 0) {

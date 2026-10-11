@@ -388,7 +388,7 @@ static int set_key(const char *key, const char *val, const char *rest)
     else if (!_stricmp(key, "present")) hal_ext_sim_present = (uint32_t)strtoul(val, 0, 0);
     else if (!_stricmp(key, "full")) nos_debug_force_full = atoi(val);
     else if (!_stricmp(key, "postdim")) { extern int nos_debug_post_dim; nos_debug_post_dim = atoi(val); }
-    else if (!_stricmp(key, "aod")) nos_aod = atoi(val);
+    else if (!_stricmp(key, "aod")) { nos_aod = atoi(val); if (!nos_aod) nos_keep_awake(); }   /* the host wakes like this */
     else if (!_stricmp(key, "selftest_bug")) { extern int nos_selftest_bug; nos_selftest_bug = atoi(val); }
     else if (!_stricmp(key, "imu")) {
         if (!_stricmp(val, "off")) sim_imu_override = 0;
