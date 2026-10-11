@@ -111,7 +111,8 @@ static void f_tick(float dt)
 {
     if (F.on_home) sys_home_rec_tick(dt);
     if (F.cancel) F.x = mtw_value(&F.cancel_tw);           /* back over CANCEL_S, fading as it goes */
-    if (F.chosen == 1 && nos_t - F.t_chosen >= close_s()) { F.chosen = 2; finish(); }
+    /* pop on the frame the fade (8 steps) reaches 0: no idle frame before it */
+    if (F.chosen == 1 && nos_t - F.t_chosen >= close_s() * (15.0f / 16.0f) - 0.001f) { F.chosen = 2; finish(); }
     if (F.settling) {
         int m = msp_step(&F.sp, dt);
         /* the last sub-pixel of a settle would cost a whole-page repaint for nothing */
@@ -132,7 +133,9 @@ static void f_tick(float dt)
      * slide draws both) */
     float pos = F.x / PAGE_W;
     int sliding = fabsf(pos - floorf(pos + 0.5f)) * PAGE_W > 0.5f;
-    F.c.lite = sliding ? 1.0f : dim_lin();
+    if (F.cancel)                         /* back with the fade: the ghosts return in steps */
+        F.c.lite = floorf(fmaxf(dim_lin(), 1.0f - mtw_progress(&F.cancel_tw)) * 8.0f + 0.5f) / 8.0f;
+    else F.c.lite = sliding ? 1.0f : dim_lin();
     int s0 = (int)floorf(F.x / PAGE_W);
     for (int s = s0; s <= s0 + 1; s++) {
         if (s < 0 || s >= nos_face_count) continue;

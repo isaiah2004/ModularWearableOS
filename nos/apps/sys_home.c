@@ -642,7 +642,8 @@ static void rec_back(gfx_fb *fb, const int rr[4], uint16_t to, float a, float rm
 
 static float q4(float x) { return floorf(m_clamp(x, 0, 1) * 4.0f + 0.5f) / 4.0f; }
 
-static void draw_rec_aod_a(gfx_fb *fb, const nos_face *f, float a);
+static int s_rec_wy;     /* baseline of the AOD word as last drawn (the timer rides it) */
+static int draw_rec_aod_to(gfx_fb *fb, const nos_face *f, float a, int tx, int ty, float e, float m);
 static void draw_rec_a(gfx_fb *fb, float a, const nos_face *f)
 {
     int x0, y, w;
@@ -651,18 +652,28 @@ static void draw_rec_a(gfx_fb *fb, float a, const nos_face *f)
     /* fades with the face build-in, and comes up with the face out of AOD (4 steps), so
      * neither a wake nor a build ever pops it in at full; out of AOD the grey AOD chip
      * hands over to it (it never blinks out between) */
-    float kw = q4((nos_t - H.wake_t) / (6.0f / NOS_FPS));
-    if (kw < 1.0f && !light) draw_rec_aod_a(fb, f, (1.0f - kw) * a);
-    float k = q4(H.rec_raw) * q4(H.c.enter) * kw * a;
-    if (k <= 0.0f) return;
+    float kr = m_clamp((nos_t - H.wake_t) / (6.0f / NOS_FPS), 0, 1), kw = q4(kr);
     const rec_slot *sl = rec_slot_of(f);
+    /* out of AOD the grey AOD "REC" is the chip's word: it slides onto the chip's place
+     * and takes its colours, while the backing and the timer fade in around it */
+    int handoff = kw < 1.0f && !light && !strncmp(H.rec_lbl, "REC ", 4);
+    float he = bezier_ease(&EASE_STANDARD, kr), ha = q4(H.rec_raw) * a;
+    float k = q4(H.rec_raw) * q4(H.c.enter) * kw * a;
+    if (k <= 0.0f) {
+        if (handoff) draw_rec_aod_to(fb, f, ha, x0, y, he, kw);
+        return;
+    }
     int r[4];
     rec_rect(x0, y, w, r);
     /* a backing that clears the face art under it (ghost dots, hands, its own status) */
     rec_back(fb, r, light ? C_WHITE : 0, k, (float)sl->rmax);
     uint16_t dot = light ? ui_mix(C_WHITE, C_RED, k) : ui_dim(C_RED, k);
     uint16_t ink = light ? grey565((int)lroundf(255.0f * (1.0f - k))) : gdim(C_PRI, k);
-    if (sl->no_dot) ui_label(fb, x0, y, H.rec_lbl, ink, UI_LEFT);
+    if (handoff) {                                /* the word is the moving AOD one, the timer rides it */
+        int wx = draw_rec_aod_to(fb, f, ha, x0, y, he, kw);
+        ui_label(fb, wx + ui_label_width("REC "), s_rec_wy, H.rec_lbl + 4, ink, UI_LEFT);
+    }
+    else if (sl->no_dot) ui_label(fb, x0, y, H.rec_lbl, ink, UI_LEFT);
     else sys_rec_draw(fb, x0, y, H.rec_lbl, dot, ink);
     if (sl->shares_status && status_shown()) {
         char b[8];
@@ -687,17 +698,29 @@ void sys_home_draw_rec(gfx_fb *fb, float a, int face)
 
 /* In AOD: "REC" in C_DIS after a 6 px C_SEC dot (no red, no backing; ~0.1 % lit) on the
  * face's slot, drifting a few px with the minute like the AOD faces. */
-static void draw_rec_aod_a(gfx_fb *fb, const nos_face *f, float a)
+/* ...and on a wake it moves by e (0..1) onto the awake chip at (tx, ty): its dot onto
+ * the chip's dot, its word onto the chip's "REC", its greys toward the chip's red and
+ * white by mix */
+static int draw_rec_aod_to(gfx_fb *fb, const nos_face *f, float a, int tx, int ty, float e, float mix)
 {
-    if (!H.rec_kind || H.rec_raw <= 0.0f || a <= 0.0f) return;
+    if (!H.rec_kind || H.rec_raw <= 0.0f || a <= 0.0f) return tx;
     const rec_slot *sl = rec_slot_of(f);
     const char *t = "REC";
     int lw = ui_label_width(t), w = sl->no_dot ? lw : 6 + 8 + lw;
     int m = H.c.dt.minute;
-    int x0 = UI_CX - w / 2 + (m * 7) % 5 - 2, y = sl->y + (m * 3) % 5 - 2;
-    if (!sl->no_dot) { dot_disc(fb, x0 + 3.0f, y - 6.5f, 6, gdim(C_SEC, a)); x0 += 14; }
-    ui_label(fb, x0, y, t, gdim(C_DIS, a), UI_LEFT);
+    float x0 = (float)(UI_CX - w / 2 + (m * 7) % 5 - 2), y = (float)(sl->y + (m * 3) % 5 - 2);
+    float dx = x0 + 3.0f, lx = sl->no_dot ? x0 : x0 + 14.0f, d = 6.0f;
+    if (e > 0.0f) {
+        float tdx = tx + REC_DOT * 0.5f, tlx = sl->no_dot ? (float)tx : (float)(tx + REC_DOT + REC_GAP);
+        dx += (tdx - dx) * e; lx += (tlx - lx) * e; y += (ty - y) * e; d += (REC_DOT - d) * e;
+    }
+    uint16_t dc = mix > 0 ? ui_mix(C_SEC, C_RED, mix) : C_SEC, lc = mix > 0 ? ui_mix(C_DIS, C_PRI, mix) : C_DIS;
+    if (!sl->no_dot) dot_disc(fb, dx, y - 6.5f, d, a < 1.0f ? ui_dim(dc, a) : dc);
+    ui_label(fb, (int)lroundf(lx), (int)lroundf(y), t, a < 1.0f ? gdim(lc, a) : lc, UI_LEFT);
+    s_rec_wy = (int)lroundf(y);
+    return (int)lroundf(lx);
 }
+static void draw_rec_aod_a(gfx_fb *fb, const nos_face *f, float a) { draw_rec_aod_to(fb, f, a, 0, 0, 0.0f, 0.0f); }
 static void draw_rec_aod(gfx_fb *fb) { draw_rec_aod_a(fb, cur_face(), 1.0f); }
 
 /* the finger is on the chip: its line, grown to the 88 px touch target */
