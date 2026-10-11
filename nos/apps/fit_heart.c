@@ -791,7 +791,7 @@ const nos_screen scr_heart = { "HEART RATE", heart_enter, heart_leave, heart_tic
 /* ============================================================== WIDGET
  * Last reading + a 24-column mini history + "TAP TO MEASURE". The number builds in
  * (dot sparkle, 0.30 s) as soon as the page slides into view. Without the HR module:
- * "--" on a ghost grid, [ NO HR MODULE ], no tap hint. */
+ * "--" on a ghost grid, [ NO HR SENSOR ], no tap hint. */
 static struct {
     hdata hd;
     float t;
@@ -853,12 +853,12 @@ static void wgh_draw(gfx_fb *fb)
     fmt_bpm(b, sizeof b, val);
     dot_text_anim(fb, &st, UI_CX, 146, b, 1, val ? p : 1, DOT_REVEAL_RANDOM, 5);
     ui_label(fb, UI_CX, 260, "BPM", C_SEC, UI_CENTER);
-    if (!WH.present) ui_state(fb, UI_CX, 288, "NO HR MODULE", C_DIS);
+    if (!WH.present) ui_state(fb, UI_CX, 288, "NO HR SENSOR", C_DIS);
     else if (WH.ago[0]) ui_label(fb, UI_CX, 288, WH.ago, C_DIS, UI_CENTER);
     else ui_label(fb, UI_CX, 288, "NO READINGS YET", C_DIS, UI_CENTER);
     const float pitch = 9.0f;
     float x0 = UI_CX - 12 * pitch;
-    /* no module: an empty grid (ghost cells only), no lit history under [ NO HR MODULE ] */
+    /* no module: an empty grid (ghost cells only), no lit history under [ NO HR SENSOR ] */
     static const uint8_t k_none[24];
     dot_columns(fb, x0, 308, 24, 5, pitch, 6.6f, WH.present ? WH.cols : k_none, C_SEC, C_GHOST);
     if (WH.present) ui_label(fb, UI_CX, 394, "TAP TO MEASURE", C_DIS, UI_CENTER);
