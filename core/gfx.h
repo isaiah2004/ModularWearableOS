@@ -68,7 +68,7 @@ static inline uint16_t gfx_ink(const gfx_fb *fb, uint16_t c)
 {
     if (!fb->dim) return c;
     uint32_t d = (c | ((uint32_t)c << 16)) & 0x07E0F81Fu;
-    d = ((d * (uint32_t)(32 - fb->dim)) >> 5) & 0x07C0F81Fu;
+    d = ((d * (uint32_t)(32 - fb->dim) + 0x02008010u) >> 5) & 0x07E0F81Fu;   /* rounded: greys stay neutral */
     return (uint16_t)(d | (d >> 16));
 }
 

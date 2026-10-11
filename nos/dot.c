@@ -301,7 +301,7 @@ static void stamp_mask(const dclip *k, const dmask *m, float cx, float cy, uint1
             STAT(dot_stat_blend++);
             a = (a + 7) >> 3;
             uint32_t t = ((uint32_t)d[i] | ((uint32_t)d[i] << 16)) & 0x07E0F81Fu;
-            t = ((s * a + t * (32 - a)) >> 5) & 0x07E0F81Fu;
+            t = ((s * a + t * (32 - a) + 0x02008010u) >> 5) & 0x07E0F81Fu;   /* rounded: greys stay grey (gfx_blend565) */
             d[i] = (uint16_t)(t | (t >> 16));
         }
     }

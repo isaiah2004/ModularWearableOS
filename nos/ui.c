@@ -52,13 +52,13 @@ uint16_t ui_mix(uint16_t a, uint16_t b, float t)
     int ra = (a >> 11) * 255 / 31, ga = ((a >> 5) & 63) * 255 / 63, ba = (a & 31) * 255 / 31;
     int rb = (b >> 11) * 255 / 31, gb = ((b >> 5) & 63) * 255 / 63, bb = (b & 31) * 255 / 31;
     int r = ra + (int)lroundf((rb - ra) * t), g = ga + (int)lroundf((gb - ga) * t), bl = ba + (int)lroundf((bb - ba) * t);
-    /* two neutral greys always mix to a neutral grey: one 5-bit level, green = 2x
-     * (truncating each channel separately leaves g one step high: a green cast) */
+    /* two neutral greys always mix to a neutral grey: one 5-bit level, green the
+     * nearest 6-bit match (2x below level 16, 2x + 1 from 16: 2x alone reads pink) */
     int na = (a >> 11) == (a & 31) && (((a >> 5) & 63) >> 1) == (a & 31);
     int nb = (b >> 11) == (b & 31) && (((b >> 5) & 63) >> 1) == (b & 31);
     if (na && nb) {
         int l5 = (r * 31 + 127) / 255;
-        return (uint16_t)(l5 << 11 | (l5 * 2) << 5 | l5);
+        return (uint16_t)(l5 << 11 | (l5 * 2 + (l5 >= 16)) << 5 | l5);
     }
     return GFX_RGB(r, g, bl);
 }

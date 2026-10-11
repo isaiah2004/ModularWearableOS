@@ -26,9 +26,9 @@
 #define C_SURF3   0x2945   /* #2A2A2A pressed on raised */
 #define C_LINE    0x2104   /* #222222 hairlines, empty segments */
 #define C_LINE2   0x3186   /* #333333 visible borders, off tracks */
-#define C_DIS     0x632C   /* #666666 disabled, tertiary */
-#define C_SEC     0x9CD3   /* #999999 secondary text */
-#define C_PRI     0xEF5D   /* #E8E8E8 primary text */
+#define C_DIS     0x630C   /* #636363 disabled, tertiary */
+#define C_SEC     0x9CF3   /* #9C9C9C secondary text */
+#define C_PRI     0xEF7D   /* #EEEEEE primary text (neutral: 0xEF5D read pink) */
 #define C_WHITE   0xFFFF
 #define C_RED     0xD0C4   /* #D71921 Nothing red */
 #define C_RED_D   0xB083   /* #B01319 pressed red */

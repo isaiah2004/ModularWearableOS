@@ -642,9 +642,8 @@ void nos_set_stripes(uint16_t *a, uint16_t *b, int rows, void (*wait_free)(void)
 }
 void nos_set_scratch(uint16_t *buf) { s_scratch = buf; }
 
-/* Dim: keep k/32 of every channel. One multiply per lit pixel. Truncating, then
- * dropping green's low bit, keeps neutral greys neutral (g6 = 2 * r5 stays exact)
- * without a per-pixel branch; the lost bit is invisible on a dimmed backdrop. */
+/* Dim: keep k/32 of every channel, rounded per lane (as gfx_ink): neutral greys stay
+ * neutral without a per-pixel branch. One multiply per lit pixel. */
 static void dim_rows(gfx_fb *fb, int c0, int c1, int k)
 {
     if (fb->rec || k >= 32 || c1 <= c0) return;
@@ -655,7 +654,7 @@ static void dim_rows(gfx_fb *fb, int c0, int c1, int k)
             uint32_t c = p[x];
             if (!c) continue;
             uint32_t d = (c | (c << 16)) & 0x07E0F81Fu;
-            d = ((d * (uint32_t)k) >> 5) & 0x07C0F81Fu;
+            d = ((d * (uint32_t)k + 0x02008010u) >> 5) & 0x07E0F81Fu;   /* as gfx_ink */
             p[x] = (uint16_t)(d | (d >> 16));
         }
     }
