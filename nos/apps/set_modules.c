@@ -71,14 +71,14 @@ static const mod_info MI[M_COUNT] = {
       "GPS MODULE", "UART1  RX 7  TX 17" },
     { "Cellular", "UART0  EG800AK", "CELLULAR", DOT_ICON_SIGNAL, EXT_LTE, "Add the LTE strap to text without your phone",
       "LTE MODULE", "RX 44  TX 43  PWRKEY GPIO 18" },
-    { "Environment", "I2C 0x76  BME280", "ENVIRONMENT", DOT_ICON_THERMO, EXT_ENV, "Add the climate sensor for pressure",
-      "CLIMATE MODULE", "0x76/77  SDA 47  SCL 48" },
+    { "Climate", "I2C 0x76  BME280", "CLIMATE", DOT_ICON_THERMO, EXT_ENV, "Add the climate sensor for pressure",
+      "CLIMATE MODULE", "I2C 0x76  SDA 47  SCL 48" },
     { "Light", "I2C 0x39  APDS-9960", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, "Add the light sensor for auto brightness",
-      "LIGHT SENSOR MODULE", "0x39  SDA 47  SCL 48" },
+      "LIGHT SENSOR MODULE", "I2C 0x39  SDA 47  SCL 48" },
     { "Compass", "I2C 0x0D  QMC5883L", "COMPASS", DOT_ICON_COMPASS, EXT_MAG, "Add the compass to see your heading",
-      "COMPASS MODULE", "0x0D  SDA 47  SCL 48" },
+      "COMPASS MODULE", "I2C 0x0D  SDA 47  SCL 48" },
     { "Heart rate", "I2C 0x57  MAX30102", "HEART RATE", DOT_ICON_HEART, EXT_HR, "Add the strap to measure BPM and SpO2",
-      "HR SENSOR MODULE", "0x57  SDA 47  SCL 48" },
+      "HR SENSOR MODULE", "I2C 0x57  SDA 47  SCL 48" },
 };
 
 static const char *const k_hap_names[] = { "Tick", "Click", "Double", "Heavy", "Buzz", "Alarm", "Heartbeat" };
@@ -981,17 +981,21 @@ static void detail_draw(gfx_fb *fb)
     }
     case M_HR: {
         hero(fb, 104);
-        /* the state slot cross-fades over 8 levels; trace and hint follow the same step */
-        float p = floorf(m_clamp((nos_t - D.hrs_t) / 0.2f, 0, 1) * 8.0f + 0.5f) / 8.0f;
+        /* the state slot: the old word fades out, then the new one in (0.24 s, 8 levels);
+         * trace and hint follow the same two halves */
+        float p = m_clamp((nos_t - D.hrs_t) / 0.24f, 0, 1);
+        float kout = floorf(m_clamp(1.0f - 2.0f * p, 0, 1) * 8.0f + 0.5f) / 8.0f;
+        float kin = floorf(m_clamp(2.0f * p - 1.0f, 0, 1) * 8.0f + 0.5f) / 8.0f;
         for (int pass = 0; pass < 2; pass++) {
             int st = pass ? D.hrs : D.hrs_prev;
-            float k = pass ? p : 1.0f - p;
+            float k = pass ? kin : kout;
             if (k <= 0) continue;
             if (st == 2) ui_label(fb, UI_CX, 204, "BPM", ui_dim(C_SEC, k), UI_CENTER);
             else ui_state(fb, UI_CX, 204, st ? "NO CONTACT" : "MEASURING", ui_dim(C_SEC, k));
         }
-        float kt = (D.hrs != 1 ? p : 0) + (D.hrs_prev != 1 ? 1.0f - p : 0);   /* the trace: not with no contact */
-        float kh = 1.0f - kt;
+        float kt = D.hrs != 1 && D.hrs_prev != 1 ? 1.0f :             /* the trace: not with no contact */
+                   (D.hrs != 1 ? kin : 0) + (D.hrs_prev != 1 ? kout : 0);
+        float kh = D.hrs == 1 && D.hrs_prev == 1 ? 1.0f : (D.hrs == 1 ? kin : 0) + (D.hrs_prev == 1 ? kout : 0);
         if (kt > 0) {
             const float x0 = UI_CX - 23.5f * 6.0f;
             for (int i = 0; i < 48; i++) {
@@ -1005,7 +1009,7 @@ static void detail_draw(gfx_fb *fb)
             ui_label(fb, UI_CX, 368, "SIGNAL", ui_dim(C_DIS, kt), UI_CENTER);
             if (kt >= 1) lines(fb, 396);
         }
-        if (kh > 0) ui_label(fb, UI_CX, 296, "WEAR IT SNUG, SENSOR ON SKIN", ui_dim(C_DIS, kh), UI_CENTER);
+        if (kh > 0) ui_label(fb, UI_CX, 296, "SENSOR ON SKIN", ui_dim(C_DIS, kh), UI_CENTER);
         break;
     }
     default: break;

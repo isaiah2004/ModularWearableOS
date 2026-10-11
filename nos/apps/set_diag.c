@@ -66,7 +66,7 @@ static const dinfo DI[D_N] = {
     { "Speaker", "SPEAKER", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, { "YOU HEARD THE CHIME", 0 } },
     { "GPS", "GPS", "GPS", DOT_ICON_SAT, EXT_GPS, { "NMEA SENTENCES IN 10 s", "A FIX IS NOT NEEDED" } },
     { "Cellular", "CELLULAR", "LTE", DOT_ICON_SIGNAL, EXT_LTE, { "ANSWERS AT IN 25 s", 0 } },
-    { "Environment", "ENVIRONMENT", "ENV", DOT_ICON_THERMO, EXT_ENV,
+    { "Climate", "CLIMATE", "CLIMATE", DOT_ICON_THERMO, EXT_ENV,
       { "-20 TO 60\xB0" "C, 0-100%", "300 TO 1100 hPa" } },
     { "Light", "LIGHT", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, { "0 LUX OR MORE", "READING NOT FROZEN" } },
     { "Compass", "COMPASS", "MAG", DOT_ICON_COMPASS, EXT_MAG, { "FIELD 20 TO 70 uT", "READING NOT FROZEN" } },
@@ -74,7 +74,7 @@ static const dinfo DI[D_N] = {
 };
 
 /* ======================================================================= results */
-enum { ST_WAIT = 0, ST_RUN, ST_ASK, ST_PASS, ST_FAIL, ST_ABSENT };
+enum { ST_WAIT = 0, ST_RUN, ST_ASK, ST_PASS, ST_FAIL, ST_ABSENT, ST_SKIP };   /* SKIP: a card left untested */
 typedef struct {
     int st;
     float el;                 /* test clock, s: advances only while the app is on screen */
@@ -106,9 +106,9 @@ static struct {
     int queue[4], nq, qi;     /* the cards of this run */
     int view, pview;          /* -1 the list, else the D_* card on screen */
     float sw_t, build_t;      /* view switch time; the view's entry build clock */
-    int npass, nfail, ntested;
+    int npass, nfail, ntested, nskip;
     char hero[12];
-    char cnt_from[12], cnt_to[12]; float cnt_t;   /* "8/13" tested-and-resolved, morphing */
+    char cnt_from[16], cnt_to[16]; float cnt_t;   /* "8 OF 13" tested parts resolved */
     int pend; float pend_t;   /* a list fading out before a RE-RUN or the fails-first re-layout */
     float title_off0, title_t0;   /* the title slides back from this scroll after a reset */
     int covered;              /* a row page is on top */
@@ -123,7 +123,7 @@ static int resolved(int st) { return st >= ST_PASS; }
 
 static void log_res(int d)
 {
-    static const char *const W[] = { "WAIT", "RUN", "ASK", "PASS", "FAIL", "ABSENT" };
+    static const char *const W[] = { "WAIT", "RUN", "ASK", "PASS", "FAIL", "ABSENT", "SKIP" };
     char b[160], o[160];
     int n = snprintf(b, sizeof b, "DIAG %s %s %s", DI[d].log, W[R[d].st], R[d].why);
     for (int i = 0; i < 2 && n > 0 && n < (int)sizeof b; i++)
@@ -184,8 +184,8 @@ static void test_imu(dres *r)
     if (r->el < 1.0f) return;
     const hal_imu *l = &T.imu_last;
     float g = T.imu_n ? T.imu_gsum / T.imu_n : 0;
-    RD(D_IMU, 0, "X %+.2f  Y %+.2f  Z %+.2f g", l->ax, l->ay, l->az);
-    RD(D_IMU, 1, "%d SAMPLES  GYRO %.0f \xB0/s", T.imu_n, T.imu_gyro);
+    RD(D_IMU, 0, "X %+.2f  Y %+.2f", l->ax, l->ay);
+    RD(D_IMU, 1, "Z %+.2f g  GYRO %.0f\xB0/s", l->az, T.imu_gyro);
     if (T.imu_n < 3) { WHY(D_IMU, "NO FRESH SAMPLES"); res(D_IMU, ST_FAIL); }
     else if (g < 0.8f) { WHY(D_IMU, "%.2f g, TOO LOW", g); res(D_IMU, ST_FAIL); }
     else if (g > 1.2f) { WHY(D_IMU, "%.2f g, TOO HIGH", g); res(D_IMU, ST_FAIL); }
@@ -205,7 +205,7 @@ static void test_rtc(dres *r)
     if (ds < -43200) ds += 86400;
     const hal_datetime *a = &T.rtc0;
     RD(D_RTC, 0, "%02d:%02d:%02d TO %02d:%02d:%02d", a->hour, a->minute, a->second, d1.hour, d1.minute, d1.second);
-    RD(D_RTC, 1, "%04d-%02d-%02d  UPTIME +%.1f s", d1.year, d1.month, d1.day, up);
+    RD(D_RTC, 1, "IN %.1f s OF UPTIME", up);
     if (ds == 0) { WHY(D_RTC, "STOPPED"); res(D_RTC, ST_FAIL); }
     else if (fabsf(ds - up) > 1.2f) { WHY(D_RTC, "OFF BY %+.0f s", ds - up); res(D_RTC, ST_FAIL); }
     else if (d1.year < 2020) { WHY(D_RTC, "DATE NOT SET"); res(D_RTC, ST_FAIL); }
@@ -243,9 +243,9 @@ static void test_sd(dres *r)
     char m[40];
     upcase(m, 30, s.message);
     double gb = 1024.0 * 1024.0 * 1024.0;
-    if (!s.mounted) { WHY(D_SD, "NO CARD"); RD(D_SD, 0, "%s", m); res(D_SD, ST_ABSENT); return; }
+    if (!s.mounted) { WHY(D_SD, "NO CARD"); RD(D_SD, 0, "%.22s", m); res(D_SD, ST_ABSENT); return; }
     RD(D_SD, 0, "%.1f OF %.1f GB FREE", s.free_bytes / gb, s.total_bytes / gb);
-    RD(D_SD, 1, "%s", m);
+    RD(D_SD, 1, "%.22s", m);
     if (!s.total_bytes) { WHY(D_SD, "SIZE 0"); res(D_SD, ST_FAIL); }
     else if (s.free_bytes > s.total_bytes) { WHY(D_SD, "FREE OVER SIZE"); res(D_SD, ST_FAIL); }
     else if (strstr(m, "FAIL") || strstr(m, "CANNOT")) { snprintf(R[D_SD].why, sizeof R[D_SD].why, "%.20s", m); res(D_SD, ST_FAIL); }
@@ -273,8 +273,8 @@ static void test_mic(dres *r)
         WHY(D_MIC, db < 0 ? "NO REPLY" : "NO SAMPLES"); res(D_MIC, ST_FAIL); return;
     }
     float mean = T.mic_sum / T.mic_n;
-    RD(D_MIC, 0, "MIN %.0f  MEAN %.0f  MAX %.0f dB", T.mic_min, mean, T.mic_max);
-    RD(D_MIC, 1, "%d SAMPLES", T.mic_n);
+    RD(D_MIC, 0, "FLOOR %.0f  PEAK %.0f dB", T.mic_min, T.mic_max);
+    RD(D_MIC, 1, "MEAN %.0f dB  %d READS", mean, T.mic_n);
     if (mean < 15.0f) { WHY(D_MIC, "%.0f dB, SILENT", mean); res(D_MIC, ST_FAIL); }
     else if (mean > 105.0f || T.mic_rail > T.mic_n / 2) { WHY(D_MIC, "%.0f dB, RAILED", mean); res(D_MIC, ST_FAIL); }
     else if (T.mic_max - T.mic_min < 0.01f) { WHY(D_MIC, "LEVEL FROZEN"); res(D_MIC, ST_FAIL); }
@@ -293,9 +293,9 @@ static void test_gps(dres *r)
     if (!T.gps_init) { T.gps_init = 1; T.gps_n0 = g->sentences; return; }
     uint32_t n = g->sentences - T.gps_n0;
     if ((!n || r->el < 2.0f) && r->el < 10.0f) return;
-    if (g->utc_valid) RD(D_GPS, 0, "UTC %02d:%02d:%02d  %u SENTENCES", g->utc_h, g->utc_m, g->utc_s, (unsigned)n);
-    else RD(D_GPS, 0, "%u SENTENCES  NO TIME YET", (unsigned)n);
-    RD(D_GPS, 1, "%d IN VIEW  %s", g->sats_view, g->fix3d ? "3D FIX" : g->valid ? "2D FIX" : "NO FIX");
+    RD(D_GPS, 0, "%u NMEA SENTENCES", (unsigned)n);
+    if (g->utc_valid) RD(D_GPS, 1, "UTC %02d:%02d:%02d  %d SATS", g->utc_h, g->utc_m, g->utc_s, g->sats_view);
+    else RD(D_GPS, 1, "NO TIME YET  %d SATS", g->sats_view);
     if (!n) { WHY(D_GPS, "NO NMEA IN 10 s"); res(D_GPS, ST_FAIL); return; }
     WHY(D_GPS, "%u NMEA IN %.0f s", (unsigned)n, r->el);
     res(D_GPS, ST_PASS);
@@ -306,10 +306,14 @@ static void test_lte(dres *r)
     hal_lte *l = &T.lte;
     if (!hal_lte_get(l)) { WHY(D_LTE, "NO REPLY"); res(D_LTE, ST_FAIL); return; }
     if (!l->powered && r->el < 25.0f) return;
+    if (!l->powered) {                        /* the modem never answered: nothing else is known */
+        RD(D_LTE, 0, "NO AT REPLY");
+        RD(D_LTE, 1, UI_NONE);
+        WHY(D_LTE, "NO AT REPLY IN 25 s"); res(D_LTE, ST_FAIL); return;
+    }
     RD(D_LTE, 0, "%s", !l->sim ? "NO SIM" : l->sim == 2 ? "SIM LOCKED" : "SIM READY");
     if (l->registered == 1 || l->registered == 2) RD(D_LTE, 1, "%s  %d dBm", l->registered == 2 ? "ROAMING" : "HOME", l->rssi_dbm);
     else RD(D_LTE, 1, "%s", l->registered == 3 ? "SEARCHING" : "NOT REGISTERED");
-    if (!l->powered) { WHY(D_LTE, "NO AT REPLY IN 25 s"); res(D_LTE, ST_FAIL); return; }
     WHY(D_LTE, "ANSWERS AT");
     res(D_LTE, ST_PASS);
 }
@@ -344,7 +348,7 @@ static void test_light(dres *r)
     }
     if (r->el < 4.0f) return;
     RD(D_LIGHT, 0, "%.0f TO %.0f LUX", T.lt_min, T.lt_max);
-    RD(D_LIGHT, 1, "PROX %d TO %d  %d SAMPLES", T.lt_pmin, T.lt_pmax, T.lt_n);
+    RD(D_LIGHT, 1, "PROX %d-%d  %d READS", T.lt_pmin, T.lt_pmax, T.lt_n);
     if (!T.lt_n) { WHY(D_LIGHT, "NO SAMPLE IN 4 s"); res(D_LIGHT, ST_FAIL); }
     else if (!isfinite(T.lt_min) || T.lt_min < 0) { WHY(D_LIGHT, "%.0f LUX, INVALID", T.lt_min); res(D_LIGHT, ST_FAIL); }
     else if (T.lt_n >= 10 && T.lt_max == T.lt_min && T.lt_pmax == T.lt_pmin) { WHY(D_LIGHT, "READING FROZEN"); res(D_LIGHT, ST_FAIL); }
@@ -363,7 +367,7 @@ static void test_mag(dres *r)
     if (r->el < 3.0f) return;
     float f = T.mg_n ? T.mg_sum / T.mg_n : 0;
     RD(D_MAG, 0, "FIELD %.1f uT  HDG %03.0f", f, T.mg_n ? fmodf(m->heading_deg + 360.0f, 360.0f) : 0.0f);
-    RD(D_MAG, 1, "%d SAMPLES  %s", T.mg_n, m->calibrated ? "CALIBRATED" : "NOT CALIBRATED");
+    RD(D_MAG, 1, "%d READS  %s", T.mg_n, m->calibrated ? "CALIBRATED" : "UNCALIBRATED");
     if (!T.mg_n) { WHY(D_MAG, "NO SAMPLE IN 3 s"); res(D_MAG, ST_FAIL); }
     else if (f < 20.0f) { WHY(D_MAG, "%.0f uT, TOO WEAK", f); res(D_MAG, ST_FAIL); }
     else if (f > 70.0f) { WHY(D_MAG, "%.0f uT, TOO STRONG", f); res(D_MAG, ST_FAIL); }
@@ -411,11 +415,11 @@ static void count_text(char *o, int n)
         tot++;
         res_n += resolved(R[d].st);
     }
-    snprintf(o, (size_t)n, tot >= 10 ? "%2d/%d" : "%d/%d", res_n, tot);   /* fixed width: it morphs */
+    snprintf(o, (size_t)n, "%d OF %d", res_n, tot);   /* not the a/b result format */
 }
 static void count_set(int init)
 {
-    char b[12];
+    char b[16];
     count_text(b, sizeof b);
     if (init) { snprintf(G.cnt_to, sizeof G.cnt_to, "%s", b); memcpy(G.cnt_from, G.cnt_to, sizeof G.cnt_from); G.cnt_t = -100; return; }
     if (!strcmp(b, G.cnt_to)) return;
@@ -454,15 +458,17 @@ static void run_start(int mode)
 static void run_finish(void)
 {
     G.running = 0; G.done = 1; G.t_done = nos_t;
-    G.npass = G.nfail = G.ntested = 0;
+    G.npass = G.nfail = G.ntested = G.nskip = 0;
     for (int d = 0; d < D_N; d++) {
         G.npass += R[d].st == ST_PASS;
         G.nfail += R[d].st == ST_FAIL;
         G.ntested += R[d].st == ST_PASS || R[d].st == ST_FAIL;
+        G.nskip += R[d].st == ST_SKIP;
     }
     snprintf(G.hero, sizeof G.hero, "%d/%d", G.npass, G.ntested);
     char b[64];
-    snprintf(b, sizeof b, "DIAG DONE %d/%d PASS, %d FAIL, %d ABSENT", G.npass, G.ntested, G.nfail, D_N - G.ntested);
+    snprintf(b, sizeof b, "DIAG DONE %d/%d PASS, %d FAIL, %d SKIP, %d ABSENT", G.npass, G.ntested, G.nfail, G.nskip,
+             D_N - G.ntested - G.nskip);
     hal_log(b);
     nos_feedback(G.nfail ? FB_ERROR : FB_SUCCESS);
     if (!G.nfail) return;
@@ -557,6 +563,7 @@ static void status_dot(gfx_fb *fb, float x, float y, float d, int st, float k)
     if (st == ST_PASS) dot_disc(fb, x, y, d, ui_dim(C_WHITE, k));
     else if (st == ST_FAIL) ui_circle_line(fb, x, y, d * 0.5f - 0.5f, 2.0f, ui_dim(C_PRI, k));
     else if (st == ST_ABSENT) dot_disc(fb, x, y, d, ui_dim(C_LINE2, k));
+    else if (st == ST_SKIP) ui_circle_line(fb, x, y, d * 0.5f - 0.5f, 2.0f, ui_dim(C_DIS, k));
     else if (st == ST_WAIT) dot_disc(fb, x, y, d * 0.6f, ui_dim(C_DIS, k));
     else dot_disc(fb, x, y, d * 0.6f, ui_dim(run_col(), k));
 }
@@ -631,7 +638,7 @@ static void card_tick(void)
     if (nos_t - C.t_in > CARD_WAIT_S) {
         WHY(d, "NO ANSWER");
         RD(d, 0, "NO ANSWER IN %.0f s", CARD_WAIT_S);
-        card_done(d, ST_FAIL);
+        card_done(d, ST_SKIP);
     }
 }
 
@@ -696,8 +703,8 @@ static void touch_down(int x, int y)
         if (e > spread) spread = e;
     }
     if (spread > 30.0f) return;                           /* scattered: a person, not an offset */
-    RD(D_TOUCH, 0, "TAP %d, %d FOR %d, %d", x, y, TGT[C.tgt][0], TGT[C.tgt][1]);
-    RD(D_TOUCH, 1, "3 MISSES, OFFSET %+.0f, %+.0f PX", mx, my);
+    RD(D_TOUCH, 0, "TAP %d,%d AT %d,%d", x, y, TGT[C.tgt][0], TGT[C.tgt][1]);
+    RD(D_TOUCH, 1, "OFFSET %+.0f, %+.0f PX", mx, my);
     WHY(D_TOUCH, "OFF BY %.0f PX %s", sqrtf(mx * mx + my * my), dir_word(mx, my));
     card_done(D_TOUCH, ST_FAIL);
 }
@@ -717,9 +724,9 @@ static int card_input(const nos_input *in)
         }
         if (d == D_TOUCH) {          /* the button skips a touch panel that can't be used */
             if (in->type == IN_BTN && nos_t - C.t_in > 0.5f) {
-                RD(D_TOUCH, 0, "%d NEAR MISSES BEFORE THE SKIP", T.touch_miss);
-                WHY(D_TOUCH, "SKIPPED, NOT TESTED");
-                card_done(D_TOUCH, ST_FAIL);
+                RD(D_TOUCH, 0, "%d NEAR MISS%s", T.touch_miss, T.touch_miss == 1 ? "" : "ES");
+                WHY(D_TOUCH, "NOT TESTED");
+                card_done(D_TOUCH, ST_SKIP);
             }
             return 1;
         }
@@ -740,9 +747,9 @@ static int card_input(const nos_input *in)
         C.flash_b = b; C.flash_t = nos_t;
         if (b == 3) { nos_feedback(FB_TAP); card_play(d); return 1; }
         if (d == D_BUTTON) {
-            RD(D_BUTTON, 0, "NO PRESS BEFORE THE SKIP");
-            WHY(D_BUTTON, "SKIPPED, NOT TESTED");
-            card_done(D_BUTTON, ST_FAIL);
+            RD(D_BUTTON, 0, "NO PRESS, SKIPPED");
+            WHY(D_BUTTON, "NOT TESTED");
+            card_done(D_BUTTON, ST_SKIP);
         } else {
             int yes = b == 2;
             RD(d, 0, "%s", d == D_HAPTIC ? "HAPTIC_BUZZ  300 ms" : "SFX_NOTIFY");
@@ -792,9 +799,9 @@ static void draw_card(gfx_fb *fb, int d, float bp, float k, const cstate *c, int
     const char *head = "", *hint = "";
     switch (d) {
     case D_BUTTON: head = "Press the button"; hint = "THE SIDE BUTTON, ONCE"; break;
-    case D_TOUCH: head = "Tap the dots"; hint = "OR PRESS THE BUTTON TO SKIP"; break;
+    case D_TOUCH: head = "Tap the dots"; hint = "PRESS BUTTON TO SKIP"; break;
     case D_HAPTIC: head = "Felt it?"; hint = "TAP THE BELL TO REPLAY"; break;
-    case D_SPK: head = "Heard it?"; hint = "TAP THE SPEAKER TO REPLAY"; break;
+    case D_SPK: head = "Heard it?"; hint = "TAP SPEAKER TO REPLAY"; break;
     }
     if (d == D_TOUCH) {
         for (int i = 0; i < 2; i++) {
@@ -875,6 +882,8 @@ static void list_layout(void)
         int h = 0;
         for (int d = 0; d < D_N; d++) if (R[d].st == ST_PASS) { if (!h++) add_e(LK_HDR, 0, "Passed"); add_e(LK_ROW, d, 0); }
         h = 0;
+        for (int d = 0; d < D_N; d++) if (R[d].st == ST_SKIP) { if (!h++) add_e(LK_HDR, 0, "Skipped"); add_e(LK_ROW, d, 0); }
+        h = 0;
         for (int d = 0; d < D_N; d++) if (R[d].st == ST_ABSENT) { if (!h++) add_e(LK_HDR, 0, "Not connected"); add_e(LK_ROW, d, 0); }
     } else {
         add_e(LK_HDR, 0, "Board");
@@ -922,14 +931,16 @@ static void draw_summary(gfx_fb *fb, float y, float k, int built)
     int direct = G.done && G.t_done <= G.build_t;
     float hero_t0 = direct ? G.build_t : G.t_done + FADE_S;
     float p = G.done ? nos_t - G.t_done : -1;
-    if (!G.done || (!direct && p < FADE_S && !built)) {   /* in progress: the state, then it fades for the hero */
-        float sk = G.done ? q8(1.0f - p / FADE_S) : 1.0f;
+    /* in progress: the state, then it fades for the hero; a list fading out for the
+     * fails-first re-layout still shows the state, so the hero builds once, in the new list */
+    if (!G.done || G.pend == PEND_RELAYOUT || (!direct && p < FADE_S && !built)) {
+        float sk = G.done && G.pend != PEND_RELAYOUT ? q8(1.0f - p / FADE_S) : 1.0f;
         ui_state(fb, UI_CX, (int)(y + 44), G.running || G.done ? "TESTING" : "STOPPED", ui_dim(C_SEC, k * sk));
-        /* the count of tested parts in dots, morphing as each resolves */
-        dot_style cs = { DOT_FONT_5X7, UI_SUB_PITCH, UI_SUB_PITCH * 0.8f, ui_dim(C_PRI, k * sk), 0, 1, 1 };
-        float mp = (nos_t - G.cnt_t) / MORPH_S;
-        if (mp >= 1 || strlen(G.cnt_from) != strlen(G.cnt_to)) dot_text_a(fb, &cs, UI_CX, y + 60, G.cnt_to, 1);
-        else dot_text_morph(fb, &cs, UI_CX, y + 60, G.cnt_from, G.cnt_to, 1, mp);
+        /* "12 OF 13" tested parts resolved: steps out, then in, as each resolves */
+        float mp = (nos_t - G.cnt_t) / 0.12f;
+        if (mp >= 1) ui_label(fb, UI_CX, (int)(y + 78), G.cnt_to, ui_dim(C_PRI, k * sk), UI_CENTER);
+        else if (mp < 0.5f) ui_label(fb, UI_CX, (int)(y + 78), G.cnt_from, ui_dim(C_PRI, k * sk * q8(1.0f - 2.0f * mp)), UI_CENTER);
+        else ui_label(fb, UI_CX, (int)(y + 78), G.cnt_to, ui_dim(C_PRI, k * sk * q8(2.0f * mp - 1.0f)), UI_CENTER);
         /* the long waits say what they wait for */
         int nrun = 0, first = -1, cards = 0;
         for (int d = 0; d < D_N; d++) {
@@ -959,8 +970,9 @@ static void draw_summary(gfx_fb *fb, float y, float k, int built)
                 ui_label(fb, x0, (int)(y + 108), "PASSED", ui_dim(C_SEC, tk), UI_LEFT);
                 dot_disc(fb, x0 + w1 + 28 + 4, y + 102, 8.0f, ui_dim(C_RED, tk));
                 ui_label(fb, x0 + w1 + 28 + 16, (int)(y + 108), b, ui_dim(C_PRI, tk), UI_LEFT);
-            } else if (nabs) {             /* what wasn't there, said quietly */
-                snprintf(b, sizeof b, "%d NOT CONNECTED", nabs);
+            } else if (nabs || G.nskip) {  /* what wasn't tested, said quietly */
+                if (G.nskip) snprintf(b, sizeof b, "%d SKIPPED", G.nskip);
+                else snprintf(b, sizeof b, "%d NOT CONNECTED", nabs);
                 int w1 = ui_label_width("PASSED"), w2 = ui_label_width(b);
                 int x0 = UI_CX - (w1 + 24 + 6 + w2) / 2;
                 ui_label(fb, x0, (int)(y + 108), "PASSED", ui_dim(C_SEC, tk), UI_LEFT);
@@ -989,7 +1001,7 @@ static void draw_row(gfx_fb *fb, int d, float y, float h, int pressed, float k)
     if (pressed) ui_rrect(fb, lx - 20, y + 5, rx - lx + 40, h - 10, (h - 10) * 0.5f, C_SURF2);
     const dres *r = &R[d];
     int tx = lx + 24;
-    const char *val = r->st == ST_PASS ? "PASS" : r->st == ST_FAIL ? "FAIL" : 0;
+    const char *val = r->st == ST_PASS ? "PASS" : r->st == ST_FAIL ? "FAIL" : r->st == ST_SKIP ? "SKIPPED" : 0;
     const int vx = rx - (UI_ROW_X1 - UI_VALUE_X);
     int nw = ui_text_width(UI_F_BODY, DI[d].name, 0), vw = val ? dlab_w(val) : 0;
     int cl = vx - vw;
@@ -1013,7 +1025,7 @@ static void draw_row(gfx_fb *fb, int d, float y, float h, int pressed, float k)
         dlab(fb, tx, sb, s, ui_dim(r->st == ST_RUN ? C_SEC : C_DIS, k * (1.0f - kc)), UI_LEFT);
     }
     if (kc > 0) {
-        uint16_t sc = r->st == ST_FAIL ? C_PRI : absent ? C_DIS : C_SEC;
+        uint16_t sc = r->st == ST_FAIL ? C_PRI : absent || r->st == ST_SKIP ? C_DIS : C_SEC;
         dlab(fb, tx, sb, r->why, ui_dim(sc, k * kc), UI_LEFT);
         if (val && vk > 0) dlab(fb, vx, cap_base(UI_F_LABEL, cy - 11), val,
                                 ui_dim(r->st == ST_FAIL ? C_PRI : C_DIS, k * kc * vk), UI_RIGHT);
@@ -1202,7 +1214,7 @@ static void row_draw(gfx_fb *fb)
                          ui_dim(C_SEC, tk * (1.0f - kc)));
     if (kc > 0) {
         /* the verdict in words, the one size up; the reason only when it failed */
-        const char *s = r->st == ST_PASS ? "Passed" : "Failed";
+        const char *s = r->st == ST_PASS ? "Passed" : r->st == ST_SKIP ? "Skipped" : "Failed";
         ui_text(fb, UI_F_TITLE, UI_CX, 220, s, ui_dim(C_PRI, tk * kc), UI_CENTER, 0);
         if (r->st == ST_FAIL) {                 /* the one red on the page */
             int w = ui_text_width(UI_F_TITLE, s, 0);
