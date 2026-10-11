@@ -773,11 +773,16 @@ static void dissolve_draw(const gfx_fb *fb, const nos_screen *under, const nos_s
         for (int j = 0; j < 8; j++) if ((b[j] < thr) != maj_over) js[nj++] = j;
         if (!nj) continue;
         uint16_t *d = gfx_row(fb, r), *src = o.px + (size_t)r * GFX_W;
-        for (int x8 = c0 & ~7; x8 < c1; x8 += 8)
-            for (int k = 0; k < nj; k++) {
-                int x = x8 + js[k];
-                if (x >= c0 && x < c1) d[x] = src[x];
-            }
+        /* whole 8-blocks: one strided pass per phase, no bounds tests (~18 -> ~4 cycles
+         * a pixel on the device); the partial blocks at the clip edges test each x */
+        int xa = (c0 + 7) & ~7, xb = c1 & ~7;
+        if (xa > xb) xa = xb = c1;
+        for (int k = 0; k < nj; k++) {
+            int j = js[k];
+            for (int x = xa + j; x < xb; x += 8) d[x] = src[x];
+            for (int x = (c0 & ~7) + j; x < xa; x += 8) if (x >= c0) d[x] = src[x];
+            for (int x = xb + j; x < c1; x += 8) d[x] = src[x];
+        }
         sel += (unsigned)((c1 - c0) * nj / 8);
     }
     GFX_COST_PX(GFX_COST_SELECT, sel);
