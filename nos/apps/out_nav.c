@@ -401,12 +401,13 @@ static void nav_tick(float dt)
     if (N.stale) N.ago = (int)(nos_t - N.last_fix_t);   /* a refix fades [ NO FIX ] out as it was */
     {
         char t[32];
-        if (N.g.sats_used > 0) snprintf(t, sizeof t, "SEARCHING %d/%d", N.g.sats_used, N.g.sats_view);
-        else if (N.g.sats_view > 0) snprintf(t, sizeof t, "SEARCHING  %d SATS", N.g.sats_view);
-        else snprintf(t, sizeof t, "SEARCHING");
+        /* the state stays [ SEARCHING ]; the count is a plain label under it */
+        if (N.g.sats_used > 0) snprintf(t, sizeof t, "%d OF %d", N.g.sats_used, N.g.sats_view);
+        else if (N.g.sats_view > 0) snprintf(t, sizeof t, "%d SAT%s", N.g.sats_view, N.g.sats_view == 1 ? "" : "S");
+        else snprintf(t, sizeof t, "-");
         if (strcmp(t, N.slab)) {
             /* same form and width (a count ticking): swap; else old out, new in */
-            int same = N.slab[0] && strlen(t) == strlen(N.slab) && !strchr(t, '/') == !strchr(N.slab, '/');
+            int same = N.slab[0] && strlen(t) == strlen(N.slab) && !strstr(t, " OF ") == !strstr(N.slab, " OF ");
             if (N.slab[0] && !same && nos_t - N.sl_t >= 0.2f) { strcpy(N.slab_prev, N.slab); N.sl_t = nos_t; }
             else if (!N.slab[0]) N.sl_t = -10;
             strcpy(N.slab, t);
@@ -551,9 +552,11 @@ static void sky_draw(gfx_fb *fb)
         q = floorf(q * 8 + 0.5f) / 8;
         dot_disc(fb, x, y, d, lit ? C_WHITE : ui_mix(C_LINE2, C_SEC, q));
     }
+    ui_state(fb, UI_CX, 380, "SEARCHING", fadec(C_SEC, q8(k)));
     float su = (nos_t - N.sl_t) / 0.1f;
-    if (su < 1) ui_state(fb, UI_CX, 392, N.slab_prev, fadec(C_SEC, q8(k * (1 - su))));
-    else ui_state(fb, UI_CX, 392, N.slab, fadec(C_SEC, q8(k * m_clamp(su - 1, 0, 1))));
+    const char *cnt = su < 1 ? N.slab_prev : N.slab;
+    float ck = su < 1 ? 1 - su : m_clamp(su - 1, 0, 1);
+    if (strcmp(cnt, "-")) ui_label(fb, UI_CX, 410, cnt, fadec(C_DIS, q8(k * ck)), UI_CENTER);
 }
 
 /* ------------------------------------------------------------- NOW page */
