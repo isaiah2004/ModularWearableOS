@@ -901,6 +901,7 @@ static void wg_tick(float dt, int visible)
     W.out = W.out_on ? 1.0f - m_clamp((nos_t - W.out_t0) / OUT_S, 0, 1) : 0;
     if (W.out_on && nos_t - W.out_t0 >= OUT_S) W.out_on = 0;
     if (W.unpress_at > 0 && nos_t >= W.unpress_at) { W.pressed = -1; W.unpress_at = 0; }
+    if (W.pressed >= 0 && nos_touch_travel() > 8) { W.pressed = -1; W.unpress_at = 0; }   /* a slow drag */
     W.build = m_clamp((nos_t - W.t0) / 0.4f, 0, 1);
     char b[16];
     if (W.mode == WG_TIMER) {
@@ -1017,8 +1018,9 @@ static void wg_tap(int x, int y)
 
 static void wg_press(int x, int y, int down)
 {
-    if (!down) {                 /* release: the press shows >= 0.1 s */
-        if (W.pressed >= 0) W.unpress_at = fmaxf(nos_t, W.press_t0 + PRESS_HOLD);
+    if (!down) {                 /* released / a drag took the touch: drop at once (a tap
+                                  * holds the chip lit through its 0.3 s flash instead) */
+        W.pressed = -1; W.unpress_at = 0;
         return;
     }
     W.pressed = -1; W.unpress_at = 0;
