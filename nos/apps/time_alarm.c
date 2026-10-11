@@ -165,6 +165,7 @@ static struct {
     int have_next, old_have_next;
     float next_t0;
     int empty_pressed;
+    int leaving;                     /* pushing the editor: the press holds until covered */
     uint32_t snz_at;                 /* svc's snooze deadline the cached minute is for */
     int snz_h, snz_m;                /* wall-clock minute the snooze rings in */
     char lab[SVC_ALARM_MAX][24], lab_old[SVC_ALARM_MAX][24];   /* row sub-labels */
@@ -253,9 +254,10 @@ static float xf_old(float t0) { return m_clamp(1.0f - 2.0f * xf_k(t0), 0, 1); }
 static float xf_new(float t0) { return m_clamp(2.0f * xf_k(t0) - 1.0f, 0, 1); }
 static int row_on(int idx) { return al_get(idx)->on || is_snoozed(idx); }
 
+static void ed_watch(void);
 static void alarm_enter(void)
 {
-    A.pressed = -1; A.dragging = 0; A.empty_pressed = 0;
+    A.pressed = -1; A.dragging = 0; A.empty_pressed = 0; A.leaving = 0;
     int back = nos_revealed();                  /* revealed by a pop: keep scroll + no build */
     int was = A.n;
     A.n = al_count();
@@ -265,10 +267,12 @@ static void alarm_enter(void)
 }
 static void alarm_tick(float dt)
 {
+    ed_watch();                                  /* a new alarm lands as its editor leaves */
     int was = A.n;
     list_sync(1);
     if (A.n != was) {
-        for (int i = 0; i < A.n; i++) msp_set(&A.tog[i], row_on(i) ? 100.0f : 0.0f);
+        /* init, not set: a row new since entry has an unset spring (NaN on the first step) */
+        for (int i = 0; i < A.n; i++) msp_init(&A.tog[i], row_on(i) ? 100.0f : 0.0f, SPRING_SNAPPY);
         if (!A.n || !was) { A.t0 = nos_t; A.build = 0; }    /* list <-> empty: build the new state */
     }
     for (int i = 0; i < A.n; i++) {
@@ -276,7 +280,7 @@ static void alarm_tick(float dt)
         msp_step(&A.tog[i], dt);
     }
     msc_step(&A.sc, dt);
-    if (A.unpress_at > 0 && nos_t >= A.unpress_at) { A.pressed = -1; A.empty_pressed = 0; A.unpress_at = 0; }
+    if (!A.leaving && A.unpress_at > 0 && nos_t >= A.unpress_at) { A.pressed = -1; A.empty_pressed = 0; A.unpress_at = 0; }
     A.build = m_clamp((nos_t - A.t0) / 0.4f, 0, 1);
 }
 
@@ -378,19 +382,25 @@ static int list_hit(int x, int y, int *part)
 }
 
 extern const nos_screen scr_alarm_edit;
+/* s_edit_idx < 0 with s_edit_new: a draft (s_draft) the list doesn't have yet. It is
+ * added when the editor starts to leave, so the list under the push stays as it was and
+ * DELETE on a new alarm leaves no stray row. */
 static int s_edit_idx = -1, s_edit_new;
+static svc_alarm s_draft;
 
 static void open_edit(int i, int is_new)
 {
     s_edit_idx = i; s_edit_new = is_new;
+    A.leaving = 1; A.unpress_at = 0;             /* the tapped pill/card stays pressed */
     nos_push(&scr_alarm_edit, TX_PUSH);
 }
 static void add_alarm(void)
 {
-    int i = al_add(7, 0);
-    if (i < 0) { nos_feedback(FB_ERROR); nos_toast("List full"); return; }
+    if (al_count() >= SVC_ALARM_MAX) { nos_feedback(FB_ERROR); nos_toast("List full"); return; }
     nos_feedback(FB_TAP);
-    open_edit(i, 1);
+    memset(&s_draft, 0, sizeof s_draft);
+    s_draft.h = 7; s_draft.m = 0; s_draft.on = 1; s_draft.days = 0;
+    open_edit(-1, 1);
 }
 /* Cancel a snooze from the list toggle. svc drops the snooze; the alarm also switches
  * off, so the toggle shows what the tap meant (a one-shot is already off: svc clears it
@@ -484,7 +494,29 @@ static struct {
     float arm_t0, dis_e;     /* last arm/disarm (nos_t); armed time at the disarm */
     int arm_was;             /* armed before the last change */
     mspring dw;              /* delete width, springs between the two labels */
+    int shown;               /* the push has finished (so a transition now = leaving) */
 } E;
+static svc_alarm *ed_alarm(void) { return s_edit_idx >= 0 ? al_get(s_edit_idx) : &s_draft; }
+static int ed_valid(void) { return s_edit_idx >= 0 ? s_edit_idx < al_count() : s_edit_new; }
+/* add the draft to the list (once); the editor goes on editing the stored alarm */
+static void ed_commit(void)
+{
+    if (s_edit_idx >= 0 || !s_edit_new) return;
+    int i = al_add(s_draft.h, s_draft.m);
+    if (i < 0) { s_edit_new = 0; nos_toast("List full"); return; }
+    svc_alarm *a = al_get(i);
+    a->days = s_draft.days; a->on = s_draft.on;
+    memcpy(a->label, s_draft.label, sizeof a->label);
+    al_save();
+    s_edit_idx = i;
+}
+/* the editor is on top and moving after its push finished: a pop / back swipe / home */
+static void ed_watch(void)
+{
+    if (!(E.shown && nos_top() == &scr_alarm_edit && nos_transitioning())) return;
+    ed_commit();
+    A.pressed = -1; A.empty_pressed = 0; A.leaving = 0; A.unpress_at = 0;   /* the list shows again */
+}
 
 static float chip_x(int k) { return k < 4 ? UI_CX + (k - 1.5f) * 80.0f : UI_CX + (k - 5) * 80.0f; }
 static float chip_y(int k) { return k < 4 ? E_CHIP1_Y : E_CHIP2_Y; }
@@ -514,18 +546,27 @@ static void edit_enter(void)
     E.t0 = nos_enter_t(); E.build = 0; E.target = -1; E.dragging = 0; E.pressed = 0; E.unpress_at = 0;
     E.armed_t = -1; E.arm_t0 = -10; E.arm_was = 0; E.sum_ok = 0; E.sum_t0 = -10;
     msp_init(&E.dw, E_DEL_W, 0.18f, 1.0f);
-    E.valid = s_edit_idx >= 0 && s_edit_idx < al_count();
+    E.shown = 0;
+    E.valid = ed_valid();
     msc_init(&E.sc, 0, E_MAX, 0);
     if (!E.valid) return;
-    const svc_alarm *a = al_get(s_edit_idx);
+    const svc_alarm *a = ed_alarm();
     for (int c = 0; c < 7; c++) { E.on_k[c] = (float)(a->days >> chip_wd(c) & 1); E.ck[c] = 0; }
     tdrum_setup(2, 0, 23, a->h, 62, UI_HEROW_PITCH, 3.6f);   /* HH:MM hero: pitch 8 */
     tdrum_setup(3, 0, 59, a->m, 62, UI_HEROW_PITCH, 3.6f);
 }
-static void edit_leave(void) { if (E.valid) al_save(); }
+static void edit_leave(void)
+{
+    if (nos_leaving_covered()) return;           /* covered (a ring): the draft waits */
+    ed_commit();                                 /* gone without moving (home now) */
+    if (ed_valid()) al_save();
+    E.shown = 0;
+}
 static void edit_tick(float dt)
 {
-    E.valid = s_edit_idx >= 0 && s_edit_idx < al_count();
+    if (!nos_transitioning()) E.shown = 1;
+    else ed_watch();
+    E.valid = ed_valid();
     msc_step(&E.sc, dt);
     float off = floorf(E.sc.x + 0.5f);
     tdrum_place(2, UI_CX - E_DRUM_DX, E_DRUM_Y - off);
@@ -538,7 +579,7 @@ static void edit_tick(float dt)
     msp_step(&E.dw, dt);
     if (E.unpress_at > 0 && nos_t >= E.unpress_at) { E.pressed = 0; E.unpress_at = 0; }
     if (!E.valid) return;
-    svc_alarm *a = al_get(s_edit_idx);
+    svc_alarm *a = ed_alarm();
     for (int c = 0; c < 7; c++) {
         float tg = (float)(a->days >> chip_wd(c) & 1), st = dt / E_CHIP_S;
         E.on_k[c] = E.on_k[c] < tg ? fminf(tg, E.on_k[c] + st) : fmaxf(tg, E.on_k[c] - st);
@@ -663,7 +704,7 @@ static int edit_input(const nos_input *in)
     case IN_TAP: {
         msc_release(&E.sc, 0);
         int h = edit_hit(in->x, in->y);
-        svc_alarm *a = al_get(s_edit_idx);
+        svc_alarm *a = ed_alarm();
         if (h != 8) set_armed(0);
         if (h >= 1 && h <= 7) {
             int bit = 1 << chip_wd(h - 1);
@@ -675,10 +716,9 @@ static int edit_input(const nos_input *in)
         } else if (h == 8) {
             nos_feedback(FB_TAP);
             E.armed_t = -1;
-            al_remove(s_edit_idx);
-            al_save();
+            if (s_edit_idx >= 0) { al_remove(s_edit_idx); al_save(); }   /* a draft just goes */
             E.valid = 0;
-            s_edit_idx = -1;
+            s_edit_idx = -1; s_edit_new = 0;
             nos_pop();
         }
         return 1;

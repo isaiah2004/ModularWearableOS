@@ -104,14 +104,14 @@ static void dgm_draw(gfx_fb *fb, const dgm *m, const dot_style *st, float x, flo
 
 /* ============================================================ screen */
 #define RING_R   211.0f
-/* the standard button pair (UI_BTN_PAIR_*), raised from y 372 to 354 so the pills stay
- * clear of the bezel track the second hand runs on */
-#define BTN_Y    354.0f
+/* the standard button pair (UI_BTN_PAIR_*: 140 x 88 at y 372); the bezel track the
+ * second hand runs on gives way where the pills cross it */
+#define BTN_Y    ((float)UI_BTN_Y)   /* the pair standard: 140 x 88 at y 372 */
 #define BTN_W    ((float)UI_BTN_PAIR_W)
 #define BTN_LX   ((float)UI_BTN_PAIR_X0)
 #define BTN_RX   ((float)UI_BTN_PAIR_X1)
 #define LIST_Y0  194.0f
-#define LIST_Y1  292.0f
+#define LIST_Y1  302.0f          /* three rows; the third dims into the bottom fade */
 #define LAP_X0   (UI_ROW_X0 + 8)
 #define LAP_X1   (UI_ROW_X1 - 8)
 #define STEP_S   0.15f
@@ -303,12 +303,44 @@ static void draw_list(gfx_fb *fb)
     }
 }
 
+/* the bezel track: time_ring's 60 dots, less the ones within 6 px of a button pill (the
+ * standard pair at y 372 reaches r 218, over the track); the hand passes under the pills */
+static uint8_t s_trk_skip[60];
+static int s_trk_ok;
+static void sw_track(gfx_fb *fb, float lit)
+{
+    if (!s_trk_ok) {                             /* once: which dots give way */
+        for (int i = 0; i < 60; i++) {
+            float a = 6.2831853f * (float)i / 60.0f;
+            float x = UI_CX + RING_R * gfx_fast_sin(a), y = UI_CY - RING_R * gfx_fast_cos(a);
+            float r = UI_BTN_H * 0.5f, best = 1e9f;
+            for (int p = 0; p < 2; p++) {
+                float c = p ? BTN_RX : BTN_LX, ax = c - BTN_W / 2 + r, bx = c + BTN_W / 2 - r;
+                float qx = x < ax ? ax : x > bx ? bx : x, dx = x - qx, dy = y - BTN_Y;
+                float d = gfx_fast_sqrt(dx * dx + dy * dy) - r;
+                if (d < best) best = d;
+            }
+            s_trk_skip[i] = best < 6.0f;
+        }
+        s_trk_ok = 1;
+    }
+    lit = floorf(lit * 32.0f + 0.5f) / 32.0f;
+    for (int i = 0; i < 60; i++) {
+        if (s_trk_skip[i]) continue;
+        float a = 6.2831853f * (float)i / 60.0f;
+        float x = UI_CX + RING_R * gfx_fast_sin(a), y = UI_CY - RING_R * gfx_fast_cos(a);
+        float f = m_clamp(lit - (float)i, 0, 1);
+        if (f >= 1) dot_disc(fb, x, y, 4, C_LINE2);
+        else if (i == (int)lit) dot_disc(fb, x, y, f > 0 ? 4 * gfx_fast_sqrt(f) : 0.05f, C_LINE2);
+    }
+}
+
 static void sw_draw(gfx_fb *fb)
 {
     float b = S.build;
     /* bezel: a dim 60-dot track and the red second hand, sweeping once a minute
      * (1.2 deg = 4.4 px per frame: smooth, never strobing); it stops when stopped */
-    time_ring(fb, UI_CX, UI_CY, RING_R, 60, 4, 60.0f * m_clamp(b * 1.5f, 0, 1), C_LINE2, 0);
+    sw_track(fb, 60.0f * m_clamp(b * 1.5f, 0, 1));
     if (b > 0.3f) {
         float turn = (float)(S.sw.elapsed_ms % 60000) / 60000.0f;
         float hp = (nos_t - S.hand_t0) / HAND_S;

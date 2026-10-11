@@ -731,7 +731,9 @@ const nos_screen scr_timer_pick = { "TIMER SET", pick_enter, pick_leave, pick_ti
 
 /* ================================================================ ringing */
 #define RG_BTN_Y 316.0f
-#define RG_BTN_W 124.0f
+#define RG_BTN_W ((float)UI_BTN_PAIR_W)   /* the pair standard's width; the ring owns the bottom */
+#define RG_LX    ((float)UI_BTN_PAIR_X0)
+#define RG_RX    ((float)UI_BTN_PAIR_X1)
 static struct {
     float t0, build; int pressed; uint32_t total; int haptic_on; float press_t0, unpress_at;
     int fire; float fire_at;     /* a quick tap acts once its press has shown PRESS_HOLD */
@@ -777,7 +779,7 @@ static void ring_draw(gfx_fb *fb)
     float k = qz(m_clamp(RG.build * 2 - 0.6f, 0, 1), 8);
     if (k <= 0) return;
     /* both build by scale steps at full colour; pressed = C_SEC with black ink */
-    float lx = UI_CX - 6 - RG_BTN_W / 2, rx = UI_CX + 6 + RG_BTN_W / 2;
+    float lx = RG_LX, rx = RG_RX;
     float sc = build_scale(k), w = RG_BTN_W * sc, h = UI_BTN_H * sc, ik = ink_k(k);
     uint16_t f1 = RG.pressed == RGP_STOP ? C_SEC : C_WHITE;
     uint16_t f2 = RG.pressed == RGP_ADD ? C_SEC : C_SURF2, i2 = RG.pressed == RGP_ADD ? C_BG : C_PRI;
@@ -790,8 +792,8 @@ static void ring_draw(gfx_fb *fb)
 }
 static int ring_hit(int x, int y)
 {
-    if (in_rect(x, y, UI_CX - 6 - RG_BTN_W / 2, RG_BTN_Y, RG_BTN_W + 8, 96)) return RGP_STOP;
-    if (in_rect(x, y, UI_CX + 6 + RG_BTN_W / 2, RG_BTN_Y, RG_BTN_W + 8, 96)) return RGP_ADD;
+    if (in_rect(x, y, RG_LX, RG_BTN_Y, RG_BTN_W + 8, 96)) return RGP_STOP;
+    if (in_rect(x, y, RG_RX, RG_BTN_Y, RG_BTN_W + 8, 96)) return RGP_ADD;
     return RGP_NONE;
 }
 static void ring_stop(void)
