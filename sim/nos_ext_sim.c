@@ -70,7 +70,7 @@ static struct {
     int hr_on; uint32_t hr_t0, hr_last; int bpm_override;
     uint32_t mic_last; float db_override;
     int gest_on; uint32_t gest_last; int gq[8]; int gqn;
-    int mag_cal; uint32_t mag_cal_t0; int mag_calibrated; float heading_override;
+    int mag_cal; uint32_t mag_cal_t0; int mag_calibrated; float heading_override; int off_wrist;
     float sea; float lux_override;
     int nofix;
     int rec; uint32_t rec_t0, rec_ms;
@@ -340,8 +340,16 @@ int hal_gps_get(hal_gps *out)
         float base = 18.0f + 27.0f * hrand((uint32_t)i, 42);
         g.snr[i] = (uint8_t)clampf((base + 3.0f * vnoise(t / 7.0f + i, 43)) * build, 0, 50);
     }
+    for (int i = 0; i < g.nsnr; i++) {              /* slowly wheeling sky positions */
+        g.az[i] = (uint16_t)((int)(360.0f * hrand((uint32_t)i, 44) + t * 0.004f) % 360);
+        g.el[i] = (uint8_t)(8 + 78 * hrand((uint32_t)i, 45));
+    }
     for (int i = 1; i < g.nsnr; i++)               /* strongest first, like the device */
-        for (int j = i; j > 0 && g.snr[j] > g.snr[j - 1]; j--) { uint8_t s = g.snr[j]; g.snr[j] = g.snr[j - 1]; g.snr[j - 1] = s; }
+        for (int j = i; j > 0 && g.snr[j] > g.snr[j - 1]; j--) {
+            uint8_t s = g.snr[j]; g.snr[j] = g.snr[j - 1]; g.snr[j - 1] = s;
+            uint8_t e = g.el[j]; g.el[j] = g.el[j - 1]; g.el[j - 1] = e;
+            uint16_t a = g.az[j]; g.az[j] = g.az[j - 1]; g.az[j - 1] = a;
+        }
     uint64_t ep = hal_epoch_seconds();
     if (on > 1.5f && ep) {
         uint32_t d = (uint32_t)(ep % 86400);
@@ -375,7 +383,7 @@ int hal_gps_get(hal_gps *out)
 }
 
 /* ================================================================ LTE */
-static const hal_sms SMS[4] = {
+static hal_sms SMS[4] = {
     { "+919845012345", "Reached the gate near the bandstand. Where are you?", "26/10/11,09:58:12", 1 },
     { "JM-JIOCRE", "Your Jio plan renews on 14-Oct. 1.5 GB/day left today.", "26/10/11,08:15:40", 1 },
     { "+919900554321", "Dinner at 8 still on? I'll book the table.", "26/10/10,19:42:03", 0 },
@@ -396,7 +404,8 @@ int hal_lte_get(hal_lte *out)
     if (!has(EXT_LTE)) { if (out) *out = l; return 0; }
     uint32_t n = now_ms();
     S.lte_last = n;
-    l.unread_sms = 2;                                   /* inbox cached at boot */
+    l.unread_sms = 0;                                   /* inbox cached at boot */
+    for (int i = 0; i < 4; i++) l.unread_sms += SMS[i].unread ? 1 : 0;
     l.sim = 1;
     if (S.lte_on) {
         float on = (n - S.lte_t0) / 1000.0f, t = n / 1000.0f;
@@ -419,6 +428,10 @@ int hal_lte_sms_list(hal_sms *out, int max)
     int n = max < 4 ? max : 4;
     memcpy(out, SMS, sizeof(hal_sms) * (size_t)n);
     return n;
+}
+void hal_lte_sms_mark_read(int i)
+{
+    if (i >= 0 && i < 4 && SMS[i].unread) SMS[i].unread = 0;
 }
 int hal_lte_sms_send(const char *to, const char *text)
 {
@@ -512,7 +525,7 @@ int hal_mag_get(hal_mag *out)
     m.heading_deg = h;
     m.field_ut = 47.5f + 1.2f * vnoise(t / 6.0f, 92);
     m.calibrated = S.mag_calibrated;
-    m.cal_progress = S.mag_cal ? clampf(1.0f - expf(-(n - S.mag_cal_t0) / 3000.0f) * 1.05f, 0, 1)
+    m.cal_progress = S.mag_cal ? clampf(1.0f - expf(-(float)(n - S.mag_cal_t0) / 3000.0f) * 1.05f, 0, 1)
                                : (S.mag_calibrated ? 1.0f : 0.0f);
     if (S.mag_cal) m.heading_deg = fmodf(h + 40.0f * sinf(t * 2.1f), 360.0f);   /* user waving the arm */
     if (m.heading_deg < 0) m.heading_deg += 360.0f;
@@ -566,7 +579,7 @@ int hal_hr_get(hal_hr *out)
     S.hr_last = n;
     if (!S.hr_on) { if (out) *out = r; return 1; }
     float on = (n - S.hr_t0) / 1000.0f, t = n / 1000.0f;
-    r.on_wrist = on > 0.5f;
+    r.on_wrist = on > 0.5f && !S.off_wrist;
     float amp = clampf((on - 0.5f) / 2.0f, 0, 1);
     for (int i = 0; i < 48; i++) {
         float ts = t - (47 - i) * 0.05f;
@@ -632,6 +645,7 @@ int nos_ext_sim_set(const char *key, const char *value)
     if (!_stricmp(key, "db"))      { S.db_override = (float)v; return 1; }
     if (!_stricmp(key, "nofix"))   { S.nofix = v != 0; return 1; }
     if (!_stricmp(key, "magcal"))  { S.mag_calibrated = v != 0; return 1; }
+    if (!_stricmp(key, "wrist"))   { S.off_wrist = v == 0; return 1; }   /* set wrist 0 = no skin contact */
     return 0;
 }
 

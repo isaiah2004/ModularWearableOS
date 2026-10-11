@@ -141,6 +141,9 @@ const svc_call_t *svc_call(void);
 void svc_call_accept(void);
 void svc_call_reject(void);
 void svc_call_hangup(void);
+/* Silence the current ringer (side button on a ringing screen); the alert keeps
+ * showing. Clears itself when the ringing source changes. */
+void svc_ring_silence(void);
 
 /* ---- find ---- */
 void svc_find_phone(int on);                    /* ring the phone */

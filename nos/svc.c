@@ -609,6 +609,8 @@ static int ring_screen(ring_scr *r, int want)
 enum { RING_NONE = 0, RING_TIMER, RING_ALARM, RING_CALL, RING_FIND };
 static int s_ring_kind;
 static uint32_t s_ring_next;
+static int s_ring_silenced;
+void svc_ring_silence(void) { s_ring_silenced = 1; hal_haptic_stop(); hal_sfx_stop(); }
 static void ringer_tick(uint32_t now)
 {
     int kind = s_find_watch ? RING_FIND : s_call.state == 1 ? RING_CALL :
@@ -616,9 +618,10 @@ static void ringer_tick(uint32_t now)
     if (kind != s_ring_kind) {
         if (kind == RING_NONE) { hal_haptic_stop(); hal_sfx_stop(); }
         s_ring_kind = kind;
+        s_ring_silenced = 0;
         s_ring_next = now;
     }
-    if (kind && (int32_t)(now - s_ring_next) >= 0) {
+    if (kind && !s_ring_silenced && (int32_t)(now - s_ring_next) >= 0) {
         hal_haptic(HAPTIC_ALARM);
         int sfx = kind == RING_TIMER ? SFX_TIMER_DONE : kind == RING_CALL ? SFX_NOTIFY : SFX_ALARM;
         if (kind != RING_CALL || nos_prefs.sound) hal_sfx(sfx);

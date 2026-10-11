@@ -242,7 +242,7 @@ void time_pulse_draw(gfx_fb *fb, float phase, int rings)
     static const int   N[3] = { 48, 54, 60 };
     const float period = 1.4f;
     for (int k = 3 - rings; k < 3; k++) {
-        float t = fmodf(phase / period - k * 0.12f + 4.0f, 1.0f);   /* 0..1 per cycle */
+        float t = fmodf(phase / period - k * 0.2f + 4.0f, 1.0f);   /* 0..1 per cycle */
         float b = t < 0.12f ? t / 0.12f : 1 - (t - 0.12f) / 0.6f;
         b = m_clamp(b, 0, 1);
         b = qz(b, 6);
@@ -496,11 +496,10 @@ static void timer_draw_run(gfx_fb *fb)
     if (T.last10) {
         float fl = floorf(T.lit_show);
         time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, fl, C_WHITE, C_LINE2);
-        float f = T.lit_show - fl;
-        if (f > 0.02f) {
-            float a = 6.2831853f * fl / 60.0f;
-            dot_disc(fb, UI_CX + RING_R * time_sin(a), UI_CY - RING_R * time_cos(a), RING_D * sqrtf(qz(f, 32)) + 1.0f, C_RED);
-        }
+        float f = qz(T.lit_show - fl, 32);
+        float a = 6.2831853f * fl / 60.0f;     /* always recorded: a steady command count */
+        dot_disc(fb, UI_CX + RING_R * time_sin(a), UI_CY - RING_R * time_cos(a),
+                 f > 0 ? RING_D * gfx_fast_sqrt(f) + 1.0f : 0.05f, C_RED);
     } else
         time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, T.lit_show, C_WHITE, C_LINE2);
 
@@ -672,9 +671,14 @@ static void ring_enter(void)
 {
     RG.t0 = nos_t; RG.build = 0; RG.pressed = RGP_NONE;
     tm_t t; tm_get(&t); RG.total = t.total;
-    hal_haptic(HAPTIC_ALARM);
-    if (nos_prefs.sound) hal_sfx(SFX_TIMER_DONE);
-    RG.haptic_on = 1;
+    /* the timer service runs the alarm haptics/sound (svc ringer); only the local
+     * fallback (link-stub svc) buzzes from here */
+    RG.haptic_on = 0;
+    if (s_svc == 0) {
+        hal_haptic(HAPTIC_ALARM);
+        if (nos_prefs.sound) hal_sfx(SFX_TIMER_DONE);
+        RG.haptic_on = 1;
+    }
     nos_keep_awake();
 }
 static void ring_leave(void)
@@ -742,6 +746,9 @@ const nos_screen scr_timer_ring = { "TIME'S UP", ring_enter, ring_leave, ring_ti
 
 /* ============================================================== widget */
 enum { WG_QUICK = 0, WG_TIMER, WG_SW, WG_ALARM };
+/* widget rings stay inside r 184: the home pager owns the top centre (unread dot,
+ * y <= 36) and the bottom centre (page dots, y >= 424) */
+#define WG_RING_R 182.0f
 static const uint16_t k_wq[3] = { 3, 5, 10 };
 #define WQ_Y  236.0f
 #define WQ_DX 124.0f
@@ -802,7 +809,7 @@ static void wg_draw(gfx_fb *fb)
     float b = W.build;
     float k = qz(m_clamp(b * 2.5f - 0.5f, 0, 1), 8);
     if (W.mode == WG_TIMER) {
-        time_ring(fb, UI_CX, UI_CY, RING_R, 60, RING_D, W.lit, C_WHITE, C_LINE2);
+        time_ring(fb, UI_CX, UI_CY, WG_RING_R, 60, 6, W.lit, C_WHITE, C_LINE2);
         ui_label(fb, UI_CX, 150, "TIMER", ui_dim(C_SEC, k), UI_CENTER);
         int hours = strlen(W.dig.cur) > 5;
         float pitch = hours ? 7.0f : 9.0f;
@@ -810,9 +817,10 @@ static void wg_draw(gfx_fb *fb)
         dgm_draw(fb, &W.dig, &st, UI_CX, DIG_TOP + (hours ? 9.0f : 0.0f), 0.28f, 0, 0, b);
         ui_label(fb, UI_CX, 300, W.lbl, ui_dim(W.tm.state == 2 ? C_PRI : C_SEC, k), UI_CENTER);
     } else if (W.mode == WG_SW) {
-        time_ring(fb, UI_CX, UI_CY, RING_R, 60, 4, 60, C_LINE2, 0);
+        time_ring(fb, UI_CX, UI_CY, WG_RING_R, 60, 4, 60, C_LINE2, 0);
         float a = 6.2831853f * (float)(W.sw_ms % 1000) / 1000.0f;
-        dot_disc(fb, UI_CX + RING_R * time_sin(a), UI_CY - RING_R * time_cos(a), 10, C_RED);
+        /* white, not red: the home pager owns the one red (unread dot at 12) */
+        dot_disc(fb, UI_CX + WG_RING_R * time_sin(a), UI_CY - WG_RING_R * time_cos(a), 9, C_WHITE);
         ui_label(fb, UI_CX, 150, "STOPWATCH", ui_dim(C_SEC, k), UI_CENTER);
         int hours = strlen(W.dig.cur) > 5;
         float pitch = hours ? 6.0f : 8.0f;

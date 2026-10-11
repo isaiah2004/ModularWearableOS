@@ -49,8 +49,8 @@ static void tick_dot(int i, const void *vc, float *x, float *y, float *d, uint16
     if (rc->aod) { *d = hour ? 5.0f : 0.0f; *col = C_DIS; return; }
     float f = m_clamp(rc->fill - (float)i, 0, 1);
     f = (float)(int)(f * 4.0f) / 4.0f;
-    *d = (hour ? 8.0f : 4.0f) * f;
-    *col = hour ? C_SEC : C_DIS;
+    *d = (i == 0 ? 10.0f : hour ? 8.0f : 4.0f) * f;
+    *col = i == 0 ? C_WHITE : hour ? C_SEC : C_DIS;
 }
 
 static void angles(const face_ctx *c, float *ah, float *am)

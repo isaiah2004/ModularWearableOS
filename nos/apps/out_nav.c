@@ -184,12 +184,19 @@ static int write_gpx(void)
     MKDIR(TRACK_DIR);
     char path[64];
     int no = 0;
-    for (int i = 1; i < 10000; i++) {
+#ifdef ESP_PLATFORM
+    for (int i = 1; i < 10000; i++) {          /* next free number on the card */
         snprintf(path, sizeof path, TRACK_DIR "/%04d.gpx", i);
         FILE *t = fopen(path, "r");
         if (!t) { no = i; break; }
         fclose(t);
     }
+#else
+    /* sim: numbered per run from 1 (overwriting), so scripted runs are deterministic */
+    static int s_sim_no;
+    no = ++s_sim_no;
+    snprintf(path, sizeof path, TRACK_DIR "/%04d.gpx", no);
+#endif
     if (!no) return 0;
     FILE *f = fopen(path, "w");
     if (!f) return 0;
@@ -493,8 +500,9 @@ static void arrow_draw(gfx_fb *fb, float cx, float cy, float ang_deg, float b)
     /* local frame: +v = forward. shaft 5 dots, head as a chevron of 2x3 dots */
     /* the tip is the biggest dot; the head's arms run back from it, the shaft tapers */
     static const signed char pts[][3] = {
-        { 0, 64, 13 }, { -15, 49, 10 }, { -30, 34, 9 }, { -45, 19, 8 }, { 15, 49, 10 }, { 30, 34, 9 }, { 45, 19, 8 },
-        { 0, 44, 9 }, { 0, 25, 9 }, { 0, 6, 8 }, { 0, -13, 8 }, { 0, -32, 7 }, { 0, -51, 7 },
+        { 0, 64, 13 }, { -11, 53, 11 }, { -22, 42, 10 }, { -33, 31, 9 }, { -44, 20, 8 },
+        { 11, 53, 11 }, { 22, 42, 10 }, { 33, 31, 9 }, { 44, 20, 8 },
+        { 0, 44, 8 }, { 0, 25, 7 }, { 0, 6, 7 }, { 0, -13, 6 }, { 0, -32, 6 }, { 0, -51, 6 },
     };
     int n = (int)(sizeof pts / sizeof pts[0]);
     for (int i = 0; i < n; i++) {

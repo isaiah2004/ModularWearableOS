@@ -121,10 +121,24 @@ static const char *cardinal(float h)
 /* ui_list_input releases the scroller again on the IN_UP that follows IN_DRAG_END,
  * with zero velocity, which kills every fling. Forward IN_UP only while the finger
  * still holds the list (a press that never dragged). */
+/* ui_list_tick quantises the fading scrollbar to 1/16 with round-to-nearest, so the
+ * exponential fade-out stalls at 3/16 forever. Finish the fade linearly. */
+static void bar_fix(ui_list *l, float dt)
+{
+    if (nos_t - l->bar_t < 0.6f || l->bar_alpha <= 0) return;
+    float a = l->bar_alpha - dt * 3.0f;
+    l->bar_alpha = a <= 0.03f ? 0 : floorf(a * 16.0f) / 16.0f;
+}
+
 static int list_in(ui_list *l, const nos_input *in)
 {
     if (in->type == IN_UP && !l->sc.dragging) { l->pressed = -1; return 1; }
-    return ui_list_input(l, in);
+    int moving = l->sc.moving && fabsf(l->sc.v) > 5.0f;
+    int r = ui_list_input(l, in);
+    /* a press on a resting list need not hold the scroller: holding it keeps the
+     * scrollbar lit, so every tap would flash it */
+    if (in->type == IN_DOWN && !moving && !l->sc.springing) l->sc.dragging = 0;
+    return r;
 }
 
 /* ======================================================================= sampling
@@ -289,6 +303,7 @@ static void modules_leave(void) { ML.covered = 1; hal_gps_enable(0); }
 static void modules_tick(float dt)
 {
     ui_list_tick(&ML.L, dt);
+    bar_fix(&ML.L, dt);
     if (nos_t >= ML.next) {
         sample(0, 1);
         list_values();
@@ -340,7 +355,7 @@ static void draw_lrow(gfx_fb *fb, int e, float y, float h, int pressed)
     float cy = y + h * 0.5f;
     float k = qfade(cy) * bk;
     if (le->kind == LK_SUM) { draw_summary(fb, y, k); return; }
-    float edge = cy < UI_CY ? cy - 14 : cy + 14;
+    float edge = cy;
     int x0, x1;
     ui_row_span(edge, 30, &x0, &x1);
     if (x1 - x0 < 160) return;
@@ -606,7 +621,7 @@ static void detail_leave(void)
 
 static void detail_tick(float dt)
 {
-    if (is_list_page()) ui_list_tick(&D.L, dt);
+    if (is_list_page()) { ui_list_tick(&D.L, dt); bar_fix(&D.L, dt); }
     /* visuals every frame (bubble, dial, traces), text at 4 Hz */
     sample(D.m == M_HR, D.m == M_MIC);
     if (D.m == M_MIC) {
@@ -658,7 +673,7 @@ static void play_row(gfx_fb *fb, int i, float y, int pressed)
 {
     float h = PLAY_ROW, cy = y + h * 0.5f;
     float k = qfade(cy);
-    float edge = cy < UI_CY ? cy - 14 : cy + 14;
+    float edge = cy;
     int x0, x1;
     ui_row_span(edge, 30, &x0, &x1);
     if (x1 - x0 < 160) return;
@@ -812,7 +827,7 @@ static void detail_draw(gfx_fb *fb)
             lines(fb, 380);
         } else {
             ui_state(fb, UI_CX, 276, V.hr_ok ? "PLACE ON WRIST" : "STARTING", C_SEC);
-            ui_text(fb, UI_F_BODY, UI_CX, 316, "The sensor reads the back of the wrist", C_DIS, UI_CENTER, 0);
+            ui_text_wrap(fb, UI_F_BODY, UI_CX, 320, 280, 30, 2, "Wear it snug, sensor against the skin", C_DIS, UI_CENTER);
         }
         break;
     }

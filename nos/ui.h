@@ -60,6 +60,7 @@ int  ui_text(gfx_fb *fb, const font_t *f, int x, int y, const char *s, uint16_t 
 int  ui_text_width(const font_t *f, const char *s, int tracking);
 /* ALL-CAPS mono label with the house tracking (converts to upper case). */
 int  ui_label(gfx_fb *fb, int x, int y, const char *s, uint16_t color, int align);
+int  ui_label_width(const char *s);       /* width of ui_label(s) incl. tracking */
 /* Text clipped to max_w with a trailing "..." if needed. */
 int  ui_text_fit(gfx_fb *fb, const font_t *f, int x, int y, const char *s, uint16_t color,
                  int align, int max_w);
@@ -86,6 +87,7 @@ void ui_clock_small(gfx_fb *fb, int y);
 void ui_scrollbar(gfx_fb *fb, float offset, float content, float view, float alpha);
 /* Page dots centred at (cx, y); pos is fractional (animates between pages). */
 void ui_page_dots(gfx_fb *fb, int cx, int y, int n, float pos);
+void ui_page_dots_a(gfx_fb *fb, int cx, int y, int n, float pos, float alpha);  /* alpha 0..1, quantise it */
 
 /* ---- controls ---- */
 /* Toggle centred at (cx, cy); on = 0..1 animated (use an mspring). */

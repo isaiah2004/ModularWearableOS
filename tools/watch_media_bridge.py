@@ -43,7 +43,8 @@ try:                                            # host volume control (watch vol
 except Exception:
     _HAVE_PYCAW = False
 
-DEV_NAME   = "Watch"
+DEV_NAME   = "Watch"            # old firmware
+DEV_NAMES  = ("Watch", "Bangle.js NOS")   # NOS advertises as a Bangle.js for Gadgetbridge
 TIME_UUID  = "e3f00002-1212-efde-1523-785feabcd123"
 INFO_UUID  = "e3f00003-1212-efde-1523-785feabcd123"
 COVER_UUID = "e3f00005-1212-efde-1523-785feabcd123"
@@ -306,8 +307,9 @@ async def _push_cover(client, title, artist):
 
 # ---- main loop ----------------------------------------------------------------
 async def run():
-    print(f"scanning for {DEV_NAME!r} ...")
-    dev = await BleakScanner.find_device_by_name(DEV_NAME, timeout=15.0)
+    print(f"scanning for {DEV_NAMES!r} ...")
+    dev = await BleakScanner.find_device_by_filter(
+        lambda d, ad: (d.name or ad.local_name or "") in DEV_NAMES, timeout=15.0)
     if not dev:
         print("  not found -- reset the watch so it advertises cleanly."); return
     print(f"  found {dev.address}; connecting ...")

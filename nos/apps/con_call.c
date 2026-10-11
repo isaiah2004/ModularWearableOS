@@ -96,7 +96,9 @@ static void call_tick(float dt)
     const svc_call_t *c = svc_call();
     copy_caller(c);
     C.build = q((nos_t - C.t_enter) / 0.36f, 32);
-    C.txt = q((nos_t - C.t_enter - 0.1f) / 0.2f, 4);
+    /* words fade in on entry and again when the call ends (the layout changes) */
+    float tin = (nos_t - C.t_enter - 0.1f) / 0.2f, tend = C.st == CS_ENDED ? (nos_t - C.t_state) / 0.2f : 1.0f;
+    C.txt = q(tin < tend ? tin : tend, 4);
 
     /* follow the phone: it may answer, hang up or reject on its own */
     if (C.st == CS_INCOMING && c->state == 2) go(CS_ACTIVE);
@@ -192,17 +194,17 @@ static void call_draw(gfx_fb *fb)
     case CS_ACTIVE: {
         ui_title(fb, "ON PHONE", 0);
         draw_caller(fb, 128, c1, c2);
-        dot_style st = { DOT_FONT_TALL, 8.0f, 6.4f, C_WHITE, 0, 1, 1 };
-        if (C.dur_prev[0] && C.morph < 1) dot_text_morph(fb, &st, UI_CX, 184, C.dur_prev, C.dur, 1, C.morph);
-        else dot_text_a(fb, &st, UI_CX, 184, C.dur, 1);
+        dot_style st = { DOT_FONT_TALL, 7.0f, 5.6f, C_WHITE, 0, 1, 1 };
+        if (C.dur_prev[0] && C.morph < 1) dot_text_morph(fb, &st, UI_CX, 194, C.dur_prev, C.dur, 1, C.morph);
+        else dot_text_a(fb, &st, UI_CX, 194, C.dur, 1);
         round_button(fb, UI_CX, BTN_R * b, 1, DOT_ICON_CROSS, C.pressed == P_END, "END", c2);
         break;
     }
     default: {
         ui_title(fb, "CALL", 0);
-        draw_caller(fb, 190, C_SEC, C_DIS);
-        ui_state(fb, UI_CX, 290, "CALL ENDED", C_PRI);
-        if (C.dur[0]) ui_text(fb, UI_F_LABEL, UI_CX, 326, C.dur, C_SEC, UI_CENTER, 2);
+        draw_caller(fb, 190, ui_dim(C_SEC, C.txt), ui_dim(C_DIS, C.txt));
+        ui_state(fb, UI_CX, 290, "CALL ENDED", c1);
+        if (C.dur[0]) ui_text(fb, UI_F_LABEL, UI_CX, 326, C.dur, c2, UI_CENTER, 2);
         break;
     }
     }
@@ -253,7 +255,8 @@ static int call_input(const nos_input *in)
         return 1;
     }
     case IN_BTN:
-        return 0;            /* home: the services then leave the call to the phone */
+        if (C.st == CS_INCOMING) { svc_ring_silence(); nos_feedback(FB_TAP); return 1; }   /* like a phone: button silences */
+        return 0;
     case IN_UP:
     case IN_DRAG_START:
         C.pressed = P_NONE;

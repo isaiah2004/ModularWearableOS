@@ -36,7 +36,7 @@ typedef struct {
     uint32_t t_state, last_get, last_fix, last_rx;
     char line[100]; int len;
     hal_gps fix;                         /* published sample (guarded by ext_lock) */
-    uint8_t gsv_snr[NTALK][16]; uint8_t gsv_n[NTALK]; uint8_t gsv_view[NTALK];
+    uint8_t gsv_snr[NTALK][16]; uint8_t gsv_el[NTALK][16]; uint16_t gsv_az[NTALK][16]; uint8_t gsv_n[NTALK]; uint8_t gsv_view[NTALK];
     float speed_mps;
 } gps_state;
 static gps_state *G;
@@ -99,19 +99,19 @@ static int talker_idx(const char *t)
 }
 static void publish_snr(hal_gps *f)
 {
-    uint8_t all[NTALK * 16]; int n = 0, view = 0;
+    uint8_t all[NTALK * 16], el[NTALK * 16]; uint16_t az[NTALK * 16]; int n = 0, view = 0;
     for (int t = 0; t < NTALK; t++) {
         view += G->gsv_view[t];
-        for (int i = 0; i < G->gsv_n[t]; i++) all[n++] = G->gsv_snr[t][i];
+        for (int i = 0; i < G->gsv_n[t]; i++) { all[n] = G->gsv_snr[t][i]; el[n] = G->gsv_el[t][i]; az[n] = G->gsv_az[t][i]; n++; }
     }
     for (int i = 1; i < n; i++) {                /* insertion sort, strongest first */
-        uint8_t v = all[i]; int j = i - 1;
-        while (j >= 0 && all[j] < v) { all[j + 1] = all[j]; j--; }
-        all[j + 1] = v;
+        uint8_t v = all[i], e = el[i]; uint16_t a = az[i]; int j = i - 1;
+        while (j >= 0 && all[j] < v) { all[j + 1] = all[j]; el[j + 1] = el[j]; az[j + 1] = az[j]; j--; }
+        all[j + 1] = v; el[j + 1] = e; az[j + 1] = a;
     }
     if (n > 16) n = 16;
-    memset(f->snr, 0, sizeof f->snr);
-    memcpy(f->snr, all, (size_t)n);
+    memset(f->snr, 0, sizeof f->snr); memset(f->el, 0, sizeof f->el); memset(f->az, 0, sizeof f->az);
+    memcpy(f->snr, all, (size_t)n); memcpy(f->el, el, (size_t)n); memcpy(f->az, az, sizeof(uint16_t) * (size_t)n);
     f->nsnr = n; f->sats_view = view;
 }
 static void utc_from(hal_gps *f, const char *t)
@@ -176,7 +176,12 @@ static void sentence(char *s)
         G->gsv_view[ti] = (uint8_t)atoi(f[3]);
         for (int i = 4; i + 3 < nf; i += 4) {      /* prn, elev, az, snr; NMEA 4.11 signal id ignored */
             if (!*f[i]) continue;
-            if (G->gsv_n[ti] < 16) G->gsv_snr[ti][G->gsv_n[ti]++] = (uint8_t)atoi(f[i + 3]);
+            if (G->gsv_n[ti] < 16) {
+                int k = G->gsv_n[ti]++;
+                G->gsv_snr[ti][k] = (uint8_t)atoi(f[i + 3]);
+                G->gsv_el[ti][k] = (uint8_t)atoi(f[i + 1]);
+                G->gsv_az[ti][k] = (uint16_t)atoi(f[i + 2]);
+            }
         }
     }
     portEXIT_CRITICAL(&ext_lock);

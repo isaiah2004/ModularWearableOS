@@ -29,6 +29,7 @@ static struct {
     float t0[4];
     int init;
     int bpm, steps, batt, charging;
+    int wx; float temp;
 } S;
 
 static void enter(void) { S.init = 0; }
@@ -55,6 +56,8 @@ static void tick(const face_ctx *c, float dt)
     S.steps = c->steps > 0 ? c->steps : a->steps;
     S.batt = c->battery;
     S.charging = c->charging;
+    S.wx = c->weather_valid;
+    S.temp = c->temp_c;
 }
 
 /* one digit cell: the old glyph rolls up and out while the new one rises in */
@@ -72,10 +75,13 @@ static void digit(gfx_fb *fb, int x, int base, char from, char to, float p, uint
     ui_text(&sub, UI_F_HERO, x, base + span - dy, b, col, UI_LEFT, 0);
 }
 
+/* baselines of the data rows: 50 px apart, centred on the digit block */
+static int row_y(int k, int n) { return 246 + (int)(((float)k - (float)(n - 1) * 0.5f) * 50.0f); }
+
 static void data_row(gfx_fb *fb, int x, int y, const char *lab, const char *val, uint16_t vcol, uint16_t lcol)
 {
-    int w = ui_label(fb, x, y, lab, lcol, UI_LEFT);
-    ui_label(fb, x + w + 10, y, val, vcol, UI_LEFT);
+    ui_label(fb, x, y, lab, lcol, UI_LEFT);
+    ui_label(fb, x + ui_text_width(UI_F_LABEL, "STP", 2) + 16, y, val, vcol, UI_LEFT);  /* one value column */
 }
 
 static void draw(gfx_fb *fb, const face_ctx *c)
@@ -104,29 +110,49 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         digit(fb, x, base, from, S.to[i], p, col, cw);
     }
     /* data column, stepping in one line at a time during the build-in */
-    int lines = e >= 1.0f ? 3 : (int)(m_clamp((e - 0.35f) / 0.5f, 0, 1) * 3.99f);
+    int n = S.wx ? 4 : 3;
+    int lines = e >= 1.0f ? n : (int)(m_clamp((e - 0.35f) / 0.5f, 0, 1) * ((float)n + 0.99f));
     int out_of_range = S.bpm > 0 && (S.bpm >= 120 || S.bpm < 40);
-    if (lines > 0) {
-        if (S.bpm > 0) snprintf(b, sizeof b, "%d", S.bpm); else snprintf(b, sizeof b, "--");
-        data_row(fb, X_COL, 196, "HR", b, out_of_range ? C_RED : C_PRI, C_DIS);
-    }
-    if (lines > 1) {
-        if (S.steps >= 10000) snprintf(b, sizeof b, "%d.%dK", S.steps / 1000, (S.steps % 1000) / 100);
-        else snprintf(b, sizeof b, "%d", S.steps);
-        data_row(fb, X_COL, 246, "STP", b, C_PRI, C_DIS);
-    }
-    if (lines > 2) {
-        if (S.batt > 0 || S.charging) snprintf(b, sizeof b, S.charging ? "%d+" : "%d", S.batt);
-        else snprintf(b, sizeof b, "--");
-        data_row(fb, X_COL, 296, "BAT", b, S.batt > 0 && S.batt <= 15 && !S.charging ? C_WHITE : C_PRI, C_DIS);
+    for (int k = 0; k < lines; k++) {
+        int y = row_y(k, n);
+        switch (k) {
+        case 0:
+            if (S.bpm > 0) snprintf(b, sizeof b, "%d", S.bpm); else snprintf(b, sizeof b, "--");
+            data_row(fb, X_COL, y, "HR", b, out_of_range ? C_RED : C_PRI, C_DIS);
+            break;
+        case 1:
+            if (S.steps >= 10000) snprintf(b, sizeof b, "%d.%dK", S.steps / 1000, (S.steps % 1000) / 100);
+            else snprintf(b, sizeof b, "%d", S.steps);
+            data_row(fb, X_COL, y, "STP", b, C_PRI, C_DIS);
+            break;
+        case 2:
+            if (n == 4) {
+                snprintf(b, sizeof b, "%d°", (int)(S.temp + (S.temp < 0 ? -0.5f : 0.5f)));
+                data_row(fb, X_COL, y, "TMP", b, C_PRI, C_DIS);
+                break;
+            }
+            /* fall through */
+        default:
+            if (S.batt > 0 || S.charging) snprintf(b, sizeof b, S.charging ? "%d+" : "%d", S.batt);
+            else snprintf(b, sizeof b, "--");
+            data_row(fb, X_COL, y, "BAT", b, S.batt > 0 && S.batt <= 15 && !S.charging ? C_WHITE : C_PRI, C_DIS);
+            break;
+        }
     }
 }
 
 static const struct nos_screen *tap(int x, int y)
 {
-    if (x < X_COL - 20) return 0;
-    if (y >= 150 && y < 222) return &scr_heart;
-    if (y >= 222 && y < 272) return &scr_activity;
+    if (x < X_COL - 24) return 0;
+    int n = S.wx ? 4 : 3;
+    for (int k = 0; k < n; k++) {
+        int ry = row_y(k, n) - 6;                    /* row centre (label cap height 13) */
+        if (y < ry - 25 || y >= ry + 25) continue;
+        if (k == 0) return &scr_heart;
+        if (k == 1) return &scr_activity;
+        if (k == 2 && n == 4) return &scr_weather;
+        return 0;
+    }
     return 0;
 }
 

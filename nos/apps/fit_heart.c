@@ -205,7 +205,7 @@ static void hdata_read(hdata *h, int allow_hal)
 }
 
 /* Columns: average of the non-zero samples in each bucket, scaled into lo..hi. */
-static int hdata_columns(const hdata *h, uint8_t *out, int cols, float grow_p, int stagger)
+static int hdata_columns(const hdata *h, uint8_t *out, int cols, int rows, float grow_p, int stagger)
 {
     int lo = 255, hi = 0, any = 0;
     for (int i = 0; i < h->nhist; i++) if (h->hist[i]) { any = 1; if (h->hist[i] < lo) lo = h->hist[i]; if (h->hist[i] > hi) hi = h->hist[i]; }
@@ -217,6 +217,7 @@ static int hdata_columns(const hdata *h, uint8_t *out, int cols, float grow_p, i
         for (int i = a; i < b; i++) if (h->hist[i]) { s += h->hist[i]; n++; }
         float g = stagger ? bezier_ease(&EASE_STANDARD, m_stagger(grow_p, c, cols, 0.45f)) : grow_p;
         float f = n ? ((float)s / (float)n - flo) / (fhi - flo) : 0;
+        if (n) { f = floorf(m_clamp(f, 0, 1) * (float)rows + 0.5f) / (float)rows; if (f < 1.0f / (float)rows) f = 1.0f / (float)rows; }
         out[c] = (uint8_t)lroundf(m_clamp(f * g, 0, 1) * 255.0f);
     }
     return 1;
@@ -512,7 +513,7 @@ static void heart_tick(float dt)
     H.u = H.locked ? bezier_ease(&EASE_STANDARD, m_clamp(H.lock_t / 0.45f, 0, 1)) : 0;
     float bt = H.beat_t;
     float pulse = bt < 0.067f ? bt / 0.067f : expf(-(bt - 0.067f) / 0.16f);
-    H.heart_scale = 1.0f + 0.32f * qz(m_clamp(pulse, 0, 1), 16.0f);
+    H.heart_scale = 1.0f + 0.55f * qz(m_clamp(pulse, 0, 1), 16.0f);   /* the outline swells bold on each beat */
     if (H.mode == M_MEASURING || H.mode == M_LOCKED) {
         float u = H.u;
         float xl = m_lerp(58, 118, u), xr = m_lerp(408, 348, u);
@@ -607,7 +608,7 @@ static void draw_history(gfx_fb *fb, float oy)
     float x0 = UI_CX - cols * pitch * 0.5f, y0 = 226 + oy;
     uint8_t vals[48];
     float pb = bezier_ease(&EASE_STANDARD, m_clamp((p - 0.15f) / 0.85f, 0, 1));
-    int any = hdata_columns(h, vals, cols, pb, 1);
+    int any = hdata_columns(h, vals, cols, rows, pb, 1);
     dot_columns(fb, x0, y0, cols, rows, pitch, d, vals, C_SEC, C_GHOST);
     if (any) {
         /* the newest column is now: white */
@@ -685,6 +686,7 @@ static void wgh_refresh(void)
 
 static void wgh_shown(void)
 {
+    if (WH.started) return;            /* already building since the page slid in */
     wgh_refresh();
     WH.t = 0; WH.started = 1;
 }
@@ -695,13 +697,14 @@ static void wgh_tick(float dt, int visible)
     if (!visible) {
         if (WH.started) WH.started = 0;
         WH.t = 0;
-        if (WH.hist_age > 60.0f || !WH.hd.nhist) wgh_refresh();
+        if (WH.hist_age > 60.0f || (!WH.hd.nhist && WH.hist_age > 5.0f)) wgh_refresh();
     } else {
         if (WH.hist_age > 60.0f) wgh_refresh();
-        if (WH.started) WH.t += dt;
+        if (!WH.started) { wgh_refresh(); WH.t = 0; WH.started = 1; }
+        else WH.t += dt;
     }
     float p = WH.started ? m_clamp((WH.t - 0.08f) / 0.5f, 0, 1) : 0;
-    WH.any = hdata_columns(&WH.hd, WH.cols, 24, p, 1);
+    WH.any = hdata_columns(&WH.hd, WH.cols, 24, 5, p, 1);
 }
 
 static void wgh_draw(gfx_fb *fb)
@@ -710,7 +713,7 @@ static void wgh_draw(gfx_fb *fb)
     float k = qz(m_clamp(WH.t / 0.3f, 0, 1), 6.0f);
     if (!WH.started) k = 0;
     dot_icon(fb, DOT_ICON_HEART, UI_CX, 108, 3.0f, 2.4f, C_PRI);
-    dot_style st = { DOT_FONT_TALL, 10.0f, 8.0f, WH.hd.last ? C_WHITE : C_DIS, 0, 1, 1 };
+    dot_style st = { DOT_FONT_TALL, 10.0f, 8.0f, WH.hd.last ? C_WHITE : C_DIS, WH.hd.last ? 0 : C_GHOST, 1, 1 };
     char b[8];
     fmt_bpm(b, sizeof b, WH.hd.last);
     dot_text_anim(fb, &st, UI_CX, 142, b, 1, WH.hd.last ? p : 1, DOT_REVEAL_RANDOM, 5);
@@ -719,8 +722,8 @@ static void wgh_draw(gfx_fb *fb)
     else ui_label(fb, UI_CX, 294, "NO READINGS YET", C_DIS, UI_CENTER);
     const float pitch = 9.0f;
     float x0 = UI_CX - 12 * pitch;
-    dot_columns(fb, x0, 314, 24, 4, pitch, 6.6f, WH.cols, C_SEC, C_GHOST);
-    ui_label(fb, UI_CX, 392, "TAP TO MEASURE", C_DIS, UI_CENTER);
+    dot_columns(fb, x0, 312, 24, 5, pitch, 6.6f, WH.cols, C_SEC, C_GHOST);
+    ui_label(fb, UI_CX, 396, "TAP TO MEASURE", C_DIS, UI_CENTER);
 }
 
 static void wgh_tap(int x, int y) { nos_open(&scr_heart, x, y); }

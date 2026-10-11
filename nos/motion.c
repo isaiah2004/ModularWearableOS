@@ -35,11 +35,18 @@ void msp_init(mspring *s, float x, float response, float damping)
     s->v = 0;
     s->response = response > 0.02f ? response : 0.02f;
     s->damping = damping;
+    s->eps = MSP_EPS;
     s->moving = 0;
 }
-void msp_to(mspring *s, float target) { s->target = target; s->moving = 1; }
+static void eps_for(mspring *s, float target)
+{
+    float d = fabsf(target - s->x) * 0.01f;
+    if (d <= 0) return;                      /* no distance: keep the last threshold */
+    s->eps = d > MSP_EPS ? MSP_EPS : d < 0.0005f ? 0.0005f : d;
+}
+void msp_to(mspring *s, float target) { eps_for(s, target); s->target = target; s->moving = 1; }
 void msp_set(mspring *s, float x) { s->x = s->target = x; s->v = 0; s->moving = 0; }
-void msp_kick(mspring *s, float target, float v) { s->target = target; s->v = v; s->moving = 1; }
+void msp_kick(mspring *s, float target, float v) { eps_for(s, target); s->target = target; s->v = v; s->moving = 1; }
 
 int msp_step(mspring *s, float dt)
 {
@@ -64,7 +71,7 @@ int msp_step(mspring *s, float dt)
     }
     s->x = s->target + x;
     s->v = v;
-    if (fabsf(x) < MSP_EPS && fabsf(v) < MSP_EPS * 20.0f) {
+    if (fabsf(x) < s->eps && fabsf(v) < s->eps * 20.0f) {
         s->x = s->target;
         s->v = 0;
         s->moving = 0;
@@ -92,6 +99,7 @@ void msc_init(mscroll *s, float min, float max, float snap)
     s->x = min; s->v = 0;
     s->min = min; s->max = max > min ? max : min;
     s->snap = snap;
+    s->snap_free = 0;
     s->dragging = s->moving = s->springing = 0;
     s->drag_x0 = s->drag_off0 = 0;
     msp_init(&s->sp, s->x, SPRING_PAGE);
@@ -136,9 +144,11 @@ void msc_release(mscroll *s, float v)
         float tgt = snap_of(s, rest);
         /* never skip more than one page per flick for pagers with page-size snaps */
         float cur = snap_of(s, s->x);
-        if (tgt > cur + s->snap) tgt = cur + s->snap;
-        if (tgt < cur - s->snap) tgt = cur - s->snap;
-        if (fabsf(v) > 300.0f && tgt == cur) tgt = m_clamp(cur + (v > 0 ? s->snap : -s->snap), s->min, s->max);
+        if (!s->snap_free) {
+            if (tgt > cur + s->snap) tgt = cur + s->snap;
+            if (tgt < cur - s->snap) tgt = cur - s->snap;
+            if (fabsf(v) > 300.0f && tgt == cur) tgt = m_clamp(cur + (v > 0 ? s->snap : -s->snap), s->min, s->max);
+        }
         s->sp.response = 0.42f; s->sp.damping = 0.95f;
         s->sp.x = s->x; s->sp.v = v;
         msp_to(&s->sp, tgt);

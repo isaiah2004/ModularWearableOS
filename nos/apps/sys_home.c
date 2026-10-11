@@ -223,6 +223,8 @@ static void home_tick(float dt)
     /* pager */
     if (H.settling) {
         int m = msp_step(&H.sp, dt);
+        /* the last sub-pixel of a settle would cost a whole-page repaint for nothing */
+        if (m && fabsf(H.sp.x - H.sp.target) < 0.6f && fabsf(H.sp.v) < 40.0f) m = 0;
         H.x = H.sp.x;
         if (!m) {
             H.settling = 0;

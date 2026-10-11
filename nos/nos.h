@@ -21,6 +21,7 @@
 #include "gfx.h"
 #include "hal.h"
 
+#define NOS_VERSION   "1.0.0"
 #define NOS_FPS       30
 #define NOS_PERIOD_MS 33.333f
 
@@ -93,6 +94,9 @@ void nos_set_root(const nos_screen *s);
 const nos_screen *nos_top(void);
 int  nos_depth(void);                       /* 1 = only the root */
 int  nos_transitioning(void);
+/* Inside enter(): 1 when the screen is being revealed by a pop (back), 0 when it was
+ * just pushed. Use it to keep scroll state and skip build-ins on return. */
+int  nos_revealed(void);
 
 /* Interactive transitions: call from a screen's input handler on IN_DRAG_START to let
  * the finger pull another screen in (e.g. the face pulling notifications up). The
@@ -109,6 +113,11 @@ void nos_toast(const char *text);           /* short centred pill, ~1.4 s */
 enum { FB_TICK = 0, FB_TAP, FB_TOGGLE_ON, FB_TOGGLE_OFF, FB_BACK, FB_OPEN,
        FB_SUCCESS, FB_ERROR, FB_LIMIT, FB_NOTIFY };
 void nos_feedback(int kind);
+/* Panel brightness override for screens that are light sources (torch, find-watch):
+ * level 0-255, or -1 to return to the user's brightness. The host applies it every
+ * frame instead of the user level, so it can't be fought by auto-brightness. */
+void nos_brightness_override(int level);
+extern int nos_bright_override;
 
 /* Background hook run every frame after input, before screens tick (services). */
 extern void (*nos_bg_tick)(float dt);

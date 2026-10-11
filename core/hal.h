@@ -37,7 +37,9 @@ typedef struct {
     uint32_t age_ms;
 } hal_power;
 void hal_power_get(hal_power *out);
-uint64_t hal_epoch_seconds(void);          /* trusted UTC, or 0 if unknown */
+uint64_t hal_epoch_seconds(void);
+/* Display timezone, minutes east of UTC (NOS: Gadgetbridge time sync, Settings). */
+void hal_set_tz_min(int tz_min);          /* trusted UTC, or 0 if unknown */
 /* Battery history logger: `hal_batt_log_tick()` is called every main-loop iteration and self-times
  * a sample; the ring is dumped (delta-compressed) to the companion over BLE for offline analysis
  * (e.g. the "won't charge past 85%" issue). No-op on the sim. */

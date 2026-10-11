@@ -17,15 +17,29 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ABOUT_VERSION "0.1.0"
+#define ABOUT_VERSION NOS_VERSION
 
 /* ui_list_input releases the scroller again on the IN_UP that follows IN_DRAG_END,
  * with zero velocity, which kills every fling. Forward IN_UP only while the finger
  * still holds the list (a press that never dragged). */
+/* ui_list_tick quantises the fading scrollbar to 1/16 with round-to-nearest, so the
+ * exponential fade-out stalls at 3/16 forever. Finish the fade linearly. */
+static void bar_fix(ui_list *l, float dt)
+{
+    if (nos_t - l->bar_t < 0.6f || l->bar_alpha <= 0) return;
+    float a = l->bar_alpha - dt * 3.0f;
+    l->bar_alpha = a <= 0.03f ? 0 : floorf(a * 16.0f) / 16.0f;
+}
+
 static int list_in(ui_list *l, const nos_input *in)
 {
     if (in->type == IN_UP && !l->sc.dragging) { l->pressed = -1; return 1; }
-    return ui_list_input(l, in);
+    int moving = l->sc.moving && fabsf(l->sc.v) > 5.0f;
+    int r = ui_list_input(l, in);
+    /* a press on a resting list need not hold the scroller: holding it keeps the
+     * scrollbar lit, so every tap would flash it */
+    if (in->type == IN_DOWN && !moving && !l->sc.springing) l->sc.dragging = 0;
+    return r;
 }
 
 /* ---- logo ------------------------------------------------------------------ */
@@ -97,14 +111,14 @@ static void about_values(int init)
 
 static void about_enter(void)
 {
-    int revealed = A.inited && A.covered && nos_transitioning();
+    int revealed = A.inited && A.covered && nos_revealed();
     A.covered = 0;
     if (!revealed) {
         int u = 0;
         for (int i = 0; i < R_COUNT; i++) { A.start[i] = u; u += k_units[i]; }
         A.nunits = u;
         ui_list_init(&A.L, u, AU, ATOP, 0, 0);
-        A.L.bottom_pad = 120;
+        A.L.bottom_pad = GFX_H / 2 - 60;
         ui_list_set_n(&A.L, u);
         A.t0 = nos_t;
         A.inited = 1;
@@ -118,6 +132,7 @@ static void about_leave(void) { A.covered = 1; }
 static void about_tick(float dt)
 {
     ui_list_tick(&A.L, dt);
+    bar_fix(&A.L, dt);
     if (nos_t >= A.next_upd) { about_values(0); A.next_upd = nos_t + 0.25f; }
 }
 
@@ -200,9 +215,8 @@ static void about_draw(gfx_fb *fb)
             break;
         case R_DISPLAY: ui_text(fb, UI_F_BODY, UI_CX, vb, "466 x 466 AMOLED, 30 fps", ui_dim(C_PRI, k), UI_CENTER, 0); break;
         case R_FONTS:
-            ui_text_wrap(fb, UI_F_BODY, UI_CX, vb, 320, 28, 2,
-                         "Space Grotesk and Space Mono, SIL Open Font License 1.1",
-                         ui_dim(C_PRI, k), UI_CENTER);
+            ui_text(fb, UI_F_BODY, UI_CX, vb, "Space Grotesk, Space Mono", ui_dim(C_PRI, k), UI_CENTER, 0);
+            ui_label(fb, UI_CX, vb + 30, "SIL OPEN FONT LICENSE 1.1", ui_dim(C_SEC, k), UI_CENTER);
             break;
         default: {
             const amt *m = &A.live[r];

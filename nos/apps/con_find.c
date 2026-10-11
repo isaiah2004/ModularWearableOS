@@ -192,9 +192,7 @@ static void fw_restore(void)
 {
     hal_haptic_stop();
     hal_sfx_stop();
-    int v = nos_prefs.brightness * 255 / 100;
-    if (v < 12) v = 12;
-    hal_set_backlight((uint8_t)v);
+    nos_brightness_override(-1);
 }
 
 static void fw_enter(void)
@@ -203,7 +201,7 @@ static void fw_enter(void)
     W.build = 0;
     W.was_active = svc_find_watch_active();
     W.stopped = 0;
-    hal_set_backlight(255);
+    nos_brightness_override(255);
 }
 
 static void fw_leave(void)
@@ -235,6 +233,12 @@ static void fw_tick(float dt)
     W.pulse = q(s, 8);
 }
 
+/* width of the "FIND WATCH" title as ui_title draws it (mono label, tracking 2) */
+static int title_width(void)
+{
+    return ui_text_width(UI_F_LABEL, "FIND WATCH", 2);
+}
+
 static void fw_draw(gfx_fb *fb)
 {
     float t = nos_t - W.t_enter;
@@ -243,7 +247,12 @@ static void fw_draw(gfx_fb *fb)
     float r = (FW_R + 8.0f * W.pulse) * b;
     if (r > 1) ui_circle(fb, UI_CX, UI_CY, r, C_WHITE);
     dot_icon_anim(fb, DOT_ICON_BELL, UI_CX, UI_CY, 8.0f, 6.4f, C_BG, q((t - 0.05f) / 0.3f, 32), DOT_REVEAL_CENTER);
+    /* black pills keep the words legible over the ripples */
+    int tw = title_width();
+    ui_rrect(fb, UI_CX - tw / 2 - 18, 48, tw + 36, 32, 16, C_BG);
     ui_title(fb, "FIND WATCH", 0);
+    int bw = ui_text_width(UI_F_BODY, "Tap to stop", 0);
+    ui_rrect(fb, UI_CX - bw / 2 - 22, 376, bw + 44, 40, 20, C_BG);
     ui_text(fb, UI_F_BODY, UI_CX, 404, "Tap to stop", C_PRI, UI_CENTER, 0);
 }
 

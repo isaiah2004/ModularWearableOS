@@ -69,14 +69,14 @@ void fk_view_of(const gfx_fb *fb, fk_view *v)
 void fk_morph_tick(fk_morph *m, const char *now, float t)
 {
     if (!m->init || strlen(now) != strlen(m->to)) {
-        strncpy(m->from, now, 7); m->from[7] = 0;
-        strncpy(m->to, now, 7); m->to[7] = 0;
+        strncpy(m->from, now, 11); m->from[11] = 0;
+        strncpy(m->to, now, 11); m->to[11] = 0;
         m->t0 = -100.0f; m->init = 1;
         return;
     }
     if (strcmp(now, m->to) != 0) {
         memcpy(m->from, m->to, sizeof m->from);
-        strncpy(m->to, now, 7); m->to[7] = 0;
+        strncpy(m->to, now, 11); m->to[11] = 0;
         m->t0 = t;
     }
 }

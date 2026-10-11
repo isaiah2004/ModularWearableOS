@@ -77,4 +77,7 @@ int     gif_delay_30fps(int frame_index);
 /* round-mask coverage 0-255 of panel pixel (x, y) */
 uint8_t sim_mask(int x, int y);
 
+/* sim/nos_phone_sim.c: fake phone link */
+void nos_phone_sim_set(int connected);
+int  nos_phone_sim_cmd(const char *s);
 #endif

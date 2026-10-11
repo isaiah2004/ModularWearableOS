@@ -82,7 +82,14 @@ static void cloud(const ictx *k, float ox, float oy, uint16_t col, int occlude)
 }
 static void sun(const ictx *k, float ox, float oy, float sc, int f)
 {
-    ifill(k, ox, oy, 21 * sc * k->g, C_WHITE);
+    /* the disc is a dot grid too: dots swell towards the centre */
+    const float p = 6.4f * sc, R = 23.0f * sc;
+    for (float y = -R; y <= R + 0.1f; y += p)
+        for (float x = -R; x <= R + 0.1f; x += p) {
+            float d = sqrtf(x * x + y * y) - R;
+            if (d > -1.0f) continue;
+            idot(k, ox + x, oy + y, m_clamp(3.2f * sc - d * 0.22f, 3.2f * sc, 6.2f * sc), C_WHITE);
+        }
     float rot = (float)(f % LOOP) / LOOP * (PI_F / 4);         /* one ray spacing per loop */
     for (int i = 0; i < 8; i++) {
         float a = rot + i * (PI_F / 4), s = gfx_fast_sin(a), c = gfx_fast_cos(a);
@@ -118,6 +125,15 @@ static void rain(const ictx *k, int f, int heavy)
             idot(k, x, y, d, C_PRI);
         }
 }
+static void rain_sparse(const ictx *k, int f)
+{
+    static const float cols[2] = { -30, 30 };
+    for (int c = 0; c < 2; c++)
+        for (int j = 0; j < 2; j++) {
+            float t = (float)((f + c * 13 + j * 15) % 30) / 30.0f;
+            idot(k, cols[c] - t * 6, 26 + t * 34, 5.0f * (1.0f - t * 0.55f), C_SEC);
+        }
+}
 static void snow(const ictx *k, int f)
 {
     static const float cols[5] = { -28, -14, 0, 14, 28 };
@@ -132,8 +148,9 @@ static void bolt(const ictx *k, int f)
 {
     int ph = f % LOOP;
     int flash = ph < 3 || (ph >= 6 && ph < 8);
-    static const signed char b[6][2] = { { 6, 24 }, { 0, 32 }, { -6, 40 }, { 4, 42 }, { -2, 50 }, { -8, 58 } };
-    for (int i = 0; i < 6; i++) idot(k, b[i][0], b[i][1], flash ? 6.5f : 5.0f, flash ? C_WHITE : C_DIS);
+    /* a zigzag: down-left, a jog right, down-left again */
+    static const signed char b[8][2] = { { 6, 18 }, { 0, 26 }, { -6, 34 }, { 2, 35 }, { 10, 36 }, { 4, 44 }, { -2, 52 }, { -8, 60 } };
+    for (int i = 0; i < 8; i++) idot(k, b[i][0], b[i][1], flash ? 7.0f : 5.6f, flash ? C_WHITE : C_PRI);
 }
 static void fog(const ictx *k, int f)
 {
@@ -182,7 +199,7 @@ static void wx_icon(gfx_fb *fb, int cond, float cx, float cy, float s, float g, 
     case WX_PARTLY: sun(&k, 16, -16, 0.72f, f); cloud(&k, -6 + drift, 14, C_PRI, 1); break;
     case WX_CLOUDY: cloud(&k, 10 + drift * 0.6f, -16, C_DIS, 0); cloud(&k, -4 + drift, 6, C_PRI, 1); break;
     case WX_RAIN: cloud(&k, drift, -14, C_PRI, 0); k.cy -= 0; rain(&k, f, 0); break;
-    case WX_STORM: cloud(&k, drift, -14, C_SEC, 0); rain(&k, f, 1); bolt(&k, f); break;
+    case WX_STORM: cloud(&k, drift, -14, C_SEC, 0); rain_sparse(&k, f); bolt(&k, f); break;
     case WX_SNOW: cloud(&k, drift, -14, C_PRI, 0); snow(&k, f); break;
     case WX_FOG: fog(&k, f); break;
     case WX_WIND: wind(&k, f); break;
@@ -206,63 +223,81 @@ static int static_icon(int cond)
 static svc_weather_t s_demo;
 static const svc_weather_t *wx_data(void)
 {
-    const svc_weather_t *w = svc_weather();
 #ifndef ESP_PLATFORM
-    /* sim preview knob: NOS_WX_DEMO=<WX_* index> shows sample data while the phone
-     * link is empty (the services team's injection replaces this). */
-    if (!w->valid) {
-        static int inited = -2;
-        if (inited == -2) {
-            const char *e = getenv("NOS_WX_DEMO");
-            inited = e && *e ? atoi(e) : -1;
-            if (inited >= 0) {
-                static const char *txt[] = { "Clear", "Partly cloudy", "Cloudy", "Light rain", "Thunderstorm",
-                                             "Snow", "Fog", "Windy", "Clear night" };
-                svc_weather_t *d = &s_demo;
-                d->valid = 1; d->cond = inited % 9;
-                d->temp_c = d->cond == WX_SNOW ? -2 : 24; d->feels_c = d->temp_c + 2;
-                d->hi_c = d->temp_c + 3; d->lo_c = d->temp_c - 6;
-                snprintf(d->text, sizeof d->text, "%s", txt[d->cond]);
-                d->humidity = 62; d->rain_pct = 40; d->uv = 5; d->wind_kph = 12; d->wind_dir = 225;
-                snprintf(d->loc, sizeof d->loc, "Bengaluru");
-                d->nhours = 12;
-                for (int i = 0; i < 12; i++) {
-                    d->hours_c[i] = d->temp_c + 3.0f * sinf((i - 3) * 0.45f);
-                    d->hours_cond[i] = i < 3 ? d->cond : i < 6 ? WX_PARTLY : i < 9 ? WX_CLOUDY : WX_NIGHT;
-                }
-                d->ndays = 5;
-                static const int dc[5] = { WX_PARTLY, WX_RAIN, WX_STORM, WX_CLOUDY, WX_CLEAR };
-                for (int i = 0; i < 5; i++) {
-                    d->days[i].hi = d->hi_c + (float)((i * 7) % 5 - 2);
-                    d->days[i].lo = d->lo_c + (float)((i * 3) % 4 - 1);
-                    d->days[i].cond = i == 0 ? d->cond : dc[i];
-                }
+    /* sim preview knob: NOS_WX_DEMO=<WX_* index> replaces the feed with a complete
+     * sample (all sections filled) so every condition's animation can be reviewed. */
+    static int demo = -2;
+    if (demo == -2) {
+        const char *e = getenv("NOS_WX_DEMO");
+        demo = e && *e ? (e[0] == 'n' ? 99 : atoi(e) % 9) : -1;    /* "none" = empty feed */
+        if (demo >= 0 && demo < 9) {
+            static const char *txt[] = { "Clear", "Partly cloudy", "Cloudy", "Light rain", "Thunderstorm",
+                                         "Snow", "Fog", "Windy", "Clear night" };
+            svc_weather_t *d = &s_demo;
+            d->valid = 1; d->cond = demo;
+            d->temp_c = demo == WX_SNOW ? -2 : 24; d->feels_c = d->temp_c + 2;
+            d->hi_c = d->temp_c + 3; d->lo_c = d->temp_c - 6;
+            snprintf(d->text, sizeof d->text, "%s", txt[demo]);
+            d->humidity = 62; d->rain_pct = 40; d->uv = 5; d->wind_kph = 12; d->wind_dir = 225;
+            snprintf(d->loc, sizeof d->loc, "Bengaluru");
+            d->nhours = 12;
+            for (int i = 0; i < 12; i++) {
+                d->hours_c[i] = d->temp_c + 3.0f * sinf((i - 3) * 0.45f);
+                d->hours_cond[i] = i < 3 ? d->cond : i < 6 ? WX_PARTLY : i < 9 ? WX_CLOUDY : WX_NIGHT;
+            }
+            d->ndays = 5;
+            static const int dc[5] = { WX_PARTLY, WX_RAIN, WX_STORM, WX_CLOUDY, WX_CLEAR };
+            for (int i = 0; i < 5; i++) {
+                d->days[i].hi = d->hi_c + (float)((i * 7) % 5 - 2);
+                d->days[i].lo = d->lo_c + (float)((i * 3) % 4 - 1);
+                d->days[i].cond = i == 0 ? d->cond : dc[i];
             }
         }
-        if (inited >= 0) return &s_demo;
     }
+    static const svc_weather_t none;
+    if (demo == 99) return &none;
+    if (demo >= 0) return &s_demo;
 #endif
-    return w;
+    return svc_weather();
 }
 
-static void fmt_deg(char *o, int n, float c)
+/* Temperature text. The grotesk/mono fonts carry the degree sign as Latin-1 0xB0
+ * (one byte); dot text uses its own dot degree mark, so pass deg = 0 there. */
+static void fmt_t(char *o, int n, float c, int deg)
 {
     float v = nos_prefs.units_metric ? c : c * 9.0f / 5.0f + 32.0f;
-    snprintf(o, (size_t)n, "%d\xC2\xB0", (int)lroundf(v));
+    snprintf(o, (size_t)n, deg ? "%d\xB0" : "%d", (int)lroundf(v));
+}
+static void deg_mark(gfx_fb *fb, float x, float y, float pitch, float p, uint16_t col)
+{
+    const float c = pitch * 0.72f, d = pitch * 0.5f * m_clamp(p * 1.5f - 0.5f, 0, 1);
+    for (int r = 0; r < 3; r++)
+        for (int k = 0; k < 3; k++)
+            if (r != 1 || k != 1) dot_disc(fb, x + k * c, y + r * c, d, col);
+}
+/* hero temperature: digits left-aligned at x (or centred when align = 1) + dot degree */
+static void hero_temp(gfx_fb *fb, const dot_style *st, float x, float y, float c, int align, float p, unsigned seed)
+{
+    char t[8];
+    fmt_t(t, sizeof t, c, 0);
+    float w = (float)dot_text_width(st, t);
+    float x0 = align == 1 ? x - w * 0.5f : x;
+    dot_text_anim(fb, st, x0, y, t, 0, p, DOT_REVEAL_RANDOM, seed);
+    deg_mark(fb, x0 + w + st->pitch * 1.3f, y + st->pitch * 0.4f, st->pitch, p, st->color);
 }
 
 /* ------------------------------------------------------------- app state */
-#define SEC_HOURS 466
-#define SEC_DAYS  780
-#define CONTENT_H 1140
+#define PAGE_H 466
+#define NPAGES 3
 
 static struct {
     const svc_weather_t *w;
     int frame;
     float t0;
     mscroll sc;
-    int dragging, was_moving;
+    int dragging, touched;
     float bar_alpha, bar_t;
+    int page; float page_t[NPAGES];
     int hour_now, wday;
     int wrist_ok; float wrist_c;
     int connected;
@@ -272,7 +307,9 @@ static void weather_enter(void)
 {
     memset(&W, 0, sizeof W);
     W.t0 = nos_t;
-    msc_init(&W.sc, 0, CONTENT_H - GFX_H, 0);
+    for (int i = 0; i < NPAGES; i++) W.page_t[i] = nos_t;
+    W.bar_t = -10;
+    msc_init(&W.sc, 0, (NPAGES - 1) * PAGE_H, PAGE_H);
     W.w = wx_data();
 }
 
@@ -280,7 +317,11 @@ static void weather_tick(float dt)
 {
     W.w = wx_data();
     W.frame++;
-    if (msc_step(&W.sc, dt)) W.bar_t = nos_t;
+    if (msc_step(&W.sc, dt) && W.touched) W.bar_t = nos_t;
+    int pg = (int)floorf(W.sc.x / PAGE_H + 0.5f);
+    if (pg < 0) pg = 0;
+    if (pg > NPAGES - 1) pg = NPAGES - 1;
+    if (pg != W.page) { W.page = pg; W.page_t[pg] = nos_t; nos_feedback(FB_TICK); }
     float target = nos_t - W.bar_t < 0.6f ? 1.0f : 0.0f;
     W.bar_alpha += (target - W.bar_alpha) * m_clamp(dt * (target > W.bar_alpha ? 10.0f : 4.0f), 0, 1);
     if (W.bar_alpha < 0.03f) W.bar_alpha = 0;
@@ -297,34 +338,36 @@ static void weather_tick(float dt)
 }
 
 static float build(float delay, float dur) { return m_clamp((nos_t - W.t0 - delay) / dur, 0, 1); }
+/* row i of a page builds 2 frames after row i-1 */
+static float row_build(int page, int i) { return m_clamp((nos_t - W.page_t[page] - i * 0.066f) / 0.25f, 0, 1); }
 
 static void draw_now(gfx_fb *fb, const svc_weather_t *w, float scroll)
 {
     char t[40];
     ui_title(fb, w->loc[0] ? w->loc : "WEATHER", scroll);
     float g = build(0, 0.36f);
-    wx_icon(fb, w->cond, 142, 186, 1.0f, g, W.frame);
-    fmt_deg(t, sizeof t, w->temp_c);
+    wx_icon(fb, w->cond, 146, 182, 1.0f, g, W.frame);
     dot_style st = { DOT_FONT_TALL, 9.0f, 7.2f, C_WHITE, 0, 1, 0 };
-    dot_text_anim(fb, &st, 228, 146, t, 0, build(0.05f, 0.34f), DOT_REVEAL_RANDOM, 21u);
+    hero_temp(fb, &st, 232, 142, w->temp_c, 0, build(0.05f, 0.34f), 21u);
     ui_text_fit(fb, UI_F_BODY, UI_CX, 290, w->text, C_PRI, UI_CENTER, 320);
     char hi[8], lo[8];
-    fmt_deg(hi, sizeof hi, w->hi_c); fmt_deg(lo, sizeof lo, w->lo_c);
+    fmt_t(hi, sizeof hi, w->hi_c, 1); fmt_t(lo, sizeof lo, w->lo_c, 1);
     snprintf(t, sizeof t, "H %s   L %s", hi, lo);
     ui_label(fb, UI_CX, 324, t, C_SEC, UI_CENTER);
-    /* three facts */
+    /* three facts; unknown values show a dash */
     char v[3][16];
-    fmt_deg(v[0], sizeof v[0], w->feels_c);
-    snprintf(v[1], sizeof v[1], "%d%%", w->humidity);
-    snprintf(v[2], sizeof v[2], "%d", (int)lroundf(nos_prefs.units_metric ? w->wind_kph : w->wind_kph * 0.621f));
+    fmt_t(v[0], sizeof v[0], w->feels_c, 1);
+    if (w->humidity >= 0) snprintf(v[1], sizeof v[1], "%d%%", w->humidity); else snprintf(v[1], sizeof v[1], "-");
+    if (w->wind_kph >= 0) snprintf(v[2], sizeof v[2], "%d", (int)lroundf(nos_prefs.units_metric ? w->wind_kph : w->wind_kph * 0.621f));
+    else snprintf(v[2], sizeof v[2], "-");
     static const char *cap[3] = { "FEELS", "HUMID", "WIND" };
     for (int i = 0; i < 3; i++) {
         int x = UI_CX + (i - 1) * 104;
         ui_label(fb, x, 366, v[i], C_PRI, UI_CENTER);
-        ui_label(fb, x, 390, i == 2 ? (nos_prefs.units_metric ? "KM/H" : "MPH") : cap[i], C_DIS, UI_CENTER);
+        ui_label(fb, x, 390, i == 2 && w->wind_kph >= 0 ? (nos_prefs.units_metric ? "KM/H" : "MPH") : cap[i], C_DIS, UI_CENTER);
     }
     if (W.wrist_ok) {
-        fmt_deg(v[0], sizeof v[0], W.wrist_c);
+        fmt_t(v[0], sizeof v[0], W.wrist_c, 1);
         snprintf(t, sizeof t, "WRIST %s", v[0]);
         ui_label(fb, UI_CX, 428, t, C_DIS, UI_CENTER);
     }
@@ -332,54 +375,74 @@ static void draw_now(gfx_fb *fb, const svc_weather_t *w, float scroll)
 
 static void draw_hours(gfx_fb *fb, const svc_weather_t *w)
 {
-    int y0 = SEC_HOURS;
-    ui_label(fb, UI_CX, y0 + 58, "NEXT 12 HOURS", C_SEC, UI_CENTER);
+    const int y0 = PAGE_H;
     int n = w->nhours < 12 ? w->nhours : 12;
-    if (n <= 0) { ui_state(fb, UI_CX, y0 + 140, "NO HOURLY DATA", C_DIS); return; }
+    char title[24];
+    snprintf(title, sizeof title, "NEXT %d HOURS", n > 0 ? n : 12);
+    ui_label(fb, UI_CX, y0 + 76, title, C_SEC, UI_CENTER);
+    if (n <= 0) {
+        dot_icon(fb, DOT_ICON_CLOUD, UI_CX, y0 + 210, 4.0f, 3.2f, C_DIS);
+        ui_state(fb, UI_CX, y0 + 292, "NO HOURLY FORECAST", C_DIS);
+        return;
+    }
+    int rows = n > 6 ? 2 : 1;
     for (int i = 0; i < n; i++) {
         int row = i / 6, col = i % 6;
-        int x = UI_CX + (int)((col - 2.5f) * 60), y = y0 + 96 + row * 112;
-        if (!rows_hit(fb, (float)y - 20, (float)y + 92)) continue;
+        int in_row = row == 0 ? (n < 6 ? n : 6) : n - 6;
+        int x = UI_CX + (int)lroundf((col - (in_row - 1) * 0.5f) * 62);
+        int yc = y0 + (rows == 2 ? 178 + row * 136 : 240);
+        if (!rows_hit(fb, (float)yc - 60, (float)yc + 60)) continue;
+        float p = row_build(1, i);
+        if (p <= 0) continue;
         char t[8];
         snprintf(t, sizeof t, "%02d", (W.hour_now + 1 + i) % 24);
-        ui_label(fb, x, y, t, C_DIS, UI_CENTER);
-        dot_icon(fb, static_icon(w->hours_cond[i]), (float)x, (float)y + 30, 2.6f, 2.1f, C_PRI);
-        fmt_deg(t, sizeof t, w->hours_c[i]);
-        ui_label(fb, x, y + 76, t, C_PRI, UI_CENTER);
+        ui_label(fb, x, yc - 34, t, C_DIS, UI_CENTER);
+        dot_icon_anim(fb, static_icon(w->hours_cond[i]), (float)x, (float)yc, 2.6f, 2.1f, C_PRI, p, DOT_REVEAL_RANDOM);
+        fmt_t(t, sizeof t, w->hours_c[i], 1);
+        ui_label(fb, x + 3, yc + 50, t, C_PRI, UI_CENTER);
     }
 }
 
 static void draw_days(gfx_fb *fb, const svc_weather_t *w)
 {
-    int y0 = SEC_DAYS;
-    ui_label(fb, UI_CX, y0 + 30, "5 DAYS", C_SEC, UI_CENTER);
+    const int y0 = 2 * PAGE_H;
     int n = w->ndays < 5 ? w->ndays : 5;
-    if (n <= 0) { ui_state(fb, UI_CX, y0 + 100, "NO FORECAST", C_DIS); return; }
+    char title[16];
+    snprintf(title, sizeof title, "%d DAYS", n > 0 ? n : 5);
+    ui_label(fb, UI_CX, y0 + 76, title, C_SEC, UI_CENTER);
+    if (n <= 0) {
+        dot_icon(fb, DOT_ICON_CALENDAR, UI_CX, y0 + 210, 4.0f, 3.2f, C_DIS);
+        ui_state(fb, UI_CX, y0 + 292, "NO DAILY FORECAST", C_DIS);
+        return;
+    }
     float lo = 1e9f, hi = -1e9f;
     for (int i = 0; i < n; i++) {
         if (w->days[i].lo < lo) lo = w->days[i].lo;
         if (w->days[i].hi > hi) hi = w->days[i].hi;
     }
     if (hi - lo < 1) hi = lo + 1;
-    const int NSEG = 10;
+    const int NSEG = 8;
     for (int i = 0; i < n; i++) {
-        int y = y0 + 74 + i * 56;
-        if (!rows_hit(fb, (float)y - 24, (float)y + 24)) continue;
-        ui_label(fb, 92, y + 7, i == 0 ? "TODAY" : ui_weekday3(W.wday + i), i == 0 ? C_PRI : C_SEC, UI_LEFT);
-        dot_icon(fb, static_icon(w->days[i].cond), 186, (float)y, 2.2f, 1.8f, C_PRI);
+        int y = y0 + 136 + i * 58;
+        if (!rows_hit(fb, (float)y - 26, (float)y + 26)) continue;
+        float p = row_build(2, i);
+        if (p <= 0) continue;
+        ui_label(fb, 72, y + 7, i == 0 ? "TODAY" : ui_weekday3(W.wday + i), i == 0 ? C_PRI : C_SEC, UI_LEFT);
+        dot_icon_anim(fb, static_icon(w->days[i].cond), 176, (float)y, 2.2f, 1.8f, C_PRI, p, DOT_REVEAL_RANDOM);
         char t[8];
-        fmt_deg(t, sizeof t, w->days[i].lo);
-        ui_label(fb, 246, y + 7, t, C_DIS, UI_RIGHT);
+        fmt_t(t, sizeof t, w->days[i].lo, 1);
+        ui_label(fb, 238, y + 7, t, C_DIS, UI_RIGHT);
         /* segments lit between this day's low and high on the week's scale */
         float a = (w->days[i].lo - lo) / (hi - lo) * NSEG, b = (w->days[i].hi - lo) / (hi - lo) * NSEG;
-        const float bx = 256, bw = 76, gap = 3, sw = (bw - gap * (NSEG - 1)) / NSEG;
-        for (int sgi = 0; sgi < NSEG; sgi++) {
-            int on = sgi + 0.5f >= a && sgi + 0.5f <= b + 0.01f;
-            if (!on && sgi >= (int)a && sgi < (int)ceilf(b)) on = 1;
-            gfx_fill_rect(fb, (int)lroundf(bx + sgi * (sw + gap)), y - 3, (int)lroundf(sw), 6, on ? C_PRI : C_LINE2);
-        }
-        fmt_deg(t, sizeof t, w->days[i].hi);
-        ui_label(fb, 342, y + 7, t, C_PRI, UI_LEFT);
+        int s0 = (int)floorf(a), s1 = (int)ceilf(b);
+        if (s1 <= s0) s1 = s0 + 1;
+        if (s1 > NSEG) s1 = NSEG;
+        int lit = (int)lroundf((s1 - s0) * p);
+        const int bx = 248, sw = 9, gap = 2;
+        for (int k = 0; k < NSEG; k++)
+            gfx_fill_rect(fb, bx + k * (sw + gap), y - 3, sw, 6, k >= s0 && k < s0 + lit ? C_PRI : C_LINE2);
+        fmt_t(t, sizeof t, w->days[i].hi, 1);
+        ui_label(fb, bx + NSEG * (sw + gap) + 8, y + 7, t, C_PRI, UI_LEFT);
     }
 }
 
@@ -393,7 +456,7 @@ static void draw_empty(gfx_fb *fb)
         ui_text_wrap(fb, UI_F_BODY, UI_CX, 326, 290, 30, 2, "Connect your phone or Wi-Fi", C_DIS, UI_CENTER);
     if (W.wrist_ok) {
         char v[8], t[24];
-        fmt_deg(v, sizeof v, W.wrist_c);
+        fmt_t(v, sizeof v, W.wrist_c, 1);
         snprintf(t, sizeof t, "WRIST %s", v);
         ui_label(fb, UI_CX, 404, t, C_DIS, UI_CENTER);
     }
@@ -406,11 +469,11 @@ static void weather_draw(gfx_fb *fb)
     float off = floorf(W.sc.x + 0.5f);
     gfx_fb sub;
     if (nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, -(int)off)) {
-        if (off < SEC_HOURS) draw_now(&sub, w, off);
-        if (off + GFX_H > SEC_HOURS && off < SEC_DAYS) draw_hours(&sub, w);
-        if (off + GFX_H > SEC_DAYS) draw_days(&sub, w);
+        if (off < PAGE_H) draw_now(&sub, w, off);
+        if (off > 0 && off < 2 * PAGE_H) draw_hours(&sub, w);
+        if (off > PAGE_H) draw_days(&sub, w);
     }
-    ui_scrollbar(fb, W.sc.x, CONTENT_H, GFX_H, W.bar_alpha);
+    ui_scrollbar(fb, W.sc.x, NPAGES * PAGE_H, GFX_H, W.bar_alpha);
 }
 
 static int weather_input(const nos_input *in)
@@ -418,12 +481,11 @@ static int weather_input(const nos_input *in)
     if (!W.w || !W.w->valid) return 0;
     switch (in->type) {
     case IN_DOWN:
-        W.was_moving = W.sc.moving;
         msc_grab(&W.sc);
         return 1;
     case IN_DRAG_START:
         if (in->axis != AXIS_Y) { msc_release(&W.sc, 0); return 0; }
-        W.dragging = 1;
+        W.dragging = 1; W.touched = 1;
         /* fall through */
     case IN_DRAG:
         if (!W.dragging) return 0;
@@ -436,7 +498,9 @@ static int weather_input(const nos_input *in)
         msc_release(&W.sc, -in->vy);
         return 1;
     case IN_TAP: case IN_UP:
-        if (!W.dragging) msc_release(&W.sc, 0);
+        /* only a press that never flung lets go here: IN_UP also follows IN_DRAG_END,
+         * and releasing again with v = 0 would cancel the fling */
+        if (W.sc.dragging) msc_release(&W.sc, 0);
         return 1;
     default: return 0;
     }
@@ -445,7 +509,7 @@ static int weather_input(const nos_input *in)
 const nos_screen scr_weather = { "WEATHER", weather_enter, 0, weather_tick, weather_draw, weather_input, 0 };
 
 /* ------------------------------------------------------------- widget */
-static struct { int frame; float t0; int wrist_ok; } G;
+static struct { int frame; float t0; } G;
 
 static void wg_tick(float dt, int visible)
 {
@@ -466,15 +530,14 @@ static void wg_draw(gfx_fb *fb)
     }
     char t[40];
     ui_label(fb, UI_CX, 96, w->loc[0] ? w->loc : "WEATHER", C_SEC, UI_CENTER);
-    wx_icon(fb, w->cond, UI_CX, 178, 0.95f, wg_build(0), G.frame);
-    fmt_deg(t, sizeof t, w->temp_c);
+    wx_icon(fb, w->cond, UI_CX, 168, 0.9f, wg_build(0), G.frame);
     dot_style st = { DOT_FONT_TALL, 8.0f, 6.4f, C_WHITE, 0, 1, 0 };
-    dot_text_anim(fb, &st, UI_CX + 8, 254, t, 1, wg_build(0.05f), DOT_REVEAL_RANDOM, 17u);
+    hero_temp(fb, &st, UI_CX, 262, w->temp_c, 1, wg_build(0.05f), 17u);
     char hi[8], lo[8];
-    fmt_deg(hi, sizeof hi, w->hi_c); fmt_deg(lo, sizeof lo, w->lo_c);
+    fmt_t(hi, sizeof hi, w->hi_c, 1); fmt_t(lo, sizeof lo, w->lo_c, 1);
     snprintf(t, sizeof t, "H %s   L %s", hi, lo);
-    ui_label(fb, UI_CX, 362, t, C_PRI, UI_CENTER);
-    ui_label(fb, UI_CX, 390, w->text, C_DIS, UI_CENTER);
+    ui_label(fb, UI_CX, 370, t, C_PRI, UI_CENTER);
+    ui_label(fb, UI_CX, 398, w->text, C_DIS, UI_CENTER);
 }
 
 static void wg_tap(int x, int y) { nos_open(&scr_weather, x, y); }

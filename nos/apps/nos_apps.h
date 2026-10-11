@@ -14,6 +14,9 @@ extern const nos_screen scr_launcher;    /* app list (TX_IRIS) */
 extern const nos_screen scr_faces;       /* face picker */
 extern const nos_screen scr_power;       /* power sheet: sleep / restart / power off */
 void sys_notif_open(int i);              /* push the detail view for notification i */
+void sys_home_build_in(void);            /* restart the face build-in (boot, wake, new face) */
+const struct nos_screen *sys_launcher_last(void);   /* last app opened from the launcher, or 0 */
+void sys_launcher_prewarm(void);         /* bake one launcher row sprite (idle frames) */
 
 /* ---- health (fit_*.c) ---- */
 extern const nos_screen scr_activity, scr_heart, scr_breathe;

@@ -54,7 +54,10 @@ const nos_screen *nos_top(void) { return top_screen(); }
 int nos_depth(void) { return s_depth; }
 int nos_transitioning(void) { return T.state != TXS_IDLE; }
 
+static int s_revealing;
+int nos_revealed(void) { return s_revealing; }
 static void call_enter(const nos_screen *s) { if (s && s->enter) s->enter(); }
+static void call_reveal(const nos_screen *s) { s_revealing = 1; call_enter(s); s_revealing = 0; }
 static void call_leave(const nos_screen *s) { if (s && s->leave) s->leave(); }
 
 static float tx_span(int type)
@@ -97,7 +100,7 @@ void nos_push(const nos_screen *s, int tx)
 {
     if (!s || s_depth >= MAX_DEPTH) return;
     if (T.state != TXS_IDLE) {               /* finish the running one instantly */
-        if (T.popping && s_depth > 1) { call_leave(s_stack[s_depth - 1].s); s_depth--; call_enter(top_screen()); }
+        if (T.popping && s_depth > 1) { call_leave(s_stack[s_depth - 1].s); s_depth--; call_reveal(top_screen()); }
         T.state = TXS_IDLE;
     }
     const nos_screen *under = top_screen();
@@ -132,7 +135,7 @@ void nos_pop(void)
     int tx = s_stack[s_depth - 1].tx;
     T.popping = 1; T.replacing = 0; T.cancel_pops = 0;
     if (tx == TX_NONE) {
-        call_leave(over); s_depth--; call_enter(under); s_force_full = 1; return;
+        call_leave(over); s_depth--; call_reveal(under); s_force_full = 1; return;
     }
     float from = T.state != TXS_IDLE ? T.p : 1.0f;
     tx_begin(tx, under, over, from, 0.0f);
@@ -240,6 +243,14 @@ void nos_feedback(int kind)
     if (nos_prefs.haptics) hal_haptic(hap[kind]);
     /* ticks are felt, not heard: a sound per detent is noise */
     if (nos_prefs.sound && sfx[kind] >= 0 && kind != FB_TICK && kind != FB_LIMIT) hal_sfx(sfx[kind]);
+}
+
+int nos_bright_override = -1;
+void nos_brightness_override(int level)
+{
+    nos_bright_override = level < 0 ? -1 : level > 255 ? 255 : level;
+    /* the sim has no per-frame brightness host: apply immediately there too */
+    hal_set_backlight((uint8_t)(level >= 0 ? nos_bright_override : nos_prefs.brightness * 255 / 100));
 }
 
 /* --------------------------------------------------------------- awake */
@@ -476,6 +487,7 @@ static void process_button(void)
         s_btn_down = 0;
         if (!s_btn_long_sent) {
             if (s_btn_pending && now - s_btn_last_up < DOUBLE_MS) { s_btn_pending = 0; dispatch_btn(IN_BTN_DOUBLE); }
+            else if (s_depth > 1 && !T.state) dispatch_btn(IN_BTN);   /* only home uses double press */
             else { s_btn_pending = 1; s_btn_last_up = now; }
         }
     }
@@ -744,13 +756,32 @@ static int compute_damage(gfx_rec *cur, gfx_rec *prev, int rects[][4])
             if (damage_add(rects, &nr, &prev->c[i]) || damage_add(rects, &nr, &cur->c[i])) return -1;
         }
     } else {
-        /* commands paint in order: a pixel covered only by an identical common prefix
-         * and suffix is unchanged, so only the differing middle repaints */
-        int n = cur->n < prev->n ? cur->n : prev->n, pre = 0, suf = 0;
-        while (pre < n && cmd_same(&cur->c[pre], &prev->c[pre])) pre++;
-        while (suf < n - pre && cmd_same(&cur->c[cur->n - 1 - suf], &prev->c[prev->n - 1 - suf])) suf++;
-        for (int i = pre; i < prev->n - suf; i++) if (damage_add(rects, &nr, &prev->c[i])) return -1;
-        for (int i = pre; i < cur->n - suf; i++) if (damage_add(rects, &nr, &cur->c[i])) return -1;
+        /* A command appeared or vanished. Draw order is code order, so a pixel whose
+         * covering commands are the same set as last frame is unchanged: damage only
+         * commands present in one frame and not the other (matched by bbox + hash),
+         * so two small changes far apart stay two small rects. */
+        static uint16_t tab[1024];            /* open-addressed: index+1 into prev, 0 empty */
+        static uint8_t used[GFX_MAX_CMDS];
+        memset(tab, 0, sizeof tab);
+        memset(used, 0, sizeof used);
+        for (int i = 0; i < prev->n && i < GFX_MAX_CMDS; i++) {
+            unsigned h = (prev->c[i].hash ^ (unsigned)(prev->c[i].x0 * 31 + prev->c[i].y0)) & 1023u;
+            while (tab[h]) h = (h + 1) & 1023u;
+            tab[h] = (uint16_t)(i + 1);
+        }
+        for (int i = 0; i < cur->n && i < GFX_MAX_CMDS; i++) {
+            const gfx_cmd *c = &cur->c[i];
+            unsigned h = (c->hash ^ (unsigned)(c->x0 * 31 + c->y0)) & 1023u;
+            int found = 0;
+            while (tab[h]) {
+                int j = tab[h] - 1;
+                if (!used[j] && cmd_same(c, &prev->c[j])) { used[j] = 1; found = 1; break; }
+                h = (h + 1) & 1023u;
+            }
+            if (!found && damage_add(rects, &nr, c)) return -1;
+        }
+        for (int j = 0; j < prev->n && j < GFX_MAX_CMDS; j++)
+            if (!used[j] && damage_add(rects, &nr, &prev->c[j])) return -1;
     }
     for (int pass = 0, changed = 1; changed && pass < MAXRECTS * 2; pass++) {
         changed = 0;
@@ -825,12 +856,22 @@ static void tick_transition(float dt)
     if (T.state != TXS_AUTO) return;
     int moving;
     if (T.use_tween) { T.p = mtw_value(&T.tw); moving = !mtw_done(&T.tw); if (!moving) T.p = T.tw.to; }
-    else { moving = msp_step(&T.sp, dt); T.p = T.sp.x / T.span; }
+    else {
+        moving = msp_step(&T.sp, dt);
+        /* end as soon as the picture stops changing: within half a pixel of the target
+         * and slower than a pixel per frame (a critically damped tail is otherwise
+         * ~10 frames of full repaints that look identical) */
+        if (moving && fabsf(T.sp.x - T.sp.target) < 0.5f && fabsf(T.sp.v) < 30.0f) {
+            msp_set(&T.sp, T.sp.target);
+            moving = 0;
+        }
+        T.p = T.sp.x / T.span;
+    }
     if (moving) return;
     if (T.p <= 0.001f && T.popping && s_depth > 1) {      /* the over screen leaves */
         call_leave(top_screen());
         s_depth--;
-        call_enter(top_screen());
+        call_reveal(top_screen());
     }
     T.state = TXS_IDLE;
     T.popping = 0; T.cancel_pops = 0;

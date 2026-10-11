@@ -46,6 +46,15 @@ static void read_data(void)
 
 static float qz(float v, float steps) { return floorf(v * steps + 0.5f) / steps; }
 
+/* Neutral grey at a fraction of a grey token (ui_dim rounds the 5/6-bit channels
+ * separately, which tints dark greys magenta). */
+static uint16_t gdim(uint16_t c, float k)
+{
+    float lvl = (float)((c >> 5) & 63) / 63.0f * m_clamp(k, 0, 1);
+    int r = (int)lroundf(lvl * 31.0f), g = (int)lroundf(lvl * 63.0f);
+    return (uint16_t)(r << 11 | g << 5 | r);
+}
+
 /* Segments lit (white) and over-goal (red) for a step count, in whole segments. */
 static void seg_counts(int steps, int goal, int *lit, int *over)
 {
@@ -57,23 +66,25 @@ static void seg_counts(int steps, int goal, int *lit, int *over)
     *lit = l; *over = o;
 }
 
-/* The glyph ring: `show` segments of the lit+over total are shown so far. */
-static void seg_ring(gfx_fb *fb, float cx, float cy, int lit, int over, int show, uint16_t off)
+/* The glyph ring: `show` segments of the lit+over total are shown so far.
+ * widget: a smaller ring (the home pager owns the top/bottom centre of widget pages)
+ * and no red (the pager's unread dot is the only red there): the overflow lap is white
+ * over a grey first lap instead. */
+static void seg_ring(gfx_fb *fb, float cx, float cy, int lit, int over, int show, uint16_t off, int widget)
 {
     int w = show < lit ? show : lit;
     int r = show > lit ? show - lit : 0;
     if (r > over) r = over;
     for (int k = 0; k < 3; k++) {
-        float rad = k_seg_r[k];
+        float rad = k_seg_r[k] - (widget ? 22.0f : 0.0f);
         if (r > 0) {
-            /* over goal: the red lap paints over the start of the white one */
-            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, (float)r, (float)SEG_N, C_PRI, 0);
-            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)r, C_RED, 0);
+            /* over goal: the second lap paints over the start of the first */
+            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, (float)r, (float)SEG_N, widget ? C_SEC : C_PRI, 0);
+            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)r, widget ? C_WHITE : C_RED, 0);
         } else
             dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)w, C_PRI, off);
     }
 }
-
 /* ---- count-up through dot morphs ----
  * mode 0: counting up from 0 in COUNT_K eased steps, each step a dot morph;
  * mode 1: one morph from the previous value to a new one (live change);
@@ -257,8 +268,7 @@ static void act_tick(float dt)
 /* ---- page 0: hero ---- */
 static void draw_hero(gfx_fb *fb, float oy, const counter *c, int lit, int over, int shown, int title)
 {
-    seg_ring(fb, UI_CX, UI_CY + oy, lit, over, shown, C_LINE);
-    (void)title;
+    seg_ring(fb, UI_CX, UI_CY + oy, lit, over, shown, C_LINE, !title);
     dot_icon(fb, DOT_ICON_STEPS, UI_CX, 140 + oy, 3.0f, 2.4f, C_SEC);
     dot_style st = { DOT_FONT_TALL, 8.0f, 6.4f, s_act.steps ? C_WHITE : C_DIS, C_GHOST, 1, 1 };
     counter_draw(fb, c, &st, UI_CX, 190 + oy);
@@ -274,10 +284,10 @@ static void draw_hero(gfx_fb *fb, float oy, const counter *c, int lit, int over,
 static void value_block(gfx_fb *fb, float cx, float oy, int icon, const char *v, const char *unit, float p)
 {
     float k = qz(m_clamp(p * 1.4f, 0, 1), 8.0f);
-    dot_icon(fb, icon, cx, 108 + oy, 2.6f, 2.1f, ui_dim(C_SEC, k));
+    dot_icon(fb, icon, cx, 108 + oy, 2.6f, 2.1f, gdim(C_SEC, k));
     dot_style st = { DOT_FONT_TALL, 5.0f, 4.0f, C_WHITE, 0, 1, 1 };
     dot_text_anim(fb, &st, cx, 132 + oy, v, 1, p, DOT_REVEAL_RAIN, 3);
-    ui_label(fb, (int)cx, (int)(204 + oy), unit, ui_dim(C_SEC, k), UI_CENTER);
+    ui_label(fb, (int)cx, (int)(204 + oy), unit, gdim(C_SEC, k), UI_CENTER);
 }
 
 static void draw_today(gfx_fb *fb, float oy)
@@ -415,6 +425,7 @@ static void wg_reset(void)
 
 static void wg_shown(void)
 {
+    if (W.started) return;              /* already building since the page slid in */
     read_data();
     wg_reset();
     W.started = 1;
@@ -424,7 +435,7 @@ static void wg_tick(float dt, int visible)
 {
     if (!visible) { if (W.started || W.cnt.target != s_act.steps) { read_data(); wg_reset(); } return; }
     read_data();
-    if (!W.started) { if (W.cnt.target != s_act.steps) wg_reset(); return; }
+    if (!W.started) { wg_reset(); W.started = 1; }   /* build while the page slides in */
     W.t += dt;
     int lit, over;
     seg_counts(s_act.steps, s_act.goal, &lit, &over);

@@ -31,6 +31,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_app_desc.h"
+#include "esp_wifi.h"
 
 #include "pins.h"
 #include "board.h"
@@ -459,6 +460,13 @@ void app_main(void)
         }
 
         auto_brightness_tick();
+        /* Wi-Fi tile/setting drives the radio (BLE stays up: it is the phone link) */
+        static int s_wifi_applied = -1;
+        if (s_wifi_applied != nos_prefs.wifi) {
+            if (!nos_prefs.wifi) esp_wifi_stop();                 /* also at boot */
+            else if (s_wifi_applied >= 0) { esp_wifi_start(); esp_wifi_connect(); }
+            s_wifi_applied = nos_prefs.wifi;
+        }
         if (g_tz_offset_min != nos_prefs.tz_min) { g_tz_offset_min = nos_prefs.tz_min; board_apply_timezone(); }
         int64_t a = esp_timer_get_time();
         uint32_t px = nos_frame_run((float)(a - last_run) / 1000.0f);
@@ -466,7 +474,7 @@ void app_main(void)
         frame_drain();
         int64_t work = esp_timer_get_time() - a;
         /* brightness after the frame is on the panel: never show a stale frame */
-        set_level(user_level());
+        set_level(nos_bright_override >= 0 ? nos_bright_override : user_level());
         if (++frames_ok == 90) ota_mark_valid();
 
         pf_frames++; pf_work += work; pf_px += px;

@@ -60,11 +60,14 @@ static void draw_labels(gfx_fb *fb, const face_ctx *c, uint16_t col, int dx, int
 {
     char b[24];
     snprintf(b, sizeof b, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
-    ui_label(fb, UI_CX + dx, 48 + dy, b, col, UI_CENTER);
+    ui_label(fb, UI_CX + dx, 45 + dy, b, col, UI_CENTER);
     if (!battery) return;
     if (c->battery > 0 || c->charging) {
-        snprintf(b, sizeof b, c->charging ? "+%d%%" : "%d%%", c->battery);
-        ui_label(fb, UI_CX + dx, 436 + dy, b, c->battery <= 15 && !c->charging ? C_PRI : col, UI_CENTER);
+        snprintf(b, sizeof b, "%d%%", c->battery);
+        int w = ui_label(fb, UI_CX + dx + (c->charging ? 8 : 0), 433 + dy, b,
+                         c->battery <= 15 && !c->charging ? C_PRI : col, UI_CENTER);
+        if (c->charging)                              /* a dot-matrix bolt before the value */
+            dot_icon(fb, DOT_ICON_BOLT, (float)(UI_CX + dx + 8 - w / 2 - 12), (float)(427 + dy), 1.45f, 1.7f, col);
     }
 }
 

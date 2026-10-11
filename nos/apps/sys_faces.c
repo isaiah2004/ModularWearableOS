@@ -79,6 +79,8 @@ static void f_tick(float dt)
     if (F.chosen == 1 && nos_t - F.t_chosen >= 0.17f) { F.chosen = 2; finish(); }
     if (F.settling) {
         int m = msp_step(&F.sp, dt);
+        /* the last sub-pixel of a settle would cost a whole-page repaint for nothing */
+        if (m && fabsf(F.sp.x - F.sp.target) < 0.6f && fabsf(F.sp.v) < 40.0f) m = 0;
         F.x = F.sp.x;
         if (!m) { F.settling = 0; F.x = F.sp.target; }
     }

@@ -179,7 +179,7 @@ static void alarm_enter(void)
     int back = nos_t - s_list_seen < 0.2f;      /* revealed by a pop: keep scroll + no build */
     A.n = al_count();
     if (!back) { A.t0 = nos_t; A.build = 0; msc_init(&A.sc, 0, list_max(), 0); }
-    for (int i = 0; i < A.n && i < SVC_ALARM_MAX; i++) msp_init(&A.tog[i], al_get(i)->on ? 1.0f : 0.0f, SPRING_SNAPPY);
+    for (int i = 0; i < A.n && i < SVC_ALARM_MAX; i++) msp_init(&A.tog[i], al_get(i)->on ? 100.0f : 0.0f, SPRING_SNAPPY);
     list_sync();
 }
 static void alarm_tick(float dt)
@@ -188,9 +188,9 @@ static void alarm_tick(float dt)
     int was = A.n;
     list_sync();
     if (A.n != was)
-        for (int i = 0; i < A.n; i++) msp_set(&A.tog[i], al_get(i)->on ? 1.0f : 0.0f);
+        for (int i = 0; i < A.n; i++) msp_set(&A.tog[i], al_get(i)->on ? 100.0f : 0.0f);
     for (int i = 0; i < A.n; i++) {
-        msp_to(&A.tog[i], al_get(i)->on ? 1.0f : 0.0f);
+        msp_to(&A.tog[i], al_get(i)->on ? 100.0f : 0.0f);   /* percent: springs settle at 0.25 units */
         msp_step(&A.tog[i], dt);
     }
     msc_step(&A.sc, dt);
@@ -265,7 +265,7 @@ static void alarm_draw(gfx_fb *fb)
         ui_label(fb, (int)L_TIME_X, (int)(y + 84), d, ui_dim(a->on ? C_SEC : C_DIS, f), UI_LEFT);
         /* toggle */
         float tx = L_TOG_X, ty = cy;
-        float on = qz(A.tog[i].x, 16);
+        float on = qz(A.tog[i].x / 100.0f, 16);
         if (f >= 0.99f) ui_toggle(fb, tx, ty, on);
         else {
             gfx_fill_pill(fb, tx - 16, ty, tx + 16, 22, ui_dim(ui_mix(C_LINE2, C_WHITE, on), f));
@@ -537,8 +537,8 @@ static void ring_enter(void)
     msp_init(&R.knob, 0, SPRING_SNAPPY);
     R.grab = R.committed = R.snz_pressed = R.at_end = 0;
     R.last_step = 0;
-    hal_haptic(HAPTIC_ALARM);
-    if (nos_prefs.sound) hal_sfx(SFX_ALARM);
+    /* the alarm service runs haptics + sound while svc_alarm_ringing() >= 0; this
+     * screen only silences them when it is dismissed */
     R.haptic_on = 1;
     nos_keep_awake();
 }
@@ -557,7 +557,6 @@ static void ring_tick(float dt)
         ring_leave();
         nos_pop();
     }
-    if (R.haptic_on && nos_t - R.t0 > 60.0f) { hal_haptic_stop(); R.haptic_on = 0; }
 }
 static void ring_draw(gfx_fb *fb)
 {
@@ -575,7 +574,7 @@ static void ring_draw(gfx_fb *fb)
     ui_rrect(fb, UI_CX - 85, R_SNZ_Y - 44, 170, 88, 44, ui_dim(R.snz_pressed ? C_SURF3 : C_SURF2, k));
     ui_label(fb, UI_CX, (int)R_SNZ_Y + 6, "SNOOZE", ui_dim(C_PRI, k), UI_CENTER);
     /* slide to stop */
-    float kx = qz(m_clamp(R.knob.x, 0, 1), 256);
+    float kx = qz(m_clamp(R.knob.x / 100.0f, 0, 1), 256);
     gfx_fill_pill(fb, sl_x0(), R_SL_Y, sl_x1(), 44, ui_dim(C_SURF2, k));
     float hint = qz(m_clamp(1.0f - kx * 2.5f, 0, 1), 8) * k;
     if (hint > 0) ui_text(fb, UI_F_SMALL, (int)(sl_x0() + R_KNOB_R + (sl_x1() + 44 - sl_x0() - R_KNOB_R) * 0.5f),
@@ -596,11 +595,11 @@ static int ring_input(const nos_input *in)
     float span = sl_x1() - sl_x0();
     switch (in->type) {
     case IN_DOWN: {
-        float x = m_lerp(sl_x0(), sl_x1(), R.knob.x);
+        float x = m_lerp(sl_x0(), sl_x1(), R.knob.x / 100.0f);
         R.snz_pressed = in_rect(in->x, in->y, UI_CX, R_SNZ_Y, 178, 96);
         if (!R.committed && in_circle(in->x, in->y, x, R_SL_Y, 52)) {
-            R.grab = 1; R.grab_k = R.knob.x; R.knob.v = 0; R.knob.moving = 0;
-            R.last_step = (int)(R.knob.x * 5);
+            R.grab = 1; R.grab_k = R.knob.x / 100.0f; R.knob.v = 0; R.knob.moving = 0;
+            R.last_step = (int)(R.knob.x / 20.0f);
         }
         return 1;
     }
@@ -613,7 +612,7 @@ static int ring_input(const nos_input *in)
         if (end && !R.at_end) nos_feedback(FB_LIMIT);
         R.at_end = end;
         k = m_clamp(k, 0, 1);
-        R.knob.x = R.knob.target = k;
+        R.knob.x = R.knob.target = k * 100.0f;          /* knob spring in percent of the track */
         int step = (int)(k * 5);
         if (step != R.last_step) { if (!end) nos_feedback(FB_TICK); R.last_step = step; }
         return 1;
@@ -623,11 +622,11 @@ static int ring_input(const nos_input *in)
         R.grab = 0;
         {
             float v = in->vx / span;                  /* track lengths per second */
-            if (R.knob.x > 0.85f || (v > 2.5f && R.knob.x > 0.35f)) {
-                msp_kick(&R.knob, 1.0f, v > 0 ? v : 0);
+            if (R.knob.x > 85.0f || (v > 2.5f && R.knob.x > 35.0f)) {
+                msp_kick(&R.knob, 100.0f, v > 0 ? v * 100.0f : 0);
                 R.committed = 1;
                 nos_feedback(FB_SUCCESS);
-            } else msp_kick(&R.knob, 0.0f, v);
+            } else msp_kick(&R.knob, 0.0f, v * 100.0f);
         }
         return 1;
     case IN_UP:

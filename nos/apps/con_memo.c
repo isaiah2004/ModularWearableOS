@@ -286,8 +286,7 @@ static void rec_start(void)
     R.rec_ms = 0;
     R.t_rec = nos_t;
     R.t_saved = -10;
-    memset(R.wave, 0, sizeof R.wave);
-    nos_feedback(FB_TOGGLE_ON);
+    nos_feedback(FB_TOGGLE_ON);           /* the monitored wave carries on, now in white */
 }
 
 static void memo_leave(void)

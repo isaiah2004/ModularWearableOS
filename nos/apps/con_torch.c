@@ -50,7 +50,7 @@ static uint8_t backlight_for(int m, float level)
 
 static void set_bl(uint8_t v)
 {
-    if (v != T.bl) { T.bl = v; hal_set_backlight(v); }
+    if (v != T.bl) { T.bl = v; nos_brightness_override(v); }
 }
 
 static void torch_enter(void)
@@ -68,9 +68,7 @@ static void torch_enter(void)
 
 static void torch_leave(void)
 {
-    int v = nos_prefs.brightness * 255 / 100;
-    if (v < 12) v = 12;
-    hal_set_backlight((uint8_t)v);
+    nos_brightness_override(-1);
     nos_prefs.torch = 0;
 }
 

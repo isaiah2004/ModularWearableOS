@@ -47,10 +47,12 @@ uint16_t ui_mix(uint16_t a, uint16_t b, float t)
 {
     if (t <= 0) return a;
     if (t >= 1) return b;
-    int ra = a >> 11, ga = (a >> 5) & 63, ba = a & 31;
-    int rb = b >> 11, gb = (b >> 5) & 63, bb = b & 31;
+    /* lerp in 8-bit channels, then pack: a grey stays a neutral RGB565 grey (lerping
+     * the 5- and 6-bit fields separately tints dark greys green or magenta) */
+    int ra = (a >> 11) * 255 / 31, ga = ((a >> 5) & 63) * 255 / 63, ba = (a & 31) * 255 / 31;
+    int rb = (b >> 11) * 255 / 31, gb = ((b >> 5) & 63) * 255 / 63, bb = (b & 31) * 255 / 31;
     int r = ra + (int)lroundf((rb - ra) * t), g = ga + (int)lroundf((gb - ga) * t), bl = ba + (int)lroundf((bb - ba) * t);
-    return (uint16_t)(r << 11 | g << 5 | bl);
+    return GFX_RGB(r, g, bl);
 }
 uint16_t ui_dim(uint16_t c, float k) { return ui_mix(0, c, k); }
 
@@ -143,6 +145,15 @@ int ui_label(gfx_fb *fb, int x, int y, const char *s, uint16_t color, int align)
     for (; s[i] && i < 63; i++) buf[i] = (char)toupper((unsigned char)s[i]);
     buf[i] = 0;
     return ui_text(fb, UI_F_LABEL, x, y, buf, color, align, LABEL_TRACK);
+}
+
+int ui_label_width(const char *s)
+{
+    char buf[64];
+    int i = 0;
+    for (; s[i] && i < 63; i++) buf[i] = (char)toupper((unsigned char)s[i]);
+    buf[i] = 0;
+    return ui_text_width(UI_F_LABEL, buf, LABEL_TRACK);
 }
 
 int ui_text_fit(gfx_fb *fb, const font_t *f, int x, int y, const char *s, uint16_t color,
@@ -405,15 +416,17 @@ void ui_scrollbar(gfx_fb *fb, float offset, float content, float view, float alp
     gfx_arc(fb, UI_CX, UI_CY, UI_R - 9, 5, a0, a1, ui_dim(C_PRI, alpha));
 }
 
-void ui_page_dots(gfx_fb *fb, int cx, int y, int n, float pos)
+void ui_page_dots_a(gfx_fb *fb, int cx, int y, int n, float pos, float alpha)
 {
+    if (alpha <= 0.02f) return;
     const float pitch = 14, d = 7;
     float x0 = cx - (n - 1) * pitch * 0.5f;
     for (int i = 0; i < n; i++) {
         float near = 1.0f - m_clamp(fabsf(pos - i), 0, 1);
-        dot_disc(fb, x0 + i * pitch, (float)y, d + near * 2.0f, ui_mix(C_LINE2, C_WHITE, near));
+        dot_disc(fb, x0 + i * pitch, (float)y, d + near * 2.0f, ui_dim(ui_mix(C_LINE2, C_WHITE, near), alpha));
     }
 }
+void ui_page_dots(gfx_fb *fb, int cx, int y, int n, float pos) { ui_page_dots_a(fb, cx, y, n, pos, 1.0f); }
 
 /* ------------------------------------------------------------ controls */
 void ui_toggle(gfx_fb *fb, float cx, float cy, float on)
@@ -582,7 +595,7 @@ int ui_list_input(ui_list *l, const nos_input *in)
         return 1;
     }
     case IN_UP:
-        if (!l->dragging) msc_release(&l->sc, 0);
+        if (l->sc.dragging) msc_release(&l->sc, 0);   /* a fling was already released by DRAG_END */
         l->pressed = -1;
         return 1;
     default:
@@ -592,13 +605,15 @@ int ui_list_input(ui_list *l, const nos_input *in)
 
 void ui_list_tick(ui_list *l, float dt)
 {
-    if (msc_step(&l->sc, dt)) l->bar_t = nos_t;
+    /* the bar shows only while the content actually moves (a resting tap must not flash it) */
+    if (msc_step(&l->sc, dt) && (l->dragging || l->sc.moving)) l->bar_t = nos_t;
     float idle = nos_t - l->bar_t;
     float target = idle < 0.6f ? 1.0f : 0.0f;
-    float k = dt * (target > l->bar_alpha ? 10.0f : 4.0f);
-    l->bar_alpha += (target - l->bar_alpha) * (k > 1 ? 1 : k);
-    if (l->bar_alpha < 0.03f) l->bar_alpha = 0;
-    /* quantise so the scrollbar's damage settles instead of repainting forever */
+    /* linear fade (in 0.1 s, out 0.3 s) then quantise: an exponential fade rounded to
+     * 1/16 steps can stall short of zero */
+    float step = dt * (target > l->bar_alpha ? 10.0f : 3.3f);
+    if (target > l->bar_alpha) l->bar_alpha = l->bar_alpha + step > target ? target : l->bar_alpha + step;
+    else l->bar_alpha = l->bar_alpha - step < target ? target : l->bar_alpha - step;
     l->bar_alpha = floorf(l->bar_alpha * 16.0f + 0.5f) / 16.0f;
 }
 

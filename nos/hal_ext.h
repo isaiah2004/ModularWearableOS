@@ -116,7 +116,9 @@ typedef struct {
     int   utc_h, utc_m, utc_s;
     int   utc_valid;
     uint32_t age_ms;       /* since the last valid fix */
-    uint8_t  snr[16];      /* up to 16 satellites in view, dB-Hz (0 = none) */
+    uint8_t  snr[16];      /* up to 16 satellites in view, dB-Hz (0 = none), strongest first */
+    uint8_t  el[16];       /* elevation of the same satellites, degrees 0-90 */
+    uint16_t az[16];       /* azimuth, degrees 0-359 */
     int      nsnr;
 } hal_gps;
 void hal_gps_enable(int on);
@@ -138,6 +140,7 @@ int  hal_lte_get(hal_lte *out);          /* 1 = module present */
 typedef struct { char from[24]; char text[160]; char when[20]; int unread; } hal_sms;
 int  hal_lte_sms_list(hal_sms *out, int max);   /* cached inbox, newest first */
 int  hal_lte_sms_send(const char *to, const char *text);  /* 1 = queued */
+void hal_lte_sms_mark_read(int i);        /* inbox index from hal_lte_sms_list (the SIM marks it read on CMGR) */
 
 /* ---- environment (BME280) --------------------------------------------------- */
 typedef struct {

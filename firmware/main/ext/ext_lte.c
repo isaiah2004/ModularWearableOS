@@ -425,6 +425,17 @@ int hal_lte_sms_list(hal_sms *out, int max)
     return n;
 }
 
+void hal_lte_sms_mark_read(int i)
+{
+    if (!L) return;
+    portENTER_CRITICAL(&ext_lock);
+    if (i >= 0 && i < L->nsms && L->sms[i].unread) {
+        L->sms[i].unread = 0;
+        if (L->st.unread_sms > 0) L->st.unread_sms--;
+    }
+    portEXIT_CRITICAL(&ext_lock);
+}
+
 int hal_lte_sms_send(const char *to, const char *text)
 {
     if (!L || !(ext_present_bits & EXT_LTE) || !to || !text || L->send_pending) return 0;

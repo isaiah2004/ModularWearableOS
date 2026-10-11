@@ -176,7 +176,7 @@ static void sw_enter(void)
     if (nos_t - s_seen < 0.2f) return;          /* revealed by a pop: already on screen */
     S.t0 = nos_t; S.build = 0;
     sw_snapshot(0);
-    msp_init(&S.lay, S.sw.nlaps ? 1.0f : 0.0f, SPRING_PAGE);
+    msp_init(&S.lay, S.sw.nlaps ? 100.0f : 0.0f, SPRING_PAGE);   /* percent */
     msp_init(&S.ins, 0, SPRING_SNAPPY);
     msc_init(&S.sc, 0, list_max(), 0);
     S.dragging = 0;
@@ -189,7 +189,7 @@ static void sw_tick(float dt)
     int prev_laps = S.sw.nlaps;
     sw_snapshot(1);
     if (S.sw.nlaps != prev_laps) {
-        msp_to(&S.lay, S.sw.nlaps ? 1.0f : 0.0f);
+        msp_to(&S.lay, S.sw.nlaps ? 100.0f : 0.0f);
         if (S.sw.nlaps > prev_laps && prev_laps > 0) { S.ins.x = -ROW_H; S.ins.v = 0; msp_to(&S.ins, 0); }
         msc_bounds(&S.sc, 0, list_max());
         if (S.sw.nlaps > prev_laps) msc_animate_to(&S.sc, 0);
@@ -201,13 +201,13 @@ static void sw_tick(float dt)
     if (S.sw.running) nos_keep_awake();
 }
 
-static float dig_top(void) { return floorf(m_lerp(DIG_Y_SOLO, DIG_Y_LAPS, S.lay.x) + 0.5f); }
+static float dig_top(void) { return floorf(m_lerp(DIG_Y_SOLO, DIG_Y_LAPS, S.lay.x / 100.0f) + 0.5f); }
 
 static void draw_list(gfx_fb *fb)
 {
     gfx_fb sub;
     if (!nos_subview(fb, &sub, 0, (int)LIST_Y0, GFX_W, (int)LIST_Y1, 0, 0)) return;
-    float k = qz(m_clamp(S.lay.x * 1.6f - 0.6f, 0, 1), 8);
+    float k = qz(m_clamp(S.lay.x / 100.0f * 1.6f - 0.6f, 0, 1), 8);
     if (k <= 0) return;
     float off = floorf(S.sc.x + 0.5f) - floorf(S.ins.x + 0.5f);
     int n = S.sw.nlaps;

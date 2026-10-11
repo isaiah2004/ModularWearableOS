@@ -26,7 +26,7 @@ static inline int fk_hit(const fk_view *v, float x0, float y0, float x1, float y
 
 /* A minute-change morph tracker: call fk_morph_tick each frame with the current
  * string; it reports the previous string and progress (1 = settled). */
-typedef struct { char from[8], to[8]; float t0; int init; } fk_morph;
+typedef struct { char from[12], to[12]; float t0; int init; } fk_morph;
 void  fk_morph_tick(fk_morph *m, const char *now, float t);
 float fk_morph_p(const fk_morph *m, float t, float dur);
 

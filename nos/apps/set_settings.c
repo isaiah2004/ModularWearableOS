@@ -27,7 +27,8 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define SET_VERSION "0.1.0"
+#define SET_VERSION NOS_VERSION
+void nos_host_power(int mode);   /* firmware/sim: 0 sleep, 1 restart, 2 power off */
 
 /* ======================================================================= helpers */
 static float qfade(float yc)
@@ -213,10 +214,24 @@ static int timeout_index(int s)
 /* ui_list_input releases the scroller again on the IN_UP that follows IN_DRAG_END,
  * with zero velocity, which kills every fling. Forward IN_UP only while the finger
  * still holds the list (a press that never dragged). */
+/* ui_list_tick quantises the fading scrollbar to 1/16 with round-to-nearest, so the
+ * exponential fade-out stalls at 3/16 forever. Finish the fade linearly. */
+static void bar_fix(ui_list *l, float dt)
+{
+    if (nos_t - l->bar_t < 0.6f || l->bar_alpha <= 0) return;
+    float a = l->bar_alpha - dt * 3.0f;
+    l->bar_alpha = a <= 0.03f ? 0 : floorf(a * 16.0f) / 16.0f;
+}
+
 static int list_in(ui_list *l, const nos_input *in)
 {
     if (in->type == IN_UP && !l->sc.dragging) { l->pressed = -1; return 1; }
-    return ui_list_input(l, in);
+    int moving = l->sc.moving && fabsf(l->sc.v) > 5.0f;
+    int r = ui_list_input(l, in);
+    /* a press on a resting list need not hold the scroller: holding it keeps the
+     * scrollbar lit, so every tap would flash it */
+    if (in->type == IN_DOWN && !moving && !l->sc.springing) l->sc.dragging = 0;
+    return r;
 }
 
 /* ======================================================================= main list */
@@ -320,7 +335,7 @@ static void update_values(void)
     snprintf(S.val[I_VOLUME], 24, "%d%%", nos_prefs.volume);
     snprintf(S.val[I_HSTR], 24, "%d%%", nos_prefs.haptic_strength);
     int phone = hal_phone_connected() || svc_sys()->phone_connected;
-    snprintf(S.val[I_BT], 24, "%s", !nos_prefs.ble ? "Off" : phone ? "Connected" : "On");
+    snprintf(S.val[I_BT], 24, "%s", phone ? "Connected" : "No phone");
     hal_conn wc = hal_status(HAL_FEAT_WIFI);
     snprintf(S.val[I_WIFI], 24, "%s", !nos_prefs.wifi ? "Off" : wc == HAL_CONN_UP ? "Connected" :
              wc == HAL_CONN_TRYING ? "Joining" : "On");
@@ -375,7 +390,7 @@ static void settings_enter(void)
 {
     /* Revealed by a pop (a sub-page closing) keeps scroll and skips the build-in. The
      * engine calls enter() mid-transition on a pop and before tx_begin on a push. */
-    int revealed = S.inited && S.covered && nos_transitioning();
+    int revealed = S.inited && S.covered && nos_revealed();
     S.covered = 0;
     if (!S.inited || !revealed) {
         list_setup();
@@ -394,6 +409,7 @@ static void settings_leave(void) { S.covered = 1; }
 static void settings_tick(float dt)
 {
     ui_list_tick(&S.L, dt);
+    bar_fix(&S.L, dt);
     for (int i = 0; i < I_COUNT; i++) msp_step(&S.tog[i], dt);
     if (nos_t - S.stor_t > 2.0f) { hal_storage_get(&S.stor); S.stor_t = nos_t; }
     update_values();
@@ -440,7 +456,7 @@ static void draw_entry(gfx_fb *fb, int e, float y, float h, int pressed)
     float cy = y + h * 0.5f;
     float k = qfade(cy) * bk;
     /* inset to the circle at the text line nearest the bezel */
-    float edge = cy < UI_CY ? cy - 14 : cy + 14;
+    float edge = cy;
     int x0, x1;
     ui_row_span(edge, 30, &x0, &x1);
     if (x1 - x0 < 160) return;
@@ -654,22 +670,9 @@ static void pick_enter(void)
 static void pick_leave(void)
 {
     if (P.id == I_TZ && nos_prefs.tz_min != P.tz0) {
-        /* shift the wall clock by the change in offset (UTC stays put) */
-        hal_datetime dt; hal_get_datetime(&dt);
-        int delta = nos_prefs.tz_min - P.tz0;
-        int m = dt.hour * 60 + dt.minute + delta;
-        int dd = 0;
-        while (m < 0) { m += 1440; dd--; }
-        while (m >= 1440) { m -= 1440; dd++; }
-        dt.hour = m / 60; dt.minute = m % 60;
-        if (dd) {
-            static const int mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-            int ml = mdays[(dt.month - 1) % 12] + (dt.month == 2 && dt.year % 4 == 0);
-            dt.day += dd; dt.weekday = (dt.weekday + dd + 7) % 7;
-            if (dt.day < 1) { dt.month--; if (dt.month < 1) { dt.month = 12; dt.year--; } dt.day = mdays[(dt.month - 1) % 12] + (dt.month == 2 && dt.year % 4 == 0); }
-            else if (dt.day > ml) { dt.day = 1; dt.month++; if (dt.month > 12) { dt.month = 1; dt.year++; } }
-        }
-        hal_set_datetime(&dt);
+        /* UTC never moves: the clock is stored in UTC and shown through the zone */
+        hal_set_tz_min(nos_prefs.tz_min);
+        prefs_save();
         P.tz0 = nos_prefs.tz_min;
     }
 }
@@ -764,6 +767,7 @@ static uint8_t *slide_pref(int id)
 {
     return id == I_BRIGHT ? &nos_prefs.brightness : id == I_VOLUME ? &nos_prefs.volume : &nos_prefs.haptic_strength;
 }
+static float slide_min(void) { return SL.id == I_BRIGHT ? 5.0f : 0.0f; }   /* never a black screen */
 static float slide_y(void) { return SL.id == I_BRIGHT ? 205.0f : 244.0f; }
 static float slide_hero_y(void) { return SL.id == I_BRIGHT ? 102.0f : 136.0f; }
 
@@ -797,7 +801,7 @@ static void slide_apply(int v, int old)
         if (s10 != o10) hal_haptic(HAPTIC_CLICK);
     }
     if (SL.id == I_BRIGHT && s10 != o10) nos_feedback(FB_TICK);
-    if ((v == 0 || v == 100) && v != old) nos_feedback(FB_LIMIT);
+    if ((v == (int)slide_min() || v == 100) && v != old) nos_feedback(FB_LIMIT);
 }
 
 static void slide_enter(void)
@@ -843,11 +847,15 @@ static void slide_draw(gfx_fb *fb)
         int present = (hal_ext_present() & EXT_LIGHT) != 0;
         ui_text(fb, UI_F_BODY, 104, cap_base(UI_F_BODY, cy - 12), "Auto", present ? C_PRI : C_DIS, UI_LEFT, 0);
         char b[24];
-        if (!present) snprintf(b, sizeof b, "No light sensor");
-        else if (SL.have_lux) snprintf(b, sizeof b, "%d lux now", (int)(SL.lux + 0.5f));
+        if (!present) snprintf(b, sizeof b, "Needs the light module");
+        else if (SL.have_lux) {
+            int lx = (int)(SL.lux + 0.5f);
+            lx = lx >= 1000 ? lx / 100 * 100 : lx >= 100 ? lx / 10 * 10 : lx;   /* steady text */
+            snprintf(b, sizeof b, "%d lux now", lx);
+        }
         else snprintf(b, sizeof b, "Reading light");
         ui_label(fb, 104, cap_base(UI_F_LABEL, cy + 16), b, C_DIS, UI_LEFT);
-        toggle_k(fb, 324, cy, present ? SL.tog.x : 0, present ? 1.0f : 0.5f);
+        if (present) toggle_k(fb, 324, cy, SL.tog.x, 1.0f);
     } else {
         const char *note = 0;
         if (SL.id == I_VOLUME && !(hal_ext_present() & EXT_SPEAKER)) note = "NO SPEAKER";
@@ -862,7 +870,7 @@ static int in_slider(int x, int y)
     float sy = slide_y();
     return y > sy - 30 && y < sy + SL_H + 30 && x > SL_X - 20 && x < SL_X + SL_W + 20;
 }
-static float slide_val_at(int x) { return m_clamp((x - SL_X - SL_H * 0.5f) / (SL_W - SL_H) * 100.0f, 0, 100); }
+static float slide_val_at(int x) { return m_clamp((x - SL_X - SL_H * 0.5f) / (SL_W - SL_H) * 100.0f, slide_min(), 100); }
 
 static int slide_input(const nos_input *in)
 {
@@ -875,11 +883,11 @@ static int slide_input(const nos_input *in)
         if (in->axis != AXIS_X || !in_slider(in->x0, in->y0)) return 0;
         SL.dragging = 1; SL.animating = 0;
         SL.v0 = m_clamp(SL.v, 0, 100);
-        SL.v = m_clamp(SL.v0 + in->dx / (SL_W - SL_H) * 100.0f, 0, 100);
+        SL.v = m_clamp(SL.v0 + in->dx / (SL_W - SL_H) * 100.0f, slide_min(), 100);
         return 1;
     case IN_DRAG:
         if (!SL.dragging) return 0;
-        SL.v = m_clamp(SL.v0 + in->dx / (SL_W - SL_H) * 100.0f, 0, 100);
+        SL.v = m_clamp(SL.v0 + in->dx / (SL_W - SL_H) * 100.0f, slide_min(), 100);
         return 1;
     case IN_DRAG_END:
         if (!SL.dragging) return 0;
@@ -916,21 +924,25 @@ static struct { int id; int pressed; mspring on; float t0; char state[24]; char 
 
 static void open_radio(int id) { R.id = id; nos_push(&scr_set_radio, TX_PUSH); }
 static uint8_t *radio_pref(void) { return R.id == I_BT ? &nos_prefs.ble : &nos_prefs.wifi; }
+/* Bluetooth is the phone link and stays on: its tile shows the link, it is not a switch */
+static int radio_phone(void) { return hal_phone_connected() || svc_sys()->phone_connected; }
+static int radio_lit(void) { return R.id == I_BT ? radio_phone() : *radio_pref(); }
 static void radio_enter(void)
 {
-    msp_init(&R.on, *radio_pref() ? 1.0f : 0.0f, SPRING_SNAPPY);
+    msp_init(&R.on, radio_lit() ? 1.0f : 0.0f, SPRING_SNAPPY);
     R.pressed = 0;
     R.t0 = nos_t;
 }
 static void radio_tick(float dt)
 {
+    if ((R.on.target > 0.5f) != radio_lit()) msp_to(&R.on, radio_lit() ? 1.0f : 0.0f);
     msp_step(&R.on, dt);
     int on = *radio_pref();
     if (R.id == I_BT) {
-        int phone = hal_phone_connected() || svc_sys()->phone_connected;
-        snprintf(R.state, sizeof R.state, "%s", !on ? "OFF" : phone ? "CONNECTED" : "WAITING FOR PHONE");
-        snprintf(R.line, sizeof R.line, "%s", !on ? "Phone sync is paused" :
-                 phone ? "Notifications and music sync" : "Pair in Gadgetbridge as NOS");
+        int phone = radio_phone();
+        snprintf(R.state, sizeof R.state, "%s", phone ? "PHONE CONNECTED" : "WAITING FOR PHONE");
+        snprintf(R.line, sizeof R.line, "%s", phone ? "Notifications, music and weather sync" :
+                 "Pair in Gadgetbridge as NOS");
     } else {
         hal_conn c = hal_status(HAL_FEAT_WIFI);
         snprintf(R.state, sizeof R.state, "%s", !on ? "OFF" : c == HAL_CONN_UP ? "CONNECTED" :
@@ -949,13 +961,13 @@ static void radio_draw(gfx_fb *fb)
     float cy = 180;
     gfx_fill_circle(fb, UI_CX, cy, 76, fill);
     dot_icon_anim(fb, R.id == I_BT ? DOT_ICON_BT : DOT_ICON_WIFI, UI_CX, cy, 6.0f, 4.8f, ink, bp, DOT_REVEAL_CENTER);
-    ui_state(fb, UI_CX, 300, R.state, *radio_pref() ? C_PRI : C_DIS);
+    ui_state(fb, UI_CX, 300, R.state, radio_lit() ? C_PRI : C_SEC);
     ui_text_wrap(fb, UI_F_BODY, UI_CX, 344, 300, 30, 2, R.line, C_SEC, UI_CENTER);
 }
 static int radio_input(const nos_input *in)
 {
     float dx = in->x - UI_CX, dy = in->y - 180.0f;
-    int hit = dx * dx + dy * dy < 90.0f * 90.0f;
+    int hit = R.id == I_WIFI && dx * dx + dy * dy < 90.0f * 90.0f;
     switch (in->type) {
     case IN_DOWN: R.pressed = hit; return 1;
     case IN_DRAG_START: R.pressed = 0; return 0;
@@ -1187,7 +1199,7 @@ static int confirm_input(const nos_input *in)
                 hal_store_save("nosprefs", &nos_prefs, sizeof nos_prefs);
                 nos_feedback(FB_OPEN);
                 S.inited = 0;
-                /* soft restart: the UI stack boots again (services keep running) */
+                nos_host_power(1);            /* firmware: esp_restart; sim: soft restart */
                 nos_set_root(&scr_home);
                 nos_push(&scr_boot, TX_NONE);
             }

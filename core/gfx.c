@@ -40,6 +40,10 @@ int gfx_rec_cmd(gfx_fb *fb, int x0, int y0, int x1, int y1, unsigned hash)
 static float fast_sin(float x)
 {
     x -= 6.2831853f * floorf(x * 0.15915494f + 0.5f);   /* reduce to [-pi, pi] */
+    /* fold into [-pi/2, pi/2] where the polynomial is accurate: unfolded it was off
+     * by 0.038 at +-pi (rings drew 8 px out of place at 3 and 6 o'clock) */
+    if (x > 1.5707963f) x = 3.1415927f - x;
+    else if (x < -1.5707963f) x = -3.1415927f - x;
     float x2 = x * x;
     return x * (0.9999966f + x2 * (-0.16665682f + x2 * (0.00830632f - x2 * 0.00018363f)));
 }

@@ -17,6 +17,7 @@ typedef struct {
     float target;
     float response;      /* s */
     float damping;       /* fraction */
+    float eps;           /* settle threshold; scaled to the move on msp_to/kick */
     int   moving;
 } mspring;
 
@@ -35,7 +36,7 @@ void  msp_set(mspring *s, float x);            /* jump, zero velocity */
 void  msp_kick(mspring *s, float target, float v);   /* retarget with a velocity (release) */
 /* Advance; returns 1 while moving. Settles exactly onto target when within `eps`. */
 int   msp_step(mspring *s, float dt);
-#define MSP_EPS 0.25f                         /* px-scale settle threshold */
+#define MSP_EPS 0.25f    /* max settle threshold; each move uses min(0.25, 1% of its distance) so 0..1 springs settle precisely */
 
 /* ---- momentum scrolling (iOS model) ----
  * Velocity decays exponentially with a 0.998/ms rate (time constant ~0.5 s). The
@@ -47,6 +48,7 @@ typedef struct {
     float x, v;           /* offset (content px), velocity px/s */
     float min, max;       /* scroll bounds */
     float snap;           /* > 0: rest on multiples of snap */
+    int   snap_free;      /* 1: a fling may travel many snaps (lists); 0: one page per flick (pagers) */
     int   dragging, moving;
     float drag_x0, drag_off0;
     mspring sp;           /* used for snapping and rubber-band return */

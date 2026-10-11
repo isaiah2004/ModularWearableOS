@@ -176,7 +176,7 @@ static void cell_draw(gfx_fb *fb)
         dot_icon_anim(fb, DOT_ICON_SIGNAL, UI_CX, 176, 7.0f, 5.6f, C_DIS, L.build, DOT_REVEAL_RAIN);
         body_line(fb, 288, "Module not connected", c1);
         body_line(fb, 322, "Add the LTE strap for SMS", c2);
-        ui_label(fb, UI_CX, 352, "ANYWHERE, NO PHONE NEEDED", c3, UI_CENTER);
+        ui_label(fb, UI_CX, 352, "NO PHONE NEEDED", c3, UI_CENTER);
         return;
     }
     draw_bars(fb, L.build);
@@ -417,6 +417,10 @@ static void reply_tap(int i)
 
 static void read_enter(void)
 {
+    if (s_open >= 0 && s_open < s_nsms && s_sms[s_open].unread) {
+        hal_lte_sms_mark_read(s_open);
+        s_sms[s_open].unread = 0;
+    }
     R.t_enter = nos_t;
     R.result = 0;
     R.popped = 0;
