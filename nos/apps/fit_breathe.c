@@ -32,7 +32,7 @@
 #define RING_LAG 0.07f          /* s between neighbouring rings */
 #define T_INTRO  1.00f          /* start screen -> first inhale */
 #define T_OUTRO  0.70f          /* last exhale -> summary */
-#define T_BUILD0 0.17f          /* entry build starts at 40% of the iris ... */
+#define PRESS_MIN 0.10f         /* a pressed control shows >= 3 frames, even on a quick tap */
 #define T_SUMOUT 0.18f          /* AGAIN: the summary builds out before the field returns */
 
 /* ---- field geometry ---- */
@@ -71,6 +71,8 @@ static struct {
     float et;           /* since enter */
     float sel[3];       /* duration pills: selected-ness, crossfaded */
     int   pressed;      /* control under the finger, -1 none */
+    float press_t0, unpress_at;   /* pressed shows >= PRESS_MIN even on a quick tap */
+    int   press_hold;   /* the tapped control stays pressed while the screen departs */
     int   cycles;       /* breaths in this session */
     int   phase;        /* 0 in, 1 hold, 2 out (last phase announced) */
     /* heart rate measured during the session */
@@ -81,7 +83,8 @@ static struct {
     /* prewarm progress (mask bake) */
     int   warm_q;
     /* prepared for draw */
-    float ui_k;         /* title + pills fade (quantised) */
+    float ui_k;         /* title fade (quantised) */
+    float pill_k;       /* duration pills: 1 shown, < 1 building out by scale steps */
     int   from_summary; /* intro starts from an empty screen (AGAIN) */
     float disc_r;
     float sum_p;        /* summary build-in */
@@ -96,7 +99,7 @@ static int s_min_i = 1;         /* selected duration (kept across visits) */
 enum { CTL_NONE = -1, CTL_DISC = 0, CTL_PILL0, CTL_PILL1, CTL_PILL2, CTL_AGAIN, CTL_DONE };
 
 /* ------------------------------------------------------------------ helpers */
-static float ease_sine(float x) { x = m_clamp(x, 0, 1); return 0.5f - 0.5f * cosf(3.14159265f * x); }
+static float ease_sine(float x) { x = m_clamp(x, 0, 1); return 0.5f - 0.5f * gfx_fast_cos(3.14159265f * x); }
 static float qz(float v, float steps) { return floorf(v * steps + 0.5f) / steps; }
 
 static void haptic(int pattern) { if (nos_prefs.haptics) hal_haptic(pattern); }
@@ -121,8 +124,8 @@ static int field_alloc(void)
         s_ring0[i] = k;
         for (int j = 0; j < k_ring_n[i] && k < NDOT_MAX; j++, k++) {
             float a = 6.2831853f * (float)j / (float)k_ring_n[i];
-            F->ca[k] = cosf(a);
-            F->sa[k] = sinf(a);
+            F->ca[k] = gfx_fast_cos(a);
+            F->sa[k] = gfx_fast_sin(a);
             F->ring[k] = (uint8_t)i;
         }
     }
@@ -154,7 +157,7 @@ static void field_layout(float cx, float cy, const float *b, const float *grow, 
         uint16_t col = ui_dim(C_PRI, k);
         /* twist as the ring opens: alternate directions, fixed per-ring offset */
         float tw = (float)i * 0.41f + 0.22f * bi * ((i & 1) ? 1.0f : -1.0f);
-        float ct = cosf(tw), st = sinf(tw);
+        float ct = gfx_fast_cos(tw), st = gfx_fast_sin(tw);
         for (int j = s_ring0[i]; j < s_ring0[i + 1]; j++) {
             float ux = F->sa[j] * ct + F->ca[j] * st;      /* sin(a + tw) */
             float uy = F->ca[j] * ct - F->sa[j] * st;      /* cos(a + tw) */
@@ -243,18 +246,26 @@ static void session_begin(int from_summary)
 static void breathe_enter(void)
 {
     field_alloc();
+    B.pressed = CTL_NONE; B.press_hold = 0; B.unpress_at = 0;
+    if (nos_revealed()) {
+        /* back from a cover: keep the state; a running session gets its HR back (the
+         * cover's push ran leave()) and keeps its average */
+        if ((B.st == ST_INTRO || B.st == ST_SESSION) && (hal_ext_present() & EXT_HR)) { hal_hr_enable(1); B.hr_on = 1; }
+        return;
+    }
     B.st = ST_START; B.t = 0; B.build = 0;
-    B.et = nos_revealed() ? 10.0f : 0.0f;          /* back from a cover: no rebuild */
-    B.pressed = CTL_NONE;
+    /* the entry build runs from nos_enter_t() (40% of the iris); a finger pull skips it */
+    B.et = nos_entered_by_finger() ? 10.0f : nos_t - nos_enter_t();
     B.hr_on = 0;
     B.warm_q = 1;
+    B.pill_k = 0;
     for (int i = 0; i < 3; i++) B.sel[i] = i == s_min_i;
 }
 
 static void breathe_leave(void)
 {
     hr_stop();
-    B.pressed = CTL_NONE;
+    B.pressed = CTL_NONE; B.press_hold = 0; B.unpress_at = 0;
 }
 
 static void prepare_start(float build)
@@ -268,6 +279,7 @@ static void prepare_start(float build)
     B.ui_k = 1.0f;
     /* the disc and pills arrive at full size and colour with the dot build (no scale-up) */
     B.disc_r = build > 0 ? DISC_R : 0;
+    B.pill_k = build > 0 ? 1.0f : 0.0f;
 }
 
 static void prepare_session(float t)
@@ -288,7 +300,8 @@ static void breathe_tick(float dt)
 {
     B.t += dt;
     B.et += dt;
-    B.build = m_clamp((B.et - T_BUILD0) / UI_ENTRY_S, 0, 1);
+    B.build = m_clamp(B.et / UI_ENTRY_S, 0, 1);
+    if (B.unpress_at > 0 && nos_t >= B.unpress_at && !B.press_hold) { B.pressed = CTL_NONE; B.unpress_at = 0; }
     for (int i = 0; i < 3; i++) {             /* pill selection crossfades over 0.15 s */
         float tg = i == s_min_i ? 1.0f : 0.0f, st = dt / 0.15f;
         B.sel[i] = B.sel[i] < tg ? m_clamp(B.sel[i] + st, 0, tg) : m_clamp(B.sel[i] - st, tg, 1);
@@ -315,6 +328,7 @@ static void breathe_tick(float dt)
             }
             field_layout(UI_CX, UI_CY, b, g, 1.0f, 0);
             B.ui_k = 0;
+            B.pill_k = 0;
             B.disc_r = 0;
         } else {
             for (int i = 0; i < NR; i++) {
@@ -324,6 +338,7 @@ static void breathe_tick(float dt)
             }
             field_layout(UI_CX, m_lerp(START_CY, UI_CY, e), b, g, m_lerp(0.85f, 1.0f, e), 0);
             B.ui_k = qz(1.0f - m_clamp(B.t / 0.3f, 0, 1), 6.0f);
+            B.pill_k = 1.0f - m_clamp(B.t / 0.2f, 0, 1);     /* the pills build out by scale steps */
             B.disc_r = qz(DISC_R * (1.0f - bezier_ease(&EASE_ACCEL, disc)), 4.0f);
         }
         B.prog_k = qz(m_clamp((B.t - 0.4f) / 0.5f, 0, 1), 6.0f);
@@ -405,18 +420,28 @@ static void breathe_tick(float dt)
 }
 
 /* ------------------------------------------------------------------ draw */
+/* A pill at full colour. on: 0 off .. 1 on (crossfaded, quantised here). pressed: C_SEC
+ * with black ink (the ui_button rule). k: 1 shown; below 1 it builds out by scale steps
+ * at its own fill, its label sinking into the fill first (never dimmed through grey,
+ * which would read as pressed). */
 static void pill(gfx_fb *fb, float cx, float cy, float w, float h, const char *label,
                  float on, int pressed, float k)
 {
-    /* on: 0 off .. 1 on (crossfaded, quantised here); k: fade level 0..1, quantised */
-    if (k <= 0.01f) return;
+    if (k <= 0.05f) return;
     on = qz(m_clamp(on, 0, 1), 8.0f);
-    uint16_t fill = ui_mix(pressed ? C_SURF3 : C_SURF2, pressed ? C_SEC : C_WHITE, on);
-    uint16_t ink = ui_mix(C_PRI, C_BG, on);
-    fill = ui_dim(fill, k);
-    if (on < 0.5f) ink = ui_dim(ink, k);
-    ui_rrect(fb, cx - w / 2, cy - h / 2, w, h, h / 2, fill);
-    ui_label(fb, (int)cx, (int)(cy + UI_F_LABEL->ascent * 0.5f - 2), label, ink, UI_CENTER);
+    uint16_t fill = pressed ? C_SEC : ui_mix(C_SURF2, C_WHITE, on);
+    /* the ink flips at the fill's midpoint, so the label never sinks into a mid grey
+     * while the selection crossfades */
+    uint16_t ink = pressed || on >= 0.5f ? C_BG : C_PRI;
+    float s = 1.0f;
+    if (k < 1) {
+        s = 0.4f + 0.6f * k;
+        ink = ui_mix(fill, ink, qz(m_clamp((k - 0.5f) / 0.5f, 0, 1), 3.0f));
+    }
+    float pw = floorf(w * s + 0.5f), ph = floorf(h * s + 0.5f);
+    ui_rrect(fb, cx - pw / 2, cy - ph / 2, pw, ph, ph / 2, fill);
+    if (ink != fill)
+        ui_label(fb, (int)cx, (int)(cy + UI_F_LABEL->ascent * 0.5f - 2), label, ink, UI_CENTER);
 }
 
 static void draw_start(gfx_fb *fb)
@@ -425,21 +450,21 @@ static void draw_start(gfx_fb *fb)
     if (k > 0.01f) ui_label(fb, UI_CX, 70, "BREATHE", ui_dim(C_SEC, k), UI_CENTER);
     field_draw(fb);
     if (B.disc_r > 0.5f) {
-        uint16_t fill = B.pressed == CTL_DISC ? C_SEC : C_WHITE;
+        /* pressed: C_SEC; tapped, it stays pressed while it shrinks away */
+        uint16_t fill = B.pressed == CTL_DISC || B.st == ST_INTRO ? C_SEC : C_WHITE;
         gfx_fill_circle(fb, UI_CX, START_CY, B.disc_r, fill);
         /* START: at the tap its ink fades into the disc (0.1 s) before the disc shrinks */
         float lk = B.st == ST_START ? 0.0f : qz(m_clamp(B.t / 0.1f, 0, 1), 8.0f);
         if (lk < 1 && B.disc_r > DISC_R * 0.7f)
             ui_label(fb, UI_CX, (int)(START_CY + UI_F_LABEL->ascent * 0.5f - 2), "START", ui_mix(C_BG, fill, lk), UI_CENTER);
     }
-    /* duration pills: with the build at full colour; fade with the intro */
+    /* duration pills: with the build at full colour; scale out with the intro */
     for (int i = 0; i < 3; i++) {
-        float kk = B.build > 0 ? k : 0;
-        if (kk <= 0.01f) continue;
+        if (B.pill_k <= 0.05f) break;
         char b[8];
         snprintf(b, sizeof b, "%d MIN", k_minutes[i]);
         pill(fb, (float)(UI_CX + (i - 1) * 108), (float)PILL_Y, 96, 56, b,
-             B.sel[i], B.pressed == CTL_PILL0 + i, kk);
+             B.sel[i], B.pressed == CTL_PILL0 + i, B.pill_k);
     }
 }
 
@@ -463,20 +488,22 @@ static void draw_summary(gfx_fb *fb)
     char b[16];
     snprintf(b, sizeof b, "%d", k_minutes[s_min_i]);
     dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
-    dot_text_anim(fb, &st, UI_CX, 132, b, 1, p, DOT_REVEAL_RANDOM, 7);
+    /* the block sits 30 px above the button pair (it read as falling onto them) */
+    dot_text_anim(fb, &st, UI_CX, 116, b, 1, p, DOT_REVEAL_RANDOM, 7);
     float pl = qz(out ? p : m_clamp((p - 0.4f) / 0.5f, 0, 1), 8.0f);
-    ui_label(fb, UI_CX, 246, "MIN", ui_dim(C_SEC, pl), UI_CENTER);
+    ui_label(fb, UI_CX, 230, "MIN", ui_dim(C_SEC, pl), UI_CENTER);
     char line[40];
     snprintf(line, sizeof line, "%d BREATHS", B.cycles);
-    ui_label(fb, UI_CX, 286, line, ui_dim(C_DIS, pl), UI_CENTER);
+    ui_label(fb, UI_CX, 270, line, ui_dim(C_DIS, pl), UI_CENTER);
     if (B.hr_avg) {
         snprintf(line, sizeof line, "AVG %d BPM", B.hr_avg);
-        ui_label(fb, UI_CX, 314, line, ui_dim(C_DIS, pl), UI_CENTER);
+        ui_label(fb, UI_CX, 298, line, ui_dim(C_DIS, pl), UI_CENTER);
     }
-    /* the action pair arrives with the hero at full colour; it fades on the way out */
-    float pb = out ? qz(p, 8.0f) : (p > 0 ? 1.0f : 0.0f);
-    if (pb > 0.01f) {
-        pill(fb, UI_BTN_PAIR_X0, UI_BTN_Y, UI_BTN_PAIR_W, UI_BTN_H, "AGAIN", 0, B.pressed == CTL_AGAIN, pb);
+    /* the action pair arrives with the hero at full colour; on AGAIN both build out by
+     * scale steps at their own fills, the tapped AGAIN held pressed */
+    float pb = out ? p : (p > 0 ? 1.0f : 0.0f);
+    if (pb > 0.05f) {
+        pill(fb, UI_BTN_PAIR_X0, UI_BTN_Y, UI_BTN_PAIR_W, UI_BTN_H, "AGAIN", 0, out || B.pressed == CTL_AGAIN, pb);
         pill(fb, UI_BTN_PAIR_X1, UI_BTN_Y, UI_BTN_PAIR_W, UI_BTN_H, "DONE", 1, B.pressed == CTL_DONE, pb);
     }
 }
@@ -519,21 +546,30 @@ static int breathe_input(const nos_input *in)
 {
     switch (in->type) {
     case IN_DOWN:
+        if (B.press_hold) return 1;              /* departing: the tapped control holds */
         B.pressed = hit(in->x, in->y);
+        B.press_t0 = nos_t; B.unpress_at = 0;
         return B.pressed != CTL_NONE;
-    case IN_UP:
     case IN_DRAG_START:
-        B.pressed = CTL_NONE;
+        if (!B.press_hold) { B.pressed = CTL_NONE; B.unpress_at = 0; }
+        return 0;
+    case IN_UP:
+        /* a quick tap still shows the pressed state for >= 3 frames */
+        if (B.pressed != CTL_NONE && !B.press_hold) B.unpress_at = fmaxf(nos_t, B.press_t0 + PRESS_MIN);
         return 0;
     case IN_TAP: {
+        if (B.press_hold) return 1;
         int c = hit(in->x, in->y);
-        B.pressed = CTL_NONE;
         if (c == CTL_NONE) return 0;
         if (c == CTL_DISC) { nos_feedback(FB_TAP); session_begin(0); }
         else if (c >= CTL_PILL0 && c <= CTL_PILL2) {
             if (s_min_i != c - CTL_PILL0) { s_min_i = c - CTL_PILL0; nos_feedback(FB_TICK); }
         } else if (c == CTL_AGAIN) { nos_feedback(FB_TAP); go(ST_SUMOUT); }
-        else if (c == CTL_DONE) { nos_feedback(FB_TAP); nos_pop(); }
+        else if (c == CTL_DONE) {
+            /* DONE stays pressed while the screen closes (leave() clears it) */
+            B.pressed = CTL_DONE; B.press_hold = 1;
+            nos_feedback(FB_TAP); nos_pop();
+        }
         return 1;
     }
     default:

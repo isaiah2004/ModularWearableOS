@@ -5,10 +5,12 @@
  *      (48 radial three-dot segments; past the goal the ring continues in red)
  *   1  today: distance / kcal / active minutes blocks + hourly dot-column chart
  *   2  this week: daily average + 7 day bars with day letters, today emphasised
- * Entry (NOS_DESIGN §8): starts at 40% of the iris; the number builds with a dot
- * sparkle while the ring lights segment by segment, both in 0.30 s, one haptic tick when
- * the last segment lands; the labels follow. Live changes morph. Pages 1-2 grow their
- * bars from the first revealed pixel. Data: svc_activity(), copied in tick(). */
+ * Entry (NOS_DESIGN §8): starts at nos_enter_t() (40% of the iris); the number builds
+ * with a dot sparkle while the ring lights segment by segment, both in 0.30 s, one haptic
+ * tick when the last segment lands; the labels follow, and the scrollbar shows once for
+ * 0.7 s to say there are pages below. Live changes morph (at most 1 Hz). Pages 1-2 grow
+ * their bars from the first revealed pixel. Revealed by back: everything kept as it was.
+ * Data: svc_activity(), copied in tick(). */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -25,8 +27,8 @@
 #define NPAGES   3
 #define SEG_N    48
 #define SEG_D    5.5f
-#define ENTRY_DELAY 0.17f       /* app: build starts at 40% of the iris */
 #define MORPH_S  0.28f          /* live value change */
+#define MORPH_GAP 1.0f          /* live readings change at most ~1 Hz (§8) */
 
 static const float k_seg_r[3] = { 182.0f, 193.0f, 204.0f };
 
@@ -77,8 +79,9 @@ static void seg_counts(int steps, int goal, int *lit, int *over)
 
 /* The glyph ring: `show` segments of the lit+over total are shown so far.
  * widget: a smaller ring (the home pager owns the top/bottom centre of widget pages)
- * and no red (the pager's unread dot is the only red there): the overflow lap is white
- * over a grey first lap instead. */
+ * and no red (the pager's unread dot is the only red there): over the goal the first
+ * lap stays full white and the overflow runs as a second ring of white dots inside it,
+ * so 135 % reads as a full lap plus a third, not as 35 %. */
 static void seg_ring(gfx_fb *fb, float cx, float cy, int lit, int over, int show, uint16_t off, int widget)
 {
     int w = show < lit ? show : lit;
@@ -86,13 +89,15 @@ static void seg_ring(gfx_fb *fb, float cx, float cy, int lit, int over, int show
     if (r > over) r = over;
     for (int k = 0; k < 3; k++) {
         float rad = k_seg_r[k] - (widget ? 22.0f : 0.0f);
-        if (r > 0) {
+        if (r > 0 && !widget) {
             /* over goal: the second lap paints over the start of the first */
-            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, (float)r, (float)SEG_N, widget ? C_SEC : C_PRI, 0);
-            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)r, widget ? C_WHITE : C_RED, 0);
+            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, (float)r, (float)SEG_N, C_PRI, 0);
+            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)r, C_RED, 0);
         } else
-            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)w, C_PRI, off);
+            dot_ring(fb, cx, cy, rad, SEG_N, SEG_D, 0, (float)w, C_PRI, r > 0 ? 0 : off);
     }
+    if (r > 0 && widget)
+        dot_ring(fb, cx, cy, k_seg_r[0] - 22.0f - 14.0f, SEG_N, SEG_D, 0, (float)r, C_PRI, 0);
 }
 
 /* ---- the hero: build (dot sparkle) then live morphs ----
@@ -101,39 +106,50 @@ typedef struct {
     float t;            /* since the build started (< 0: waiting) */
     int value, prev;    /* shown value, previous (morph source) */
     float morph;        /* 0..1, 1 = settled */
+    float since;        /* since the last morph started */
     int lit, over, shown, ticked;
 } hero;
 
 static void hero_start(hero *h, float delay)
 {
-    h->t = -delay; h->value = h->prev = s_act.steps; h->morph = 1;
+    h->t = -delay; h->value = h->prev = s_act.steps; h->morph = 1; h->since = 10;
     seg_counts(s_act.steps, s_act.goal, &h->lit, &h->over);
     h->shown = 0; h->ticked = 0;
 }
 static void hero_finish(hero *h)
 {
-    h->t = 10; h->value = h->prev = s_act.steps; h->morph = 1;
+    if (h->t < UI_ENTRY_S) h->t = UI_ENTRY_S + 1.0f;
+    h->morph = 1;
+    if (!h->ticked) { h->value = h->prev = s_act.steps; h->since = 10; }
     seg_counts(s_act.steps, s_act.goal, &h->lit, &h->over);
-    h->shown = h->lit + h->over; h->ticked = 1;
+    if (!h->ticked) h->shown = h->lit + h->over;
+    h->ticked = 1;
 }
 static float hero_build(const hero *h) { return m_clamp(h->t / UI_ENTRY_S, 0, 1); }
-static void hero_tick(hero *h, float dt, int haptic)
+/* Returns 1 on the frame the entry build completes. */
+static int hero_tick(hero *h, float dt, int haptic)
 {
     h->t += dt;
+    h->since += dt;
     if (h->morph < 1) h->morph = m_clamp(h->morph + dt / MORPH_S, 0, 1);
     float b = hero_build(h);
     if (b < 1) {
         /* ring segments light in step with the number's build */
         h->shown = (int)floorf(bezier_ease(&EASE_STANDARD, b) * (float)(h->lit + h->over) + 0.0001f);
-        return;
+        return 0;
     }
-    if (!h->ticked) { h->ticked = 1; if (haptic && h->shown > 0) nos_feedback(FB_TICK); }
+    int done = 0;
+    if (!h->ticked) { h->ticked = 1; done = 1; if (haptic && h->shown > 0) nos_feedback(FB_TICK); }
     /* live changes: the ring follows one segment per frame (never a jump) */
     seg_counts(s_act.steps, s_act.goal, &h->lit, &h->over);
     int tgt = h->lit + h->over;
     if (h->shown < tgt) h->shown++;
     else if (h->shown > tgt) h->shown--;
-    if (s_act.steps != h->value && h->morph >= 1) { h->prev = h->value; h->value = s_act.steps; h->morph = 0; }
+    /* the number morphs at most once a second while walking */
+    if (s_act.steps != h->value && h->morph >= 1 && h->since >= MORPH_GAP) {
+        h->prev = h->value; h->value = s_act.steps; h->morph = 0; h->since = 0;
+    }
+    return done;
 }
 
 static void draw_hero(gfx_fb *fb, float oy, const hero *h, int widget)
@@ -218,18 +234,21 @@ static int vp_input(vpager *v, const nos_input *in)
 static void vp_tick(vpager *v, float dt)
 {
     if (!v->drag && msp_step(&v->sp, dt)) v->bar_t = nos_t;
-    /* linear ramp at a fixed rate (in 0.17 s, out 0.4 s); quantised only when drawn,
+    /* linear ramp at a fixed rate (in 4 frames, out 8); quantised only when drawn,
      * so it always reaches 0 instead of rounding back up */
     float target = nos_t - v->bar_t < 0.7f ? 1.0f : 0.0f;
-    float step = dt * (target > v->bar_k ? 6.0f : 2.5f);
+    float step = dt * (target > v->bar_k ? 7.5f : 3.75f);
     if (v->bar_k < target) { v->bar_k += step; if (v->bar_k > target) v->bar_k = target; }
     else { v->bar_k -= step; if (v->bar_k < target) v->bar_k = target; }
 }
+/* Show the scrollbar once (0.7 s, then the normal fade): there are pages below. */
+static void vp_flash(vpager *v) { v->bar_t = nos_t; }
 static float vp_off(const vpager *v) { return floorf(v->sp.x + 0.5f); }
 static void vp_draw_bar(gfx_fb *fb, const vpager *v)
 {
-    if (v->bar_k < 0.2f) return;                 /* gfx_arc is expensive: gone below 20% */
-    ui_scrollbar(fb, v->sp.x, PAGE_H * v->n, PAGE_H, qz(v->bar_k, 16.0f));
+    /* 8 equal steps, drawn down to the last one (no pop at the end) */
+    float a = qz(v->bar_k, 8.0f);
+    if (a > 0) ui_scrollbar(fb, v->sp.x, PAGE_H * v->n, PAGE_H, a);
 }
 
 /* ================================================================= APP */
@@ -243,19 +262,24 @@ static struct {
 static void act_enter(void)
 {
     read_data();
+    if (nos_revealed()) {
+        /* back from a cover: keep the page, the built hero and the built pages */
+        hero_finish(&A.hero);
+        return;
+    }
     vp_init(&A.vp, NPAGES);
     memset(A.pg_build, 0, sizeof A.pg_build);
     memset(A.pg_started, 0, sizeof A.pg_started);
     A.pg_started[0] = 1;
-    if (nos_revealed()) { hero_finish(&A.hero); for (int i = 0; i < NPAGES; i++) { A.pg_started[i] = 1; A.pg_build[i] = 1; } }
-    else hero_start(&A.hero, ENTRY_DELAY);
+    if (nos_entered_by_finger()) { hero_start(&A.hero, 0); hero_finish(&A.hero); vp_flash(&A.vp); }
+    else hero_start(&A.hero, nos_enter_t() - nos_t);
 }
 
 static void act_tick(float dt)
 {
     read_data();
     vp_tick(&A.vp, dt);
-    hero_tick(&A.hero, dt, 1);
+    if (hero_tick(&A.hero, dt, 1)) vp_flash(&A.vp);
     /* pages 1-2 build from their first revealed pixel, so the stagger ends as they land */
     float pos = A.vp.sp.x / PAGE_H;
     for (int i = 1; i < NPAGES; i++) {
@@ -327,7 +351,9 @@ static void draw_week(gfx_fb *fb, float oy)
     for (int i = 0; i < 7; i++) {
         uint32_t v = i == 6 ? (uint32_t)s_act.steps : s_act.week[i];
         if (i == 6 && s_act.week[6] > v) v = s_act.week[6];
-        if (v) { sum += v; ndays++; }
+        /* DAILY AVG over the six completed days: today's partial count would pull it
+         * down every morning; today stays visible as its own (white) column */
+        if (v && i < 6) { sum += v; ndays++; }
         if (v > maxv) maxv = v;
     }
     ui_label(fb, UI_CX, (int)(UI_TITLE_Y + oy), "THIS WEEK", C_SEC, UI_CENTER);
@@ -415,4 +441,4 @@ static void wg_draw(gfx_fb *fb)
 
 static void wg_tap(int x, int y) { nos_open(&scr_activity, x, y); }
 
-const nos_widget wg_activity = { "ACTIVITY", wg_tick, wg_draw, wg_tap, wg_shown };
+const nos_widget wg_activity = { "ACTIVITY", wg_tick, wg_draw, wg_tap, wg_shown, 0 };

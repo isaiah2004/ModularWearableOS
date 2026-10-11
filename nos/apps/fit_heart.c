@@ -36,7 +36,7 @@
 #define TRACE_MAX 420
 #define ILLU_MAX  64
 #define LOCK_Q   0.6f
-#define T_BUILD0 0.17f        /* iris entries start their build at 40% of the iris */
+#define REARM_MAX 4.0f        /* back from a cover: hold a locked reading while the sensor wakes */
 #define XOUT     0.15f        /* state change: outgoing content fades out */
 #define XIN      0.20f        /* ... then the incoming content fades in */
 
@@ -146,15 +146,17 @@ static int vp_input(vpager *v, const nos_input *in)
 static void vp_tick(vpager *v, float dt)
 {
     if (!v->drag && msp_step(&v->sp, dt)) v->bar_t = nos_t;
-    /* linear ramp at a fixed rate (in 0.17 s, out 0.4 s); quantised only when drawn,
+    /* linear ramp at a fixed rate (in 4 frames, out 8); quantised only when drawn,
      * so it always reaches 0 instead of rounding back up */
     float target = nos_t - v->bar_t < 0.7f ? 1.0f : 0.0f;
-    float step = dt * (target > v->bar_k ? 6.0f : 2.5f);
+    float step = dt * (target > v->bar_k ? 7.5f : 3.75f);
     if (v->bar_k < target) { v->bar_k += step; if (v->bar_k > target) v->bar_k = target; }
     else { v->bar_k -= step; if (v->bar_k < target) v->bar_k = target; }
 }
-/* the arc is gfx_arc (expensive): gone below 20% */
-static float vp_bar_alpha(const vpager *v) { return v->bar_k < 0.2f ? 0.0f : qz(v->bar_k, 16.0f); }
+/* Show the scrollbar once (0.7 s, then the normal fade): there is a page below. */
+static void vp_flash(vpager *v) { v->bar_t = nos_t; }
+/* 8 equal steps, drawn down to the last one (no pop at the end) */
+static float vp_bar_alpha(const vpager *v) { return qz(v->bar_k, 8.0f); }
 
 /* ---------------------------------------------------------- history data */
 typedef struct {
@@ -250,8 +252,13 @@ static struct {
     float mode_t;
     float off_t;                /* time continuously off the wrist */
     float good_t;               /* time continuously lockable */
+    float contact_t;            /* time continuously on the wrist */
+    float rearm_t;              /* >= 0: back from a cover, sensor waking, reading held */
     int locked;
     float lock_t;
+    int flashed;                /* the scrollbar showed once after the entry build */
+    float now_a, last_a;        /* history footer: NOW (live) / LAST (stored) crossfade */
+    int foot_last;              /* the LAST value, changed only while its row is hidden */
     /* the number */
     int bpm_shown, bpm_prev;
     float bpm_morph;            /* 0..1, 1 = settled */
@@ -390,7 +397,7 @@ static void build_trace(float xl, float xr, float yc, float h, uint16_t ink, uin
         y = trace_y(v, yc, h);
         if (x < xl - pitch * step) { px = x; py = y; have = 1; continue; }
         if (have) {
-            float dx = x - px, dy = y - py, dist = sqrtf(dx * dx + dy * dy);
+            float dx = x - px, dy = y - py, dist = gfx_fast_sqrt(dx * dx + dy * dy);
             int nf = (int)(dist / spacing) - 1;
             for (int f = 1; f <= nf; f++) {
                 float t = (float)f / (float)(nf + 1);
@@ -422,14 +429,14 @@ static void build_illu(float t, float k)
     /* wrist: an arc of a big circle */
     for (int i = -7; i <= 7; i++) {
         float a = (float)i * 0.07f;
-        float x = cx + 230.0f * sinf(a), y = base + 230.0f * (1.0f - cosf(a));
+        float x = cx + 230.0f * gfx_fast_sin(a), y = base + 230.0f * (1.0f - gfx_fast_cos(a));
         dl_add(l, x, y, 7.0f, touch && i >= -1 && i <= 1 ? lit : dim);
     }
     /* strap: follows the wrist a little above it, lifting with the body */
     for (int s = -1; s <= 1; s += 2)
         for (int j = 0; j < 5; j++) {
             float a = (float)s * (0.25f + (float)j * 0.07f);
-            float x = cx + 230.0f * sinf(a), y = base - 12.0f + 230.0f * (1.0f - cosf(a));
+            float x = cx + 230.0f * gfx_fast_sin(a), y = base - 12.0f + 230.0f * (1.0f - gfx_fast_cos(a));
             dl_add(l, x, y - lift * (1.0f - (float)j / 5.0f), 6.0f, mid);
         }
     /* watch body: 9 x 3 dot pill outline, sensor bump underneath */
@@ -445,16 +452,34 @@ static void build_illu(float t, float k)
 }
 
 static int is_live(int m) { return m == M_MEASURING || m == M_LOCKED; }
+static void set_mode(int m);
 
 static void heart_enter(void)
 {
+    if (nos_revealed()) {
+        /* Back from a cover (power sheet, notification): keep the reading, the trace, the
+         * mode and the page. leave() kept the stream running, but a long cover lets the
+         * HAL idle-stop it: enable again, and hold a locked reading (trace and meter
+         * frozen) until the sensor reads a pulse, so it never drops back to MEASURING. */
+        hal_hr r;
+        int pres = (hal_ext_present() & EXT_HR) != 0 && hal_hr_get(&r);
+        if (pres) {
+            hal_hr_enable(1);
+            if (!H.present) { H.present = 1; set_mode(M_MEASURING); }   /* plugged in meanwhile */
+            H.rearm_t = H.locked ? 0.0f : -1.0f;
+        }
+        return;
+    }
     memset(H.v, 128, sizeof H.v);
     H.n = WIN + 8;   /* a flat baseline the live signal scrolls in over */
     H.have_last = 0; H.acc = 0; H.ph = 0; H.ph_ok = 0;
     H.lo = 100; H.hi = 156; H.npk = 0; H.last_peak = 0; H.beat_t = 10;
-    H.off_t = 0; H.good_t = 0; H.locked = 0; H.lock_t = 0;
+    H.off_t = 0; H.good_t = 0; H.contact_t = 0; H.rearm_t = -1; H.locked = 0; H.lock_t = 0;
     H.bpm_shown = 0; H.bpm_prev = 0; H.bpm_morph = 1; H.bpm_change_t = 0; H.spo2 = 0;
-    H.t = nos_revealed() ? 10.0f : 0.0f;          /* back from a cover: no rebuild */
+    /* the entry build runs from nos_enter_t() (40% of the iris); a finger pull skips it */
+    H.t = nos_entered_by_finger() ? 10.0f : nos_t - nos_enter_t();
+    H.flashed = 0;
+    H.now_a = 0; H.last_a = 1; H.foot_last = 0;
     H.u = 0; H.heart_scale = 1;
     dl_alloc(&H.trace, TRACE_MAX);
     dl_alloc(&H.illu, ILLU_MAX);
@@ -473,7 +498,12 @@ static void heart_enter(void)
 
 static void heart_leave(void)
 {
-    if (H.present) hal_hr_enable(0);
+    /* Gone (leave() runs as the closing transition completes) vs covered (a sheet or a
+     * notification pushed over us: leave() runs with no transition in flight). Covered,
+     * the stream keeps running so the reading survives the cover; the HAL stops it by
+     * itself if nobody reads it for NOS_EXT_IDLE_MS, and enter() on reveal re-enables. */
+    int gone = nos_transitioning();
+    if (H.present && gone) hal_hr_enable(0);
     if (H.locked && H.bpm_shown > 0) svc_heart_record(H.bpm_shown, H.spo2);
 }
 
@@ -489,7 +519,7 @@ static void set_mode(int m)
 
 static float mode_in(void)
 {
-    if (H.prev_mode < 0) return qz(m_clamp((H.t - T_BUILD0) / UI_ENTRY_S, 0, 1), 8.0f);
+    if (H.prev_mode < 0) return qz(m_clamp(H.t / UI_ENTRY_S, 0, 1), 8.0f);
     return qz(m_clamp((H.mode_t - XOUT) / XIN, 0, 1), 8.0f);
 }
 static float mode_out(void)
@@ -518,20 +548,31 @@ static void heart_tick(float dt)
         hal_get_datetime(&now);
         H.now_h = (float)now.hour + (float)now.minute / 60.0f;
     }
+    int fresh = 0;
     if (H.present) {
-        H.present = hal_hr_get(&H.r);
-        if (!H.present) set_mode(M_ABSENT);
+        hal_hr r;
+        H.present = hal_hr_get(&r);
+        if (!H.present) { set_mode(M_ABSENT); H.locked = 0; H.rearm_t = -1; }
+        else if (H.rearm_t >= 0) {
+            /* back from a cover with a locked reading: hold it (trace, meter, number)
+             * while the sensor wakes, until it reads a pulse again or REARM_MAX */
+            H.rearm_t += dt;
+            if ((r.on_wrist && r.bpm > 0 && r.quality >= LOCK_Q) || H.rearm_t > REARM_MAX) H.rearm_t = -1;
+        }
+        if (H.present && H.rearm_t < 0) { H.r = r; fresh = 1; }
     }
-    if (H.present) {
+    if (fresh) {
         ingest(H.r.wave, dt);
         playhead_tick(dt);
-        if (!H.r.on_wrist) H.off_t += dt; else H.off_t = 0;
+        if (!H.r.on_wrist) { H.off_t += dt; H.contact_t = 0; } else { H.off_t = 0; H.contact_t += dt; }
         int lockable = H.r.on_wrist && H.r.bpm > 0 && H.r.quality >= LOCK_Q;
         H.good_t = lockable ? H.good_t + dt : 0;
         if (H.off_t > 1.0f) {
             if (H.mode != M_NOCONTACT) { set_mode(M_NOCONTACT); H.locked = 0; H.good_t = 0; }
         } else if (H.r.on_wrist || H.mode != M_NOCONTACT) {
-            if (!H.locked && H.good_t >= 0.5f) {
+            /* MEASURING reads as a state, not a flash: a lock also needs 2 s of contact
+             * (on rewrist the signal can be good at once) */
+            if (!H.locked && H.good_t >= 0.5f && H.contact_t >= 2.0f) {
                 H.locked = 1; H.lock_t = 0;
                 H.bpm_shown = H.r.bpm; H.bpm_prev = H.r.bpm; H.bpm_morph = 1; H.bpm_change_t = 0;
                 if (nos_prefs.haptics) hal_haptic(HAPTIC_HEARTBEAT);
@@ -547,12 +588,23 @@ static void heart_tick(float dt)
             }
             if (H.r.spo2 > 0) H.spo2 = H.r.spo2;
         }
-        if (H.mode == M_MEASURING || (H.mode == M_LOCKED && H.lock_t < 20.0f)) nos_keep_awake();
+    }
+    if (H.present && (H.mode == M_MEASURING || (H.mode == M_LOCKED && H.lock_t < 20.0f))) nos_keep_awake();
+    /* the entry build is done: show the scrollbar once (there is a page below) */
+    if (!H.flashed && H.t >= UI_ENTRY_S) { H.flashed = 1; vp_flash(&H.vp); }
+    /* history footer: LAST (stored) out, then NOW (live, locked) in, and back */
+    {
+        float st = dt / 0.15f;
+        if (H.locked) { if (H.last_a > 0) H.last_a = m_clamp(H.last_a - st, 0, 1); else H.now_a = m_clamp(H.now_a + st, 0, 1); }
+        else {
+            if (H.now_a > 0) H.now_a = m_clamp(H.now_a - st, 0, 1);
+            else { if (H.bpm_shown > 0) H.foot_last = H.bpm_shown; H.last_a = m_clamp(H.last_a + st, 0, 1); }
+        }
     }
     /* layout */
     H.u = H.locked ? bezier_ease(&EASE_STANDARD, m_clamp(H.lock_t / 0.45f, 0, 1)) : 0;
     float bt = H.beat_t;
-    float pulse = bt < 0.067f ? bt / 0.067f : expf(-(bt - 0.067f) / 0.16f);
+    float pulse = bt < 0.067f ? bt / 0.067f : gfx_fast_exp(-(bt - 0.067f) / 0.16f);
     H.heart_scale = 1.0f + 0.55f * qz(m_clamp(pulse, 0, 1), 16.0f);   /* the outline swells bold on each beat */
     H.kin = mode_in();
     H.kout = mode_out();
@@ -583,9 +635,9 @@ static void draw_absent(gfx_fb *fb, float oy, float k)
 {
     gfx_fb sub;
     if (!nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, (int)oy)) return;
-    float p = H.prev_mode < 0 ? m_clamp((H.t - T_BUILD0) / 0.4f, 0, 1) : k;
+    float p = H.prev_mode < 0 ? m_clamp(H.t / 0.4f, 0, 1) : k;
     ui_absent(&sub, DOT_ICON_HEART, "Not connected", "Add the strap to measure BPM and SpO2.",
-              "HEART RATE MODULE", p);
+              "HR MODULE", p);
 }
 
 static void draw_nocontact(gfx_fb *fb, float oy, float k)
@@ -603,7 +655,7 @@ static void draw_live(gfx_fb *fb, float oy, float k, int out)
     float hy = m_lerp(134, 112, u) + oy;
     const float pitch = 4.0f;
     uint16_t hc = ui_dim(locked ? C_RED : C_PRI, k);
-    float hb = out ? 1.0f : m_clamp((H.t - T_BUILD0) / UI_ENTRY_S, 0, 1);
+    float hb = out ? 1.0f : m_clamp(H.t / UI_ENTRY_S, 0, 1);
     dot_icon_anim(fb, DOT_ICON_HEART, UI_CX, hy, pitch, qz(pitch * 0.8f * (out ? 1.0f : H.heart_scale), 4.0f), hc,
                   hb, DOT_REVEAL_CENTER);
     /* [ MEASURING ] + signal: fade out over 0.2 s from the lock */
@@ -651,6 +703,26 @@ static void stat_block(gfx_fb *fb, float cx, float oy, int v, const char *label,
     ui_label(fb, (int)cx, (int)(184 + oy), label, ui_dim(C_SEC, qz(m_clamp(p * 1.4f, 0, 1), 8.0f)), UI_CENTER);
 }
 
+/* "NOW 73 BPM" with the number in small dots, morphing in step with the hero. */
+static void hist_now(gfx_fb *fb, float y, float k)
+{
+    dot_style st = { DOT_FONT_5X7, UI_SUB_PITCH, UI_SUB_PITCH * 0.8f, ui_dim(C_SEC, k), 0, 1, 1 };
+    char a[8], b[8];
+    fmt_bpm(b, sizeof b, H.bpm_shown);
+    const float gap = 12;
+    float w1 = (float)ui_label_width("NOW"), w2 = (float)ui_label_width("BPM");
+    float wn = (float)dot_text_width(&st, b) - st.pitch;      /* drop the trailing gap cell */
+    float x = UI_CX - (w1 + gap + wn + gap + w2) * 0.5f;
+    ui_label(fb, (int)x, (int)y, "NOW", ui_dim(C_DIS, k), UI_LEFT);
+    float ty = y - (float)UI_F_LABEL->ascent * 0.5f - (float)dot_text_height(&st) * 0.5f;
+    float nx = x + w1 + gap + wn * 0.5f;
+    if (H.bpm_morph < 1) {
+        fmt_bpm(a, sizeof a, H.bpm_prev);
+        dot_text_morph(fb, &st, nx, ty, a, b, 1, qz(H.bpm_morph, 16.0f));
+    } else dot_text_a(fb, &st, nx, ty, b, 1);
+    ui_label(fb, (int)(x + w1 + gap + wn + gap), (int)y, "BPM", ui_dim(C_DIS, k), UI_LEFT);
+}
+
 static void draw_history(gfx_fb *fb, float oy)
 {
     const hdata *h = &H.hd;
@@ -684,12 +756,16 @@ static void draw_history(gfx_fb *fb, float oy)
         if (now_x - x < 40.0f || x - x0 < 12.0f) continue;
         ui_label(fb, (int)x, (int)ay, k_ax[i], C_DIS, UI_CENTER);
     }
-    int last = H.locked && H.bpm_shown ? H.bpm_shown : h->last;
-    if (any && last) {
+    /* footer: LAST + the stored reading; while locked, NOW + the live number, which
+     * morphs with the hero. The two crossfade through black (0.15 s each way). */
+    float la = qz(H.last_a, 6.0f), na = qz(H.now_a, 6.0f);
+    int last = H.foot_last ? H.foot_last : h->last;
+    if (la > 0 && any && last) {
         char b[32];
         snprintf(b, sizeof b, "LAST %d BPM", last);
-        ui_label(fb, UI_CX, (int)(ay + 40), b, C_DIS, UI_CENTER);
+        ui_label(fb, UI_CX, (int)(ay + 40), b, ui_dim(C_DIS, la), UI_CENTER);
     }
+    if (na > 0 && H.bpm_shown > 0) hist_now(fb, ay + 40, na);
 }
 
 static void heart_draw(gfx_fb *fb)
@@ -790,4 +866,4 @@ static void wgh_draw(gfx_fb *fb)
 
 static void wgh_tap(int x, int y) { nos_open(&scr_heart, x, y); }
 
-const nos_widget wg_heart = { "HEART", wgh_tick, wgh_draw, wgh_tap, wgh_shown };
+const nos_widget wg_heart = { "HEART", wgh_tick, wgh_draw, wgh_tap, wgh_shown, 0 };

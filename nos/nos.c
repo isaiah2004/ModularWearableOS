@@ -86,6 +86,9 @@ static void tx_complete(void);
 static void call_enter(const nos_screen *s) { if (s && s->enter) s->enter(); }
 static void call_reveal(const nos_screen *s) { s_revealing = 1; call_enter(s); s_revealing = 0; }
 static void call_leave(const nos_screen *s) { if (s && s->leave) s->leave(); }
+static int s_covering;
+int nos_leaving_covered(void) { return s_covering; }
+static void call_cover(const nos_screen *s) { s_covering = 1; call_leave(s); s_covering = 0; }
 
 static float tx_span(int type)
 {
@@ -134,7 +137,7 @@ void nos_push(const nos_screen *s, int tx)
         T.state = TXS_IDLE;
     }
     const nos_screen *under = top_screen();
-    call_leave(under);
+    call_cover(under);
     s_stack[s_depth].s = s; s_stack[s_depth].tx = tx; s_depth++;
     if (tx == TX_IRIS) s_enter_delay = iris_build_delay();
     call_enter(s);
@@ -198,6 +201,7 @@ void nos_home(void)
     float from = moving ? T.p : 1.0f;
     int geo = moving ? T.type : (tx == TX_NONE ? TX_DISSOLVE : tx);
     T.state = TXS_IDLE;
+    for (int i = s_depth - 2; i >= 1; i--) call_leave(s_stack[i].s);   /* covered ones: gone now */
     while (s_depth > 1) s_depth--;
     s_stack[1].s = top; s_stack[1].tx = tx == TX_NONE ? TX_DISSOLVE : tx; s_depth = 2;
     if (geo == TX_IRIS) { nos_iris_x = GFX_W; nos_iris_y = GFX_H / 2; }   /* close toward the button */
@@ -241,7 +245,7 @@ void nos_pull(const nos_screen *s, int tx, const nos_input *start)
 {
     if (!s || s_depth >= MAX_DEPTH || T.state != TXS_IDLE) return;
     const nos_screen *under = top_screen();
-    call_leave(under);
+    call_cover(under);
     s_stack[s_depth].s = s; s_stack[s_depth].tx = tx; s_depth++;
     s_by_finger = 1; call_enter(s); s_by_finger = 0;
     int axis = (tx == TX_RISE || tx == TX_DROP) ? AXIS_Y : AXIS_X;

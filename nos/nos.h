@@ -119,6 +119,9 @@ int  nos_transitioning(void);
 /* Inside enter(): 1 when the screen is being revealed by a pop (back), 0 when it was
  * just pushed. Use it to keep scroll state and skip build-ins on return. */
 int  nos_revealed(void);
+/* Inside leave(): 1 when the screen is being covered by a push (it stays on the stack
+ * and will be revealed later: keep sensors and state), 0 when it is going away. */
+int  nos_leaving_covered(void);
 /* Inside enter(): when the screen's entry build should start. Equals nos_t, except for
  * an iris push, where it is the frame the circle passes 40 % (~2 frames in: big enough
  * to show the build; the icon seed covers the start). Use it for build clocks with no
