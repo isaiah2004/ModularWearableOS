@@ -127,6 +127,8 @@ void ui_tick_ring(gfx_fb *fb, float cx, float cy, float r0, float r1, int n, flo
                   float lit, uint16_t on, uint16_t off);
 /* Thick pill slider (brightness/volume): value 0..1, with an icon at the left end. */
 void ui_slider(gfx_fb *fb, float x, float y, float w, float h, float value, int icon);
+/* the same, with the finger on it: the track lightens a step (C_LINE2) */
+void ui_slider_p(gfx_fb *fb, float x, float y, float w, float h, float value, int icon, int pressed);
 /* Value block: big dot-matrix number with a mono caps unit label beneath. */
 void ui_value(gfx_fb *fb, float cx, float y, const char *value, const char *unit,
               float pitch, uint16_t color);

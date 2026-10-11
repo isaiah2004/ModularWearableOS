@@ -520,9 +520,13 @@ void ui_tick_ring(gfx_fb *fb, float cx, float cy, float r0, float r1, int n, flo
 
 void ui_slider(gfx_fb *fb, float x, float y, float w, float h, float value, int icon)
 {
+    ui_slider_p(fb, x, y, w, h, value, icon, 0);
+}
+void ui_slider_p(gfx_fb *fb, float x, float y, float w, float h, float value, int icon, int pressed)
+{
     value = m_clamp(value, 0, 1);
     float r = h / 2;
-    gfx_fill_pill(fb, x + r, y + r, x + w - r, r, C_SURF2);
+    gfx_fill_pill(fb, x + r, y + r, x + w - r, r, pressed ? C_LINE2 : C_SURF2);
     float fw = h + (w - h) * value;
     gfx_fill_pill(fb, x + r, y + r, x + fw - r, r, C_WHITE);
     if (icon) dot_icon(fb, icon, x + r, y + r, h * 0.065f + 1.0f, (h * 0.065f + 1.0f) * 0.8f, C_BG);
