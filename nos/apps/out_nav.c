@@ -411,7 +411,10 @@ static void nav_tick(float dt)
 {
     svc_track_tick(dt);                 /* no-op once svc_tick drives it this frame */
     int real = hal_gps_get(&N.g) && (hal_ext_present() & EXT_GPS);
-    if (plug_tick(&N.pl, real)) { N.t0 = nos_t - PLUG_STEP; N.first = 1; }
+    if (plug_tick(&N.pl, real)) {
+        N.t0 = nos_t - PLUG_STEP; N.first = 1;
+        N.hk = N.hk_prev = H_NAV; N.hk_t = -10;     /* the steady NAVIGATE crossfades to the fix header */
+    }
     N.present = N.pl.shown;
     if (N.pl.pend) return;                         /* the old content is fading */
     if (!N.present) { N.t0 = N.t0 < nos_t ? N.t0 : nos_t; return; }
@@ -526,6 +529,7 @@ static float build_at(float delay) { return m_clamp((nos_t - N.t0 - delay) / UI_
 
 /* The header slot (title line) in one of its kinds at fade k. The recording dot is
  * red only where nothing else claims the screen's one red. */
+static int S_NOTITLE;      /* draw: the steady title is drawn outside the fading body */
 static void header_kind(gfx_fb *fb, int kind, int red, const char *title, float k)
 {
     if (k <= 0) return;
@@ -541,7 +545,7 @@ static void header_kind(gfx_fb *fb, int kind, int red, const char *title, float 
     } else if (kind == H_FIX) {
         snprintf(t, sizeof t, "%s FIX  %d SATS", N.last.fix3d ? "3D" : "2D", N.last.sats_used);
         ui_label(fb, UI_CX, UI_TITLE_Y, t, fadec(C_SEC, k), UI_CENTER);
-    } else if (k >= 1) ui_title(fb, title, 0);
+    } else if (k >= 1) { if (!S_NOTITLE) ui_title(fb, title, 0); }
     else ui_label(fb, UI_CX, UI_TITLE_Y, title, fadec(C_SEC, k), UI_CENTER);
 }
 static void header(gfx_fb *fb, int red, const char *title)
@@ -806,16 +810,23 @@ static void nav_draw_body(gfx_fb *fb);
 static void nav_draw(gfx_fb *fb)
 {
     int ph = plug_phase(fb, &N.pl);
+    /* NAVIGATE on both sides of the swap (page 1 under a settled NAVIGATE header, or
+     * the absent page; the header follows the recording on a replug): it stays put */
+    int steady = ph && N.pg.page == 0 && !N.pg.sp.moving && !svc_track_active() &&
+                 (!N.present || (N.hk == H_NAV && nos_t - N.hk_t >= 2 * HDR_S));
+    if (steady) ui_title(fb, "NAVIGATE", 0);
     if (ph == 2) return;
     int d0 = fb->dim;
     if (ph == 1) nos_ink_dim(fb, 0.5f);
+    S_NOTITLE = steady;
     nav_draw_body(fb);
+    S_NOTITLE = 0;
     fb->dim = d0;
 }
 static void nav_draw_body(gfx_fb *fb)
 {
     if (!N.present) {
-        ui_title(fb, "NAVIGATE", 0);
+        if (!S_NOTITLE) ui_title(fb, "NAVIGATE", 0);
         ui_absent(fb, DOT_ICON_SAT, "Not connected", "Add the GPS for speed and tracks", "GPS MODULE", build_at(0));
         return;
     }

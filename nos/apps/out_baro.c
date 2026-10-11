@@ -301,11 +301,13 @@ static void baro_tick(float dt)
 }
 
 /* ------------------------------------------------------------- pages */
+static int S_NOTITLE;      /* draw: the steady title is drawn outside the fading body */
+static void btitle(gfx_fb *fb) { if (!S_NOTITLE) ui_title(fb, "BAROMETER", 0); }
 static float build_of(void) { return m_clamp((nos_t - B.t0) / UI_ENTRY_S, 0, 1); }
 
 static void page_pressure(gfx_fb *fb)
 {
-    ui_title(fb, "BAROMETER", 0);
+    btitle(fb);
     float b = build_of();
     /* trend row */
     char t[40];
@@ -400,22 +402,27 @@ static void baro_draw_body(gfx_fb *fb);
 static void baro_draw(gfx_fb *fb)
 {
     int ph = plug_phase(fb, &B.pl);
+    /* BAROMETER on both sides of the swap (page 1, or the absent pages): it stays put */
+    int steady = ph && B.pg.page == 0 && !B.pg.sp.moving;
+    if (steady) ui_title(fb, "BAROMETER", 0);
     if (ph == 2) return;
     int d0 = fb->dim;
     if (ph == 1) nos_ink_dim(fb, 0.5f);
+    S_NOTITLE = steady;
     baro_draw_body(fb);
+    S_NOTITLE = 0;
     fb->dim = d0;
 }
 static void baro_draw_body(gfx_fb *fb)
 {
     if (!B.present) {
-        ui_title(fb, "BAROMETER", 0);
+        btitle(fb);
         ui_absent(fb, DOT_ICON_GAUGE, "Not connected", "Add the climate sensor for pressure",
                   "CLIMATE MODULE", build_of());
         return;
     }
     if (!B.valid) {
-        ui_title(fb, "BAROMETER", 0);
+        btitle(fb);
         ui_absent(fb, DOT_ICON_GAUGE, 0, 0, 0, build_of());
         ui_state(fb, UI_CX, 340, "READING", C_SEC);
         return;
