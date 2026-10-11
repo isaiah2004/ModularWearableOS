@@ -495,13 +495,15 @@ static struct {
     int arm_was;             /* armed before the last change */
     mspring dw;              /* delete width, springs between the two labels */
     int shown;               /* the push has finished (so a transition now = leaving) */
+    float del_at;            /* confirm-delete fires at (once the press has shown) */
+    int gone;                /* deleted: the editor draws its last state from s_draft */
 } E;
 static svc_alarm *ed_alarm(void) { return s_edit_idx >= 0 ? al_get(s_edit_idx) : &s_draft; }
-static int ed_valid(void) { return s_edit_idx >= 0 ? s_edit_idx < al_count() : s_edit_new; }
+static int ed_valid(void) { return E.gone || (s_edit_idx >= 0 ? s_edit_idx < al_count() : s_edit_new); }
 /* add the draft to the list (once); the editor goes on editing the stored alarm */
 static void ed_commit(void)
 {
-    if (s_edit_idx >= 0 || !s_edit_new) return;
+    if (E.gone || s_edit_idx >= 0 || !s_edit_new) return;
     int i = al_add(s_draft.h, s_draft.m);
     if (i < 0) { s_edit_new = 0; nos_toast("List full"); return; }
     svc_alarm *a = al_get(i);
@@ -538,6 +540,17 @@ static void sum_words(char *b, int n, int days)
     if (!days || days == 0x7F || days == 0x3E || days == 0x41) fmt_days(b, n, days);
     else b[0] = 0;
 }
+/* confirm-delete: the alarm goes now; the editor keeps drawing its last state (frozen,
+ * DELETE still pressed) as it slides away */
+static void ed_delete(void)
+{
+    E.del_at = 0;
+    s_draft = *ed_alarm();
+    if (s_edit_idx >= 0) { al_remove(s_edit_idx); al_save(); }   /* a draft just goes */
+    s_edit_idx = -1;
+    E.gone = 1;
+    nos_pop();
+}
 static float xf_out(float t0) { return m_clamp(1.0f - 2.0f * qz(m_clamp((nos_t - t0) / E_XF_S, 0, 1), 8), 0, 1); }
 static float xf_in(float t0)  { return m_clamp(2.0f * qz(m_clamp((nos_t - t0) / E_XF_S, 0, 1), 8) - 1.0f, 0, 1); }
 
@@ -546,7 +559,7 @@ static void edit_enter(void)
     E.t0 = nos_enter_t(); E.build = 0; E.target = -1; E.dragging = 0; E.pressed = 0; E.unpress_at = 0;
     E.armed_t = -1; E.arm_t0 = -10; E.arm_was = 0; E.sum_ok = 0; E.sum_t0 = -10;
     msp_init(&E.dw, E_DEL_W, 0.18f, 1.0f);
-    E.shown = 0;
+    E.shown = 0; E.del_at = 0; E.gone = 0;
     E.valid = ed_valid();
     msc_init(&E.sc, 0, E_MAX, 0);
     if (!E.valid) return;
@@ -558,9 +571,10 @@ static void edit_enter(void)
 static void edit_leave(void)
 {
     if (nos_leaving_covered()) return;           /* covered (a ring): the draft waits */
+    if (E.del_at > 0) ed_delete();               /* left before the press finished */
     ed_commit();                                 /* gone without moving (home now) */
-    if (ed_valid()) al_save();
-    E.shown = 0;
+    if (ed_valid() && !E.gone) al_save();
+    E.shown = 0; E.gone = 0; s_edit_new = 0;
 }
 static void edit_tick(float dt)
 {
@@ -574,6 +588,8 @@ static void edit_tick(float dt)
     tdrum_tick(2, dt);
     tdrum_tick(3, dt);
     E.build = m_clamp((nos_t - E.t0) / 0.4f, 0, 1);
+    if (E.del_at > 0 && nos_t >= E.del_at) { ed_delete(); return; }
+    if (E.gone) return;                          /* frozen as it leaves */
     if (E.armed_t >= 0 && nos_t - E.armed_t >= E_ARM_S) set_armed(0);
     if (E.armed_t < 0 && E.dw.target != E_DEL_W && nos_t - E.arm_t0 >= E_XF_S * 0.5f) msp_to(&E.dw, E_DEL_W);
     msp_step(&E.dw, dt);
@@ -667,6 +683,7 @@ static int edit_hit(int x, int y)
 static int edit_input(const nos_input *in)
 {
     if (!E.valid) return 0;
+    if (E.gone || E.del_at > 0) return 1;        /* deleting */
     if (in->type == IN_DOWN) {
         E.target = -1; E.dragging = 0;
         if (tdrum_hit(2, in->x, in->y)) E.target = 2;
@@ -715,11 +732,10 @@ static int edit_input(const nos_input *in)
             set_armed(1);
         } else if (h == 8) {
             nos_feedback(FB_TAP);
-            E.armed_t = -1;
-            if (s_edit_idx >= 0) { al_remove(s_edit_idx); al_save(); }   /* a draft just goes */
-            E.valid = 0;
-            s_edit_idx = -1; s_edit_new = 0;
-            nos_pop();
+            /* DELETE stays pressed >= PRESS_HOLD, then the editor leaves as it was */
+            E.pressed = 8; E.unpress_at = 0;
+            E.del_at = fmaxf(nos_t, E.press_t0 + PRESS_HOLD);
+            if (nos_t >= E.del_at) ed_delete();
         }
         return 1;
     }
