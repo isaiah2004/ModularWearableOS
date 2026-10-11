@@ -4,6 +4,7 @@
  * List: a summary (online count + one dot per module), then BOARD and STRAP sections.
  * Each row: status dot (white = present/ok, grey = absent), name, bus/part, live value,
  * chevron. Live values refresh at 1 Hz so the text is readable and damage settles.
+ * The list ends with RUN DIAGNOSTICS, which pushes the pass/fail test run (set_diag.c).
  *
  * Tapping a row pushes a detail page: a live readout plus a test action
  *   touch: five edge targets   IMU: bubble level   RTC: resync   SD: capacity
@@ -294,7 +295,7 @@ static void list_values(void)
 }
 
 /* ======================================================================= list */
-enum { LK_SUM = 0, LK_HDR, LK_ROW };
+enum { LK_SUM = 0, LK_HDR, LK_ROW, LK_BTN };
 typedef struct { uint8_t kind, mod; const char *label; } lentry;
 static const lentry LE[] = {
     { LK_SUM, 0, 0 },
@@ -305,11 +306,13 @@ static const lentry LE[] = {
     { LK_ROW, M_HAPTIC, 0 }, { LK_ROW, M_MIC, 0 }, { LK_ROW, M_SPK, 0 }, { LK_ROW, M_GPS, 0 },
     { LK_ROW, M_LTE, 0 }, { LK_ROW, M_ENV, 0 }, { LK_ROW, M_LIGHT, 0 }, { LK_ROW, M_MAG, 0 },
     { LK_ROW, M_HR, 0 },
+    { LK_BTN, 0, 0 },          /* RUN DIAGNOSTICS: tests that every part works (set_diag.c) */
 };
 #define NLE ((int)(sizeof LE / sizeof LE[0]))
 #define MU 30
 #define MTOP 96
-static int lunits(int k) { return k == LK_SUM ? 6 : k == LK_HDR ? 2 : 3; }
+static int lunits(int k) { return k == LK_SUM ? 6 : k == LK_HDR ? 2 : k == LK_BTN ? 4 : 3; }
+#define DIAG_W 300
 
 static struct {
     ui_list L;
@@ -424,6 +427,16 @@ static void draw_lrow(gfx_fb *fb, int e, float y, float h, int pressed)
     row_cols(cy, &lx, &rx);
     if (rx - lx < 140) return;
     if (le->kind == LK_HDR) { ui_label(fb, lx, (int)(y + h - 16), le->label, ui_dim(C_DIS, k), UI_LEFT); return; }
+    if (le->kind == LK_BTN) {
+        if (k >= 1) ui_button(fb, UI_CX, y + 60, DIAG_W, UI_BTN_H, "RUN DIAGNOSTICS", BTN_SECONDARY, pressed);
+        else {                                       /* faded near the bezel: the same pill, dimmed */
+            ui_rrect(fb, UI_CX - DIAG_W * 0.5f, y + 60 - UI_BTN_H * 0.5f, DIAG_W, UI_BTN_H, UI_BTN_H * 0.5f,
+                     ui_dim(pressed ? C_SEC : C_SURF2, k));
+            ui_label(fb, UI_CX, (int)(y + 60 + UI_F_LABEL->ascent * 0.5f - 2), "RUN DIAGNOSTICS",
+                     ui_dim(pressed ? C_BG : C_PRI, k), UI_CENTER);
+        }
+        return;
+    }
     int m = le->mod;
     if (pressed) ui_rrect(fb, lx - 20, y + 5, rx - lx + 40, h - 10, (h - 10) * 0.5f, C_SURF2);
     int ok = V.ok[m];
@@ -466,7 +479,7 @@ static void modules_draw(gfx_fb *fb)
         float y = MTOP + ML.start[e] * MU - off;
         if (y + h < 0) continue;
         if (y > GFX_H) break;
-        draw_lrow(fb, e, y, h, e == pe && LE[e].kind == LK_ROW);
+        draw_lrow(fb, e, y, h, e == pe && LE[e].kind >= LK_ROW);
     }
     float content = (float)(MTOP + ML.nunits * MU + ML.L.bottom_pad);
     ui_scrollbar(fb, ML.L.sc.x, content, GFX_H, ML.L.bar_alpha);
@@ -490,7 +503,15 @@ static int modules_input(const nos_input *in)
         if (!ML.was_moving) {
             float fy = in->y + mlist_off() - MTOP;
             int u = fy >= 0 ? (int)(fy / MU) : -1;
-            if (u >= 0 && u < ML.nunits && LE[ML.unit_e[u]].kind == LK_ROW) {
+            int e = u >= 0 && u < ML.nunits ? ML.unit_e[u] : -1;
+            if (e >= 0 && LE[e].kind == LK_BTN) {
+                float by = MTOP + ML.start[e] * MU - mlist_off() + 60;
+                if (fabsf(in->y - by) <= UI_BTN_H * 0.5f + 4 && fabsf(in->x - (float)UI_CX) <= DIAG_W * 0.5f + 10) {
+                    ML.flash_e = e; ML.flash_t = nos_t;
+                    nos_feedback(FB_TAP);
+                    nos_push(&scr_diag, TX_PUSH);
+                }
+            } else if (u >= 0 && u < ML.nunits && LE[ML.unit_e[u]].kind == LK_ROW) {
                 ML.flash_e = ML.unit_e[u]; ML.flash_t = nos_t;
                 nos_feedback(FB_TAP);
                 open_detail(LE[ML.unit_e[u]].mod, 0);

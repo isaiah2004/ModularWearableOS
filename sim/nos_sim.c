@@ -42,7 +42,7 @@ static const struct { const char *name; const nos_screen *s; } SCREENS[] = {
     { "timer", &scr_timer }, { "stopwatch", &scr_stopwatch }, { "alarm", &scr_alarm },
     { "worldclock", &scr_worldclock }, { "compass", &scr_compass }, { "baro", &scr_baro }, { "nav", &scr_nav },
     { "weather", &scr_weather }, { "music", &scr_music }, { "cell", &scr_cell }, { "find", &scr_find },
-    { "memo", &scr_memo }, { "torch", &scr_torch }, { "settings", &scr_settings }, { "modules", &scr_modules },
+    { "memo", &scr_memo }, { "torch", &scr_torch }, { "settings", &scr_settings }, { "modules", &scr_modules }, { "diag", &scr_diag },
     { "about", &scr_about }, { "alarm_ring", &scr_alarm_ring }, { "timer_ring", &scr_timer_ring },
     { "call", &scr_call }, { "find_watch", &scr_find_watch }, { "selftest", &nos_selftest_root },
 };

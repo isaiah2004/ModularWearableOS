@@ -16,6 +16,9 @@
  *   Light   ~300 lux; gestures only via hal_ext_sim_inject_gesture() / `set gesture N`.
  * Streams honour enable + the NOS_EXT_IDLE_MS auto-stop exactly like the device.
  * `hal_ext_sim_present` bits mark modules absent (getters return 0 / invalid).
+ * `set extfail MASK` (EXT_* bits) makes present modules misbehave, for Diagnostics:
+ * GPS sends no NMEA, LTE never answers AT, BME280 reads 0 hPa, light freezes, the
+ * compass reads 3 uT, HR has no IR signal, the mic rails.
  *
  * Haptics and SFX are recorded in hal_ext_sim_last_* for the sim UI. In interactive
  * mode (not sim_virtual) SFX are also played through waveOut, synthesised by the very
@@ -42,6 +45,7 @@ uint32_t hal_ext_sim_last_sfx_ms;
 void     hal_ext_sim_inject_gesture(int g);
 
 static int has(uint32_t bit) { return (hal_ext_sim_present & bit) != 0; }
+static int bad(uint32_t bit);
 static uint32_t now_ms(void) { return hal_millis(); }
 static int idle(uint32_t now, uint32_t last) { return (uint32_t)(now - last) > NOS_EXT_IDLE_MS; }
 
@@ -76,9 +80,11 @@ static struct {
     int rec; uint32_t rec_t0, rec_ms;
     int play; uint32_t play_t0, play_len_ms;
     int volume, display_mode;
+    uint32_t fail;                           /* `set extfail MASK`: present but broken */
 } S = { .sea = 1013.25f, .volume = 70, .display_mode = 2, .mag_calibrated = 1,
         .heading_override = -1, .lux_override = -1, .db_override = -1 };
 
+static int bad(uint32_t bit) { return (S.fail & bit) != 0; }
 void hal_ext_init(void) { }
 uint32_t hal_ext_present(void) { return hal_ext_sim_present & 0x1FF; }
 
@@ -272,6 +278,7 @@ float hal_mic_db(void)
     if (!has(EXT_MIC)) return -1.0f;
     uint32_t n = now_ms();
     S.mic_last = n;
+    if (bad(EXT_MIC)) return 120.0f;                 /* railed: full scale */
     /* 125 ms smoothing ~ average of a few points */
     float t = n / 1000.0f, a = 0;
     for (int i = 0; i < 5; i++) a += mic_level(t - i * 0.03f);
@@ -282,6 +289,7 @@ int hal_mic_wave(uint8_t out[32])
     if (!has(EXT_MIC)) return 0;
     uint32_t n = now_ms();
     S.mic_last = n;
+    if (bad(EXT_MIC)) { memset(out, 255, 32); return 32; }
     float t = n / 1000.0f;
     for (int i = 0; i < 32; i++) {
         float db = mic_level(t - (31 - i) * 0.032f) + 3.0f * vnoise((t - (31 - i) * 0.032f) * 30.0f, 31);
@@ -329,7 +337,7 @@ int hal_gps_get(hal_gps *out)
     if (!has(EXT_GPS)) { if (out) *out = g; return 0; }
     uint32_t n = now_ms();
     S.gps_last = n;
-    if (!S.gps_on) { g.age_ms = 0xffffffffu; if (out) *out = g; return 1; }
+    if (!S.gps_on || bad(EXT_GPS)) { g.age_ms = 0xffffffffu; if (out) *out = g; return 1; }
     float on = (n - S.gps_t0) / 1000.0f, t = n / 1000.0f;
     /* sky: satellites appear over ~3 s, SNR builds */
     int view = (int)clampf(on * 4.0f, 0, 14 + 2 * vnoise(t / 40.0f, 41));
@@ -407,7 +415,7 @@ int hal_lte_get(hal_lte *out)
     l.unread_sms = 0;                                   /* inbox cached at boot */
     for (int i = 0; i < 4; i++) l.unread_sms += SMS[i].unread ? 1 : 0;
     l.sim = 1;
-    if (S.lte_on) {
+    if (S.lte_on && !bad(EXT_LTE)) {
         float on = (n - S.lte_t0) / 1000.0f, t = n / 1000.0f;
         l.powered = on > 2.5f;
         if (on > 4.0f) {
@@ -465,6 +473,7 @@ int hal_env_get(hal_env *out)
     e.temp_c = 24.5f + 5.0f * day + 0.15f * vnoise(t / 20.0f, 72);
     e.humidity = clampf(62.0f - 16.0f * day + 1.0f * vnoise(t / 30.0f, 73), 5, 100);
     e.pressure_hpa = pressure_at(hours_now());
+    if (bad(EXT_ENV)) e.pressure_hpa = 0;
     e.altitude_m = 44330.0f * (1.0f - powf(e.pressure_hpa / S.sea, 0.1902949f));
     if (out) *out = e;
     return 1;
@@ -489,6 +498,7 @@ int hal_light_get(hal_light *out)
     l.valid = 1;
     l.lux = S.lux_override >= 0 ? S.lux_override : 300.0f + 18.0f * vnoise(t / 9.0f, 81) + 4.0f * vnoise(t * 0.8f, 82);
     l.prox = (int)clampf(2.0f + 2.0f * vnoise(t / 3.0f, 83), 0, 255);
+    if (bad(EXT_LIGHT)) { l.lux = 300.0f; l.prox = 2; }   /* frozen */
     if (out) *out = l;
     return 1;
 }
@@ -523,7 +533,7 @@ int hal_mag_get(hal_mag *out)
     if (h < 0) h += 360.0f;
     m.valid = 1;
     m.heading_deg = h;
-    m.field_ut = 47.5f + 1.2f * vnoise(t / 6.0f, 92);
+    m.field_ut = bad(EXT_MAG) ? 3.2f : 47.5f + 1.2f * vnoise(t / 6.0f, 92);
     m.calibrated = S.mag_calibrated;
     m.cal_progress = S.mag_cal ? clampf(1.0f - expf(-(float)(n - S.mag_cal_t0) / 3000.0f) * 1.05f, 0, 1)
                                : (S.mag_calibrated ? 1.0f : 0.0f);
@@ -594,6 +604,7 @@ int hal_hr_get(hal_hr *out)
         r.quality = clampf(0.55f + (on - 3.0f) * 0.1f, 0, 0.92f) + 0.04f * vnoise(t / 4.0f, 105);
     } else r.quality = clampf((on - 0.5f) * 0.15f, 0, 0.4f);
     if (on > 6.0f) r.spo2 = 97 + (vnoise(t / 20.0f, 106) > 0.2f ? 1 : 0);
+    if (bad(EXT_HR)) { memset(r.wave, 128, sizeof r.wave); r.on_wrist = 0; r.bpm = 0; r.spo2 = 0; r.quality = 0; }
     if (out) *out = r;
     return 1;
 }
@@ -645,6 +656,7 @@ int nos_ext_sim_set(const char *key, const char *value)
     if (!_stricmp(key, "db"))      { S.db_override = (float)v; return 1; }
     if (!_stricmp(key, "nofix"))   { S.nofix = v != 0; return 1; }
     if (!_stricmp(key, "magcal"))  { S.mag_calibrated = v != 0; return 1; }
+    if (!_stricmp(key, "extfail")) { S.fail = (uint32_t)strtoul(value ? value : "0", 0, 0); return 1; }
     if (!_stricmp(key, "wrist"))   { S.off_wrist = v == 0; return 1; }   /* set wrist 0 = no skin contact */
     return 0;
 }

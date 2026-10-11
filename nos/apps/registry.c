@@ -22,6 +22,7 @@ const nos_app nos_app_list[] = {
     { "Find phone",  DOT_ICON_FIND,      &scr_find },
     { "Torch",       DOT_ICON_TORCH,     &scr_torch },
     { "Settings",    DOT_ICON_SETTINGS,  &scr_settings },
+    { "Diagnostics", DOT_ICON_CHECK,     &scr_diag },
 };
 const int nos_app_count = sizeof nos_app_list / sizeof nos_app_list[0];
 

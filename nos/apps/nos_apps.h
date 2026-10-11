@@ -38,7 +38,7 @@ extern const nos_screen scr_compass, scr_baro, scr_nav, scr_weather;
 extern const nos_screen scr_music, scr_cell, scr_find, scr_memo, scr_torch;
 /* scr_call, scr_find_watch are declared in svc.h */
 /* ---- settings & system (set_*.c) ---- */
-extern const nos_screen scr_settings, scr_modules, scr_about;
+extern const nos_screen scr_settings, scr_modules, scr_about, scr_diag;
 
 /* ---- home widgets (one full-screen glance page each, owned by the app group) ----
  * Drawn by the home pager at a horizontal offset (fb is already translated). */
