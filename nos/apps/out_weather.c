@@ -3,7 +3,7 @@
  * Data: svc_weather() (phone via Gadgetbridge, else Wi-Fi). The strap line reads the
  * BME280 when present. Three full-screen pages that snap vertically:
  *   now      animated dot icon + big dot-matrix temperature, condition, hi/lo,
- *            feels / humidity / wind, strap sensor line
+ *            feels / humidity / wind, on-wrist sensor line
  *   hourly   next hours as two strips of six: hour, mini dot icon, temperature
  *   days     day, icon, low, segmented low-high bar on the week's range, high
  * The widget is the app's first screen without the facts row, so opening from it keeps
@@ -573,7 +573,7 @@ static void draw_now(gfx_fb *fb, const svc_weather_t *w, float scroll, float g)
     if (W.strap_ok) {
         char s[8];
         fmt_t(s, sizeof s, W.strap_c);
-        snprintf(t, sizeof t, "STRAP %s", s);
+        snprintf(t, sizeof t, "ON WRIST %s", s);
         ui_label(fb, UI_CX, 422, t, fadec(C_DIS, TG), UI_CENTER);
     }
 }

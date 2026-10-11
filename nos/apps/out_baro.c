@@ -8,7 +8,7 @@
  *   2 ALTITUDE  metres, sea-level reference, CALIBRATE pushes the sea-level picker
  *               (scr_baro_cal: drag / - + with auto-repeat, Use GPS when the GPS has a
  *               3D fix, Set; back = cancel).
- *   3 LOCAL     temperature + humidity, labelled as a strap sensor.
+ *   3 LOCAL     temperature + humidity, labelled ON WRIST.
  * Sensors are read in tick() into statics; draw() only reads them. Live values change
  * at most once a second, with a digit morph.
  *
@@ -360,7 +360,7 @@ static void page_local(gfx_fb *fb)
     char t[24];
     snprintf(t, sizeof t, "HUMIDITY %d%%", (int)lroundf(h));
     ui_label(fb, UI_CX, 326, t, C_SEC, UI_CENTER);
-    ui_label(fb, UI_CX, 386, "STRAP SENSOR", C_DIS, UI_CENTER);
+    ui_label(fb, UI_CX, 386, "ON WRIST", C_DIS, UI_CENTER);
 }
 
 /* ------------------------------------------------------------- draw / input */
