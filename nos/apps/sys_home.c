@@ -348,7 +348,7 @@ static void go_page(int p)                 /* air gestures */
 /* An app to open once home is back on top (a double press caught the launcher still
  * opening: its iris closes back into the button first, then the app irises from home). */
 static const nos_screen *s_open_next;
-extern const nos_screen scr_faces_home;      /* sys_faces.c (asked for in nos_apps.h) */
+
 void sys_home_open_after(const struct nos_screen *s) { s_open_next = s; }
 
 static void home_enter(void)

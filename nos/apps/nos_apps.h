@@ -12,6 +12,7 @@ extern const nos_screen scr_notifs;      /* notification list (TX_RISE) */
 extern const nos_screen scr_notif_detail;
 extern const nos_screen scr_launcher;    /* app list (TX_IRIS) */
 extern const nos_screen scr_faces;       /* face picker */
+extern const nos_screen scr_faces_home;  /* the same picker opened in place from home (no back swipe) */
 extern const nos_screen scr_power;       /* power sheet: sleep / restart / power off */
 void sys_notif_open(int i);              /* push the detail view for notification i */
 void sys_home_build_in(void);            /* restart the face build-in (boot, wake, new face) */
