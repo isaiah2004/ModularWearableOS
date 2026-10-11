@@ -136,6 +136,9 @@ void ui_value(gfx_fb *fb, float cx, float y, const char *value, const char *unit
  * what to do), and an optional caps footer in C_DIS at y 398 (e.g. "COMPASS MODULE").
  * `p` = entry build progress 0..1 (icon builds, text follows). */
 void ui_absent(gfx_fb *fb, int icon, const char *head, const char *body, const char *footer, float p);
+/* Short module name for "NO <NAME>" notes and toasts (§8): "HAPTICS", "HR SENSOR"...
+ * `ext` is one EXT_* bit (hal_ext.h). */
+const char *ui_module_short(uint32_t ext);
 /* Caps label that keeps unit case: ui_label_unit(fb, x, y, "4.00", "V") draws "4.00 V";
  * units like mV, dB, hPa, uT keep their case. */
 int  ui_label_unit(gfx_fb *fb, int x, int y, const char *value, const char *unit, uint16_t color, int align);

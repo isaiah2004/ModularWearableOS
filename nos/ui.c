@@ -2,6 +2,7 @@
 #include "ui.h"
 #include "nos.h"
 #include "prefs.h"
+#include "hal_ext.h"
 #include "gfx_cost.h"
 #ifdef NOS_FONT_SHIM          /* until nos/fonts lands: borrow the old core fonts */
 #define nf_hero    font_big
@@ -696,6 +697,22 @@ void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, f
     while (n > 1 && ui_text_width(UI_F_LABEL, t, LABEL_TRACK) > maxw) { t[--n] = 0; if (n > 3) memcpy(t + n - 3, "...", 4); }
     ui_text(fb, UI_F_LABEL, (int)(x + 64), (int)(iy + 6), t, C_SEC, UI_LEFT, LABEL_TRACK);
     ui_text_wrap(fb, UI_F_BODY, (int)(x + 30), (int)(top + 82), (int)w - 60, 30, 2, body, C_PRI, UI_LEFT);
+}
+
+const char *ui_module_short(uint32_t ext)
+{
+    switch (ext) {
+    case EXT_HAPTIC:  return "HAPTICS";
+    case EXT_MIC:     return "MIC";
+    case EXT_SPEAKER: return "SPEAKER";
+    case EXT_GPS:     return "GPS";
+    case EXT_LTE:     return "LTE";
+    case EXT_ENV:     return "CLIMATE";
+    case EXT_LIGHT:   return "LIGHT SENSOR";   /* notes only: too long for a toast */
+    case EXT_MAG:     return "COMPASS";
+    case EXT_HR:      return "HR SENSOR";
+    default:          return "MODULE";
+    }
 }
 
 void ui_draw_toast(gfx_fb *fb, const char *text, float t)

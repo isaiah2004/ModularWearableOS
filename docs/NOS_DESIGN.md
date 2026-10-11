@@ -156,10 +156,11 @@ Constants live in `nos/ui.h` (`UI_*`). Use them; never local numbers.
 | Red | one element per screen, as a dot or a single glyph — never a column/area fill. Over-limit / alerts / recording / live. No amber. Banners without an icon use a white bell. |
 | Dot numerals | hero ≤ 4 glyphs pitch 9; hero 5–8 glyphs pitch 8; rows/tiles 4.4; secondary 5x7 pitch 3. Ghost cells only on faces and on the empty value `--`. A value with a degree mark is centred as a group. |
 | Empty | `ui_absent(icon, head, body, footer|NULL, p)`; then either one `[ STATE ]` at y 340 or one primary button at y 372. |
-| Module absent | `ui_absent(icon, "Not connected", what it adds, "<NAME> MODULE", p)`. Settings inline notes: `[ NO <NAME> MODULE ]`, toasts in the same words. |
+| Module absent | Page: `ui_absent(icon, "Not connected", what it adds, "<NAME> MODULE", p)`, the same body and footer in the app and in Modules (Modules adds the part and pins on a C_DIS wiring line at y 372). List rows: `NO MODULE`. Notes and toasts: `NO <NAME>` with the short name from `ui_module_short()` (HAPTICS, MIC, SPEAKER, GPS, LTE, CLIMATE, COMPASS, HR SENSOR; LIGHT SENSOR in notes only, too long for a toast). |
 | Phone absent | `ui_absent(DOT_ICON_BT, "Phone not connected", "Pair in Gadgetbridge as Bangle.js NOS", NULL, p)`. |
 | Entry build | hero `DOT_REVEAL_RANDOM` 0.30 s, icons `DOT_REVEAL_CENTER`, rows stagger 34 ms (≤ 6 rows), buttons with the hero at full colour (no grey fade-ups), iris entries start their build at 40 % of the iris, no scale-ups, no count-up longer than the build, never show `0` as a resting value. Screens revealed by back (`nos_revealed()`) or pulled by a finger (`nos_entered_by_finger()`) don't rebuild. |
 | State changes | never a hard cut: dot build-out/in, colour-step crossfade (≤ 8 levels) or a rigid slide, 150–300 ms. Values change with `dot_text_morph` (~0.28 s), at most ~1 Hz for live readings. |
+| State words | always `ui_state()` brackets, in the owning app's words: `[ SEARCHING ]` (GPS / modem), `[ MEASURING ]`, `[ NO CONTACT ]`, `[ WAITING ]`, `[ OFF ]`. Counts go on a plain label under the state. |
 | Page dots | `ui_page_dots` at y 440 (`UI_DOTS_Y`). |
 | Placeholders | missing value `--` (`UI_NONE`). Thousands separator only ≥ 10,000. |
 | Hints | caps labels (`ui_label`), not sentence-case body text. |
