@@ -33,7 +33,8 @@
 #define T_INTRO  1.00f          /* start screen -> first inhale */
 #define T_OUTRO  0.70f          /* last exhale -> summary */
 #define PRESS_MIN 0.10f         /* a pressed control shows >= 3 frames, even on a quick tap */
-#define T_SUMOUT 0.18f          /* AGAIN: the summary builds out before the field returns */
+#define T_SUMOUT 0.18f          /* AGAIN: the summary builds out ... */
+#define T_OVL    0.10f          /* ... while the field already grows back for its last 0.1 s */
 
 /* ---- field geometry ---- */
 #define NR       8
@@ -298,6 +299,21 @@ static void prepare_session(float t)
     field_layout(UI_CX, UI_CY, b, g, 1.0f, 0);
 }
 
+/* AGAIN: the contracted field grows back in from its core, t s after it starts (it
+ * starts T_OVL before the summary has gone, so no frame is empty); the core ring starts
+ * at 30 % so the first frame already shows it */
+static void regrow_field(float t)
+{
+    float p = m_clamp(t / (T_INTRO - 0.2f), 0, 1);
+    float b[NR], g[NR];
+    for (int i = 0; i < NR; i++) {
+        b[i] = 0;
+        g[i] = bezier_ease(&EASE_STANDARD, m_stagger(p, i, NR, 0.5f));
+        if (i == 0 && t > 0 && g[i] < 0.3f) g[i] = 0.3f;
+    }
+    field_layout(UI_CX, UI_CY, b, g, 1.0f, 0);
+}
+
 static void breathe_tick(float dt)
 {
     B.t += dt;
@@ -323,12 +339,7 @@ static void breathe_tick(float dt)
         float b[NR], g[NR];
         float disc = m_clamp(B.t / 0.35f, 0, 1);
         if (B.from_summary) {
-            /* AGAIN: the contracted field grows back in from its core */
-            for (int i = 0; i < NR; i++) {
-                b[i] = 0;
-                g[i] = bezier_ease(&EASE_STANDARD, m_stagger(p, i, NR, 0.5f));
-            }
-            field_layout(UI_CX, UI_CY, b, g, 1.0f, 0);
+            regrow_field(B.t);
             B.ui_k = 0;
             B.pill_k = 0;
             B.disc_r = 0;
@@ -413,10 +424,12 @@ static void breathe_tick(float dt)
         B.sum_p = m_clamp(B.t / UI_ENTRY_S, 0, 1);
         break;
     case ST_SUMOUT:
-        /* AGAIN: the summary builds out, then the field grows back in */
-        if (F) F->n = 0;
+        /* AGAIN: the summary builds out; the field starts growing back T_OVL before it
+         * has gone (the intro then continues from the same clock) */
         B.sum_p = 1.0f - m_clamp(B.t / T_SUMOUT, 0, 1);
-        if (B.t >= T_SUMOUT) session_begin(1);
+        if (B.t > T_SUMOUT - T_OVL) regrow_field(B.t - (T_SUMOUT - T_OVL));
+        else if (F) F->n = 0;
+        if (B.t >= T_SUMOUT) { float t = B.t - (T_SUMOUT - T_OVL); session_begin(1); B.t = t; regrow_field(B.t); }
         break;
     }
 }
@@ -521,6 +534,7 @@ static void breathe_draw(gfx_fb *fb)
         draw_session(fb);
         break;
     case ST_SUMMARY: case ST_SUMOUT:
+        if (B.st == ST_SUMOUT) field_draw(fb);
         draw_summary(fb);
         break;
     }

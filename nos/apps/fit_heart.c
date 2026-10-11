@@ -858,7 +858,9 @@ static void wgh_draw(gfx_fb *fb)
     else ui_label(fb, UI_CX, 288, "NO READINGS YET", C_DIS, UI_CENTER);
     const float pitch = 9.0f;
     float x0 = UI_CX - 12 * pitch;
-    dot_columns(fb, x0, 308, 24, 5, pitch, 6.6f, WH.cols, C_SEC, C_GHOST);
+    /* no module: an empty grid (ghost cells only), no lit history under [ NO HR MODULE ] */
+    static const uint8_t k_none[24];
+    dot_columns(fb, x0, 308, 24, 5, pitch, 6.6f, WH.present ? WH.cols : k_none, C_SEC, C_GHOST);
     if (WH.present) ui_label(fb, UI_CX, 394, "TAP TO MEASURE", C_DIS, UI_CENTER);
 }
 
