@@ -120,6 +120,7 @@ typedef struct {
     uint8_t  el[16];       /* elevation of the same satellites, degrees 0-90 */
     uint16_t az[16];       /* azimuth, degrees 0-359 */
     int      nsnr;
+    uint32_t sentences;    /* NMEA sentences with a good checksum since power-up (data arriving) */
 } hal_gps;
 void hal_gps_enable(int on);
 int  hal_gps_get(hal_gps *out);          /* 1 = module present (fix may still be invalid) */

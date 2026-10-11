@@ -300,6 +300,7 @@ int hal_gps_get(hal_gps *out)
         *out = G->fix;
         portEXIT_CRITICAL(&ext_lock);
         out->age_ms = G->last_fix ? now - G->last_fix : 0xffffffffu;
+        out->sentences = (uint32_t)G->sentences;
     }
     return 1;
 }

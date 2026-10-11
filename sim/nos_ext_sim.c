@@ -339,6 +339,7 @@ int hal_gps_get(hal_gps *out)
     S.gps_last = n;
     if (!S.gps_on || bad(EXT_GPS)) { g.age_ms = 0xffffffffu; if (out) *out = g; return 1; }
     float on = (n - S.gps_t0) / 1000.0f, t = n / 1000.0f;
+    g.sentences = (n - S.gps_t0) / 200u;        /* ~5 sentences a second at 1 Hz */
     /* sky: satellites appear over ~3 s, SNR builds */
     int view = (int)clampf(on * 4.0f, 0, 14 + 2 * vnoise(t / 40.0f, 41));
     g.sats_view = view;
