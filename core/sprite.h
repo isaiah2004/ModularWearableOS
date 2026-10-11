@@ -26,4 +26,27 @@ gfx_fb sprite_fb(const sprite *s);
  * change `key` whenever the sprite's pixels change. */
 void sprite_blit(gfx_fb *fb, const sprite *s, int x, int y, unsigned key);
 
+/* 8-bit sprites: RGB332 indices blitted through a 256-entry RGB565 colour table.
+ * Half the PSRAM of a sprite and half the reads per blit, and the table makes
+ * dimming, fades and tints free (rebuild 256 entries instead of touching pixels).
+ * RGB332 loses nothing on Flat60: its palette is RGB332-exact and fast display
+ * sends RGB332 to the panel anyway. Index 0 is black. */
+typedef struct {
+    uint8_t *px;       /* w*h RGB332 indices, row-major, PSRAM */
+    int w, h;
+} sprite8;
+
+int sprite8_alloc(sprite8 *s, int w, int h);
+
+/* Quantize an RGB565 sprite of the same size into s (nearest RGB332 level). */
+void sprite8_from(sprite8 *s, const sprite *src);
+
+/* RGB332 index -> 8-bit channel levels, and the table that shows indices as-is. */
+void rgb332_levels(int idx, int rgb[3]);
+void sprite8_lut_identity(uint16_t lut[256]);
+
+/* Copy the sprite to logical (x, y), mapping every pixel through lut. Opaque,
+ * like sprite_blit; `key` must change whenever the pixels or the lut change. */
+void sprite8_blit(gfx_fb *fb, const sprite8 *s, int x, int y, const uint16_t *lut, unsigned key);
+
 #endif

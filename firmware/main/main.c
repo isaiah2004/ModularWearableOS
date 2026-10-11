@@ -31,6 +31,7 @@
 
 #include "../../core/wos.h"
 #include "../../core/flat60.h"
+#include "esp_wifi.h"
 #include "../../core/apps/apps.h"
 #include "../../core/settings.h"
 #include "../../core/notif.h"
@@ -685,6 +686,7 @@ static void dbg_exec(char *s)
     else if (sscanf(s, "wifi %39s %67s", ws, wp) == 2) hal_wifi_connect(ws, wp);
     else if (!strncmp(s,"wifi ",5)) printf("ERR Wi-Fi credentials\n");
     else if (!strcmp(s, "wifi")) printf("Use wifi SSID PASSWORD or the setup page\n");
+    else if (!strcmp(s, "wifistop")) { esp_wifi_stop(); printf("WIFISTOP\n"); }   /* quiet radio for benches */
     else if (!strcmp(s, "bleinfo")) { char bi[96]; hal_ble_status(bi, sizeof bi); printf("BLEINFO: %s\n", bi); }
     else if (!strcmp(s, "aod"))    power_set_aod(!g_aod);
     else if (sscanf(s, "scanorder %d", &a) == 1 && a >= 0 && a <= 2) { wos_scan_order = a; wos_invalidate(); printf("SCANORDER %d\n", a); }
