@@ -4,12 +4,14 @@
  * the same feel as the home pager: 1:1 tracking, rubber band at both ends, the release
  * velocity picks the page, a critically damped spring that never overshoots, a tick per
  * page. An "edit mode" frame sits on top: a thin rim at the edge of the glass, the face's
- * name in a pill and page dots. Tap or the button picks the face: the frame fades, the
- * picker cuts back to home (the face stays live, no rebuild). From home it opens in place:
- * its first frame is home's (the face, the 3/8 rim), then the face recedes and the frame
- * builds in over it, one screen's draw a frame. Opened from Settings, the
- * face stays dimmed while it confirms and the picker goes back the way it came (the
- * row's value shows the choice). Left-edge swipe cancels. */
+ * name in a pill and page dots. A tap picks the face: the frame fades, the picker cuts
+ * back to home (the face stays live, no rebuild). The button cancels: the pager springs
+ * back to the face it opened on, then the frame fades the same way, nothing saved.
+ * From home it opens in place: its first frame is home's (the face, the 3/8 rim, the REC
+ * chip), then the face recedes and the frame builds in over it, one screen's draw a
+ * frame. Opened from Settings, the face stays dimmed while it confirms and the picker
+ * goes back the way it came (the row's value shows the choice); there the edge swipe
+ * also goes back. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -25,6 +27,7 @@
 #include <string.h>
 
 const face_ctx *sys_home_ctx(void);
+void sys_home_draw_rec(gfx_fb *fb, float a);   /* sys_home.c: the REC chip as home shows it */
 
 #define PAGE_W 466.0f
 #define PILL_Y 396.0f    /* the name pill's top: clear of DOT's minute digits (to y 392) */
@@ -32,6 +35,7 @@ const face_ctx *sys_home_ctx(void);
 #define DOTS_Y 440
 #define OPEN_S   0.25f              /* in place from home: face recedes, frame builds in */
 #define CLOSE_S  0.18f              /* on choose: frame out (and the face back up), then pop */
+#define SET_CLOSE_S 0.12f           /* from Settings: the frame out, then slide back at once */
 
 static struct {
     float x;
@@ -43,6 +47,8 @@ static struct {
     int chosen;
     float t_chosen;
     int on_home;             /* pushed over home (long press): it is the face underneath */
+    int orig;                /* the face it opened on (home's) */
+    int cancel;              /* the button: back to orig, nothing saved */
     face_ctx c;
 } F;
 
@@ -81,12 +87,19 @@ static void f_enter(void)
     F.t_enter = nos_enter_t();
     F.chosen = 0;
     F.on_home = nos_depth() == 2;
+    F.orig = cur;
 }
 
 static void finish(void);
 static void f_tick(float dt)
 {
-    if (F.chosen == 1 && nos_t - F.t_chosen >= CLOSE_S) { F.chosen = 2; finish(); }
+    /* a cancel closes once the pager is home on the face it opened on */
+    if (F.cancel && !F.chosen && !F.dragging && F.page == F.orig &&
+        fabsf(F.x - F.orig * PAGE_W) < 3.0f) {   /* the spring's last px ride the close */
+        F.chosen = 1;
+        F.t_chosen = nos_t;
+    }
+    if (F.chosen == 1 && nos_t - F.t_chosen >= (F.on_home ? CLOSE_S : SET_CLOSE_S)) { F.chosen = 2; finish(); }
     if (F.settling) {
         int m = msp_step(&F.sp, dt);
         /* the last sub-pixel of a settle would cost a whole-page repaint for nothing */
@@ -198,7 +211,7 @@ static void f_draw(gfx_fb *fb)
         }
     } else {
         b = m_clamp((nos_t - F.t_enter) / 0.30f, 0, 1);
-        if (F.chosen) b = m_clamp(b - (nos_t - F.t_chosen) / 0.16f, 0, 1);
+        if (F.chosen) b = m_clamp(b - (nos_t - F.t_chosen) / SET_CLOSE_S, 0, 1);
     }
     float fa = floorf(b * 8.0f + 0.5f) / 8.0f;
     /* the face recedes with the build (ink dim: no pixel pass). nos_dim records nothing,
@@ -223,6 +236,8 @@ static void f_draw(gfx_fb *fb)
         if (x1 > x0 && nos_subview(fb, &sub, x0, 0, x1, GFX_H, ox, 0) && nos_faces[s]->draw) {
             if (dk < 1.0f) nos_ink_dim(&sub, dk);     /* drawn dimmed: no pixel pass */
             nos_faces[s]->draw(&sub, &F.c);
+            /* home's REC chip on the face it opened on: it gives way as the frame builds */
+            if (F.on_home && s == F.orig && fa < 1.0f) sys_home_draw_rec(&sub, 1.0f - fa);
             /* the face sinks away around the pill, into its own ground: 6 px, so DOT's
              * last row of minute dots keeps its shape */
             int light = (nos_face_style(nos_faces[s]) & FACE_LIGHT) != 0;
@@ -285,7 +300,7 @@ static void choose(void)
  * Over anything else (Settings) the face stayed dimmed: back the way it came. */
 static void finish(void)
 {
-    int p = F.page;
+    int p = F.cancel ? F.orig : F.page;
     if (p != nos_prefs.face) {
         nos_prefs.face = (uint8_t)p;
         prefs_save();
@@ -296,7 +311,7 @@ static void finish(void)
 
 static int f_input(const nos_input *in)
 {
-    if (F.chosen) return 1;                     /* closing */
+    if (F.chosen || F.cancel) return 1;       /* closing, or cancelling back */
     switch (in->type) {
     case IN_DOWN:
         F.was_moving = F.settling && fabsf(F.sp.v) > 60.0f;
@@ -330,8 +345,13 @@ static int f_input(const nos_input *in)
         if (F.grabbed && !F.dragging) release(0);
         F.grabbed = 0;
         return 1;
-    case IN_BTN:
-        if (!F.settling && !F.dragging) choose();
+    case IN_BTN:                                /* cancel: back to the face it opened on */
+        if (F.cancel) return 1;
+        F.cancel = 1;
+        nos_feedback(FB_BACK);
+        if (F.grabbed) F.grabbed = 0;
+        F.dragging = 0;
+        if (F.page != F.orig || fabsf(F.x - F.orig * PAGE_W) > 0.5f) settle_to(F.orig * PAGE_W, 0);
         return 1;
     default:
         return 0;

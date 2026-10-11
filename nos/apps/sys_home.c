@@ -157,14 +157,17 @@ void sys_rec_draw(gfx_fb *fb, int x0, int y, const char *label, uint16_t dot, ui
 /* Where each face has a free line for it (label baseline, centred), clear of its date,
  * complications and the page dots. DOT, LIFE and TAPE keep their battery status on that
  * very line: there the chip takes the line and carries the status after it. */
-typedef struct { const char *face; short y; char shares_status; } rec_slot;
+/* no_dot: the face's own red is the recording light (TAPE's lamp), the chip is words
+ * only. rmax: the backing stays inside this radius (LIFE's day ring sits at r 212). */
+typedef struct { const char *face; short y; char shares_status, no_dot; short rmax; } rec_slot;
 static const rec_slot k_rec_slot[] = {
-    { "DOT", 428, 1 }, { "MATRIX", 388, 0 }, { "GLYPH", 340, 0 }, { "SPLIT", 404, 0 },
-    { "LIFE", 408, 1 }, { "SEGMENT", 362, 0 }, { "INVERTED", 396, 0 }, { "TAPE", 406, 1 },
+    { "DOT", 428, 1, 0, 0 }, { "MATRIX", 388, 0, 0, 0 }, { "GLYPH", 340, 0, 0, 0 },
+    { "SPLIT", 404, 0, 0, 0 }, { "LIFE", 408, 1, 0, 200 }, { "SEGMENT", 362, 0, 0, 0 },
+    { "INVERTED", 396, 0, 0, 0 }, { "TAPE", 406, 1, 1, 0 },
 };
 static const rec_slot *rec_slot_of(const nos_face *f)
 {
-    static const rec_slot other = { "", 404, 0 };
+    static const rec_slot other = { "", 404, 0, 0, 0 };
     for (unsigned i = 0; i < sizeof k_rec_slot / sizeof k_rec_slot[0]; i++)
         if (f && f->name && !strcmp(f->name, k_rec_slot[i].face)) return &k_rec_slot[i];
     return &other;
@@ -198,6 +201,9 @@ static struct {
     int rec_kind;            /* 1 track, 2 memo (kept while it fades out) */
     char rec_lbl[16];
     float aod_t0;            /* AOD began (the entry ramp runs from here) */
+    float wake_t;            /* AOD ended: the chip comes up with the face's wake */
+    float rec_open_t;        /* a tap on the chip: when its app opens (after 3 lit frames) */
+    int rec_ox, rec_oy;
     int aod_out;             /* the face was on the glass: it dims out before the AOD face */
     int aod_cut;             /* AOD collapsed another screen onto home: no face to dim */
     int inited;
@@ -292,6 +298,7 @@ static void pr_tick(void)
         PR.lit = on;
     }
     if (PR.kind && !on && !PR.down) pr_cancel();
+    if (PR.kind && PR.down && nos_touch_travel() > 8) pr_cancel();   /* a drag is starting */
 }
 
 static void settle_to(float target, float v)
@@ -368,6 +375,7 @@ static void home_enter(void)
     H.prev_awake_ms = nos_awake_ms();
     pr_cancel();
     H.rim_t = 0;
+    H.rec_open_t = 0;
 }
 
 static void home_leave(void)
@@ -399,6 +407,9 @@ static void build_ctx(float dt)
     c->t = nos_t;
     c->aod = nos_aod && !aod_dimming_out();   /* the face dims out as itself first */
     c->enter = m_clamp((nos_t - H.enter_t0) / ENTER_S, 0, 1);
+    /* recording: the faces' red accents yield to the chip (4 steps as it fades; kept
+     * through AOD and the wake, so a wake never re-tints them) */
+    c->rec = floorf(H.rec_raw * 4.0f + 0.5f) / 4.0f;
     (void)dt;
 }
 
@@ -411,6 +422,10 @@ const face_ctx *sys_home_ctx(void)
 
 static void home_tick(float dt)
 {
+    if (H.rec_open_t > 0 && nos_t >= H.rec_open_t) {   /* the chip was lit 3 frames */
+        H.rec_open_t = 0;
+        if (nos_top() == &scr_home && !nos_aod) nos_open(sys_rec_screen(H.rec_kind), H.rec_ox, H.rec_oy);
+    }
     if (s_open_next && nos_top() == &scr_home && !nos_transitioning()) {
         const nos_screen *s = s_open_next;
         s_open_next = 0;
@@ -422,7 +437,11 @@ static void home_tick(float dt)
     int woke = (!H.covered && now - H.last_tick_ms > 1500u) ||
                (H.prev_awake_ms > nos_prefs.sleep_s * 1000 + 500 && awake < 500);
     /* out of AOD the time was on the glass a frame ago: no build-in from nothing */
-    if (H.last_aod && !nos_aod) woke = 0;
+    if (H.last_aod && !nos_aod) {
+        woke = 0;
+        awake = 0;              /* the waking touch resets the awake clock: not a new wake */
+        H.wake_t = nos_t;
+    }
     if (nos_aod && !H.last_aod) {              /* AOD shows the face only */
         H.aod_t0 = nos_t;
         H.aod_out = !H.aod_cut && !H.covered && H.x < 0.5f && !H.alias;
@@ -538,10 +557,10 @@ static int status_w(char *b, int n)
 /* the chip line on the current face: x0, baseline, total width; 0 = not shown */
 static int rec_line(int *x0, int *y, int *w)
 {
-    if (H.rec_raw <= 0.0f || !H.rec_kind || nos_aod) return 0;
+    if (H.rec_raw <= 0.0f || !H.rec_kind || H.c.aod) return 0;   /* AOD: draw_rec_aod */
     const rec_slot *sl = rec_slot_of(cur_face());
     char b[8];
-    *w = sys_rec_width(H.rec_lbl);
+    *w = sl->no_dot ? ui_label_width(H.rec_lbl) : sys_rec_width(H.rec_lbl);
     if (sl->shares_status && status_shown()) *w += 16 + status_w(b, sizeof b);
     *x0 = UI_CX - *w / 2;
     *y = sl->y;
@@ -553,26 +572,84 @@ static void rec_rect(int x0, int y, int w, int r[4])
     r[0] = x0 - 12; r[1] = y - 21; r[2] = x0 + w + 12; r[3] = y + 9;
 }
 
-static void draw_rec(gfx_fb *fb)
+/* The chip's backing: the face's own ground (black, or a white face's white) inside its
+ * rect + 2 px, feathered back to the face over 4 px in 8 steps (a hard edge sliced ghost
+ * cells and ring dots into half-moons), at strength a; pixels past rmax (0 = none) keep
+ * the face. Raster only; records one command. */
+static void rec_back(gfx_fb *fb, const int rr[4], uint16_t to, float a, float rmax)
+{
+    if (a <= 0.0f) return;
+    const float in = 2.0f, feather = 4.0f, ext = in + feather;
+    float cx = (rr[0] + rr[2]) * 0.5f, cy = (rr[1] + rr[3]) * 0.5f;
+    float hw = (rr[2] - rr[0]) * 0.5f, hh = (rr[3] - rr[1]) * 0.5f, rad = hh;
+    int x0 = (int)floorf(cx - hw - ext), x1 = (int)ceilf(cx + hw + ext);
+    int y0 = (int)floorf(cy - hh - ext), y1 = (int)ceilf(cy + hh + ext);
+    unsigned h = gfx_hash_u(gfx_hash_f(gfx_hash_f(gfx_hash_f(0x2ecbu, hw), a), rmax), to);
+    if (gfx_rec_cmd(fb, x0, y0, x1, y1, h)) return;
+    to = gfx_ink(fb, to);
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    int bx0 = x0 + fb->ox, bx1 = x1 + fb->ox;
+    if (bx0 < c0) bx0 = c0;
+    if (bx1 > c1) bx1 = c1;
+    int r0 = y0 + fb->oy - fb->y_base, r1 = y1 + fb->oy - fb->y_base;
+    if (r0 < 0) r0 = 0;
+    if (r1 > fb->h) r1 = fb->h;
+    float rm2 = rmax > 0 ? rmax * rmax : 1e9f;
+    unsigned n = 0;
+    for (int r = r0; r < r1; r++) {
+        uint16_t *p = gfx_row(fb, r);
+        float py = (float)(r - fb->oy + fb->y_base) + 0.5f;
+        float dy = fabsf(py - cy) - (hh - rad);
+        if (dy < 0) dy = 0;
+        float gy = py - UI_CY;
+        for (int bx = bx0; bx < bx1; bx++) {
+            uint32_t c = p[bx];
+            if (c == to) continue;
+            float lx = (float)(bx - fb->ox) + 0.5f;
+            if ((lx - UI_CX) * (lx - UI_CX) + gy * gy > rm2) continue;
+            float dx = fabsf(lx - cx) - (hw - rad);
+            if (dx < 0) dx = 0;
+            float d = (dx > 0 || dy > 0 ? gfx_fast_sqrt(dx * dx + dy * dy) : 0) - rad;
+            float k = m_clamp((d - in) / feather, 0, 1);              /* kept face */
+            k = 1.0f - (1.0f - k) * a;
+            if (k >= 1.0f) continue;
+            int kk = (int)(floorf(k * 8.0f + 0.5f) * 4.0f);           /* 8 steps, of 32 */
+            n++;
+            if (kk <= 0) { p[bx] = to; continue; }
+            if (to) { p[bx] = ui_mix(to, (uint16_t)c, kk / 32.0f); continue; }
+            int cr = c >> 11, cg = (c >> 5) & 63, cb = c & 31;
+            int nr = (cr * kk + 16) >> 5, nb = (cb * kk + 16) >> 5;
+            int ng = (cr == cb && (cg >> 1) == cr) ? nr * 2 : (cg * kk + 16) >> 5;   /* greys stay neutral */
+            p[bx] = (uint16_t)(nr << 11 | ng << 5 | nb);
+        }
+    }
+    GFX_COST(GFX_COST_BLEND, n);
+}
+
+static float q4(float x) { return floorf(m_clamp(x, 0, 1) * 4.0f + 0.5f) / 4.0f; }
+
+static void draw_rec_a(gfx_fb *fb, float a)
 {
     int x0, y, w;
     if (!rec_line(&x0, &y, &w)) return;
-    /* fades with the face build-in too, so a wake never pops it in */
-    float k = floorf(H.rec_raw * 4.0f + 0.5f) / 4.0f * (floorf(H.c.enter * 4.0f + 0.5f) / 4.0f);
+    /* fades with the face build-in, and comes up with the face out of AOD (4 steps), so
+     * neither a wake nor a build ever pops it in at full */
+    float k = q4(H.rec_raw) * q4(H.c.enter) * q4((nos_t - H.wake_t) / (6.0f / NOS_FPS)) * a;
     if (k <= 0.0f) return;
     int light = (nos_face_style(cur_face()) & FACE_LIGHT) != 0;
+    const rec_slot *sl = rec_slot_of(cur_face());
     int r[4];
     rec_rect(x0, y, w, r);
     /* a backing that clears the face art under it (ghost dots, hands, its own status) */
-    rr_pass(fb, r[0], r[1], r[2], r[3], (r[3] - r[1]) * 0.5f, light ? RR_LIGHTEN : RR_FADE,
-            light ? C_WHITE : 0, k);
+    rec_back(fb, r, light ? C_WHITE : 0, k, (float)sl->rmax);
     uint16_t dot = light ? ui_mix(C_WHITE, C_RED, k) : ui_dim(C_RED, k);
     uint16_t ink = light ? grey565((int)lroundf(255.0f * (1.0f - k))) : gdim(C_PRI, k);
-    sys_rec_draw(fb, x0, y, H.rec_lbl, dot, ink);
-    const rec_slot *sl = rec_slot_of(cur_face());
+    if (sl->no_dot) ui_label(fb, x0, y, H.rec_lbl, ink, UI_LEFT);
+    else sys_rec_draw(fb, x0, y, H.rec_lbl, dot, ink);
     if (sl->shares_status && status_shown()) {
         char b[8];
-        int sx = x0 + sys_rec_width(H.rec_lbl) + 16;
+        int sx = x0 + (sl->no_dot ? ui_label_width(H.rec_lbl) : sys_rec_width(H.rec_lbl)) + 16;
         status_w(b, sizeof b);
         uint16_t col = light ? grey565((int)lroundf(255.0f - (255.0f - 102.0f) * k)) : gdim(C_SEC, k);
         if (H.c.charging) {
@@ -581,6 +658,24 @@ static void draw_rec(gfx_fb *fb)
         }
         ui_label(fb, sx, y, b, col, UI_LEFT);
     }
+}
+
+static void draw_rec(gfx_fb *fb) { draw_rec_a(fb, 1.0f); }
+/* the face picker opening in place over home: the chip as home shows it, at a (sys_faces.c) */
+void sys_home_draw_rec(gfx_fb *fb, float a) { draw_rec_a(fb, a); }
+
+/* In AOD: "REC" in C_DIS after a 6 px C_SEC dot (no red, no backing; ~0.1 % lit) on the
+ * face's slot, drifting a few px with the minute like the AOD faces. */
+static void draw_rec_aod(gfx_fb *fb)
+{
+    if (!H.rec_kind || H.rec_raw <= 0.0f) return;
+    const rec_slot *sl = rec_slot_of(cur_face());
+    const char *t = "REC";
+    int lw = ui_label_width(t), w = sl->no_dot ? lw : 6 + 8 + lw;
+    int m = H.c.dt.minute;
+    int x0 = UI_CX - w / 2 + (m * 7) % 5 - 2, y = sl->y + (m * 3) % 5 - 2;
+    if (!sl->no_dot) { dot_disc(fb, x0 + 3.0f, y - 6.5f, 6, C_SEC); x0 += 14; }
+    ui_label(fb, x0, y, t, C_DIS, UI_LEFT);
 }
 
 /* the finger is on the chip: its line, grown to the 88 px touch target */
@@ -613,10 +708,11 @@ static void home_draw(gfx_fb *fb)
         float k = aod_ramp_k();
         gfx_fb sub;
         if (k < 1.0f && fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(0xa0du, k));
-        if (k < 1.0f && nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, 0)) {
-            nos_ink_dim(&sub, k);
-            if (f && f->draw) f->draw(&sub, &H.c);
-        } else if (f && f->draw) f->draw(fb, &H.c);
+        gfx_fb *t = fb;
+        if (k < 1.0f && nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, 0)) { nos_ink_dim(&sub, k); t = &sub; }
+        if (f && f->draw) f->draw(t, &H.c);
+        if (H.c.aod) draw_rec_aod(t);
+        else draw_rec(t);                   /* the face dimming out as itself */
         return;
     }
     int xi = (int)lroundf(H.x);
@@ -725,8 +821,14 @@ static int home_input(const nos_input *in)
         if (p == 0) {
             const nos_face *f = cur_face();
             int r[4];
-            const nos_screen *s = rec_hit(in->x, in->y, r) ? sys_rec_screen(H.rec_kind)
-                                : f && f->tap ? f->tap(in->x, in->y) : 0;
+            if (rec_hit(in->x, in->y, r)) {         /* lit 3 frames, then its app opens */
+                memcpy(PR.r, r, sizeof r);
+                PR.kind = 1; PR.down = 0; PR.until = nos_t + 0.5f;
+                H.rec_open_t = nos_t + 3.0f / NOS_FPS - 0.001f;
+                H.rec_ox = in->x; H.rec_oy = in->y;
+                return 1;
+            }
+            const nos_screen *s = f && f->tap ? f->tap(in->x, in->y) : 0;
             if (s) nos_open(s, in->x, in->y);
         } else if (k_wg[p - 1]->tap) {
             k_wg[p - 1]->tap(in->x, in->y);         /* widgets open with nos_open (FB_OPEN) */
