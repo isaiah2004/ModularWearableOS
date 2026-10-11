@@ -773,8 +773,10 @@ static void dissolve_draw(const gfx_fb *fb, const nos_screen *under, const nos_s
 /* Iris. The new screen shows through a circle growing from the tapped icon, its edge
  * the same 2 px hairline that leads a sheet: flat, no dither (§1.4). Inside the circle
  * only `over` can be seen and outside only `under`, so each screen is drawn just where
- * it is visible, over straight into the stripe. Only the columns the edge crosses in
- * this stripe draw over a second time, into the scratch rows, and copy their runs in. */
+ * it is visible. Over (the new app, usually the costly one) is drawn once, straight
+ * into the stripe, across the columns the circle touches; in the columns its edge
+ * crosses, under (dimmed, usually cheap) is drawn a second time into the scratch rows
+ * and copied back outside each row's run. */
 #define IRIS_ROWS 16
 #define IRIS_RIM GFX_RGB(51, 51, 51)
 /* The tapped icon over the opening circle, fading out by 40 % (nos_iris_seed). */
@@ -833,36 +835,38 @@ static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_scree
     if (I1 <= I0) I0 = I1 = c0;                      /* no column is inside on every row */
 
     uint32_t q = hal_micros();
-    if (I1 > I0) {
-        draw_screen(fb, under, c0, 0, I0, GFX_H, 0, 0, dimk);
-        draw_screen(fb, under, I1, 0, c1, GFX_H, 0, 0, dimk);
-    } else draw_screen(fb, under, c0, 0, c1, GFX_H, 0, 0, dimk);
-    uint32_t q1 = hal_micros();
-    nos_dbg_us[0] += q1 - q;
-    if (!over) return;
-    if (I1 > I0) draw_screen(fb, over, I0, 0, I1, GFX_H, 0, 0, 32);
-    nos_dbg_us[1] += hal_micros() - q1;
-
-    /* the columns the edge crosses: over into the scratch rows, copy each row's run */
-    int span[2][2] = { { A0, I1 > I0 ? I0 : A1 }, { I1 > I0 ? I1 : A1, A1 } };
-    for (int k = 0; s_scratch && k < 2; k++) {
-        int x0 = span[k][0], x1 = span[k][1];
-        if (x1 <= x0) continue;
-        gfx_fb o;
-        scratch_fb(fb, &o, x0, x1);
+    if (!over || A1 <= A0) {
+        draw_screen(fb, under, c0, 0, c1, GFX_H, 0, 0, dimk);
+        nos_dbg_us[0] += hal_micros() - q;
+        if (!over) return;
+    } else {
+        /* under: the columns the circle misses here, plus (into the scratch rows) the
+         * columns its edge crosses, to copy back outside each row's run */
+        draw_screen(fb, under, c0, 0, A0, GFX_H, 0, 0, dimk);
+        draw_screen(fb, under, A1, 0, c1, GFX_H, 0, 0, dimk);
+        int span[2][2] = { { A0, I1 > I0 ? I0 : A1 }, { I1 > I0 ? I1 : A1, A1 } };
+        gfx_fb o = *fb;
+        o.px = s_scratch; o.stride = 0; o.x_base = 0;
+        for (int k = 0; s_scratch && k < 2; k++)
+            if (span[k][1] > span[k][0]) draw_screen(&o, under, span[k][0], 0, span[k][1], GFX_H, 0, 0, dimk);
+        uint32_t q1 = hal_micros();
+        nos_dbg_us[0] += q1 - q;
+        draw_screen(fb, over, A0, 0, A1, GFX_H, 0, 0, 32);   /* once, straight in */
         uint32_t q2 = hal_micros();
-        if (over->draw) over->draw(&o);
-        uint32_t q3 = hal_micros();
-        nos_dbg_us[1] += q3 - q2;
+        nos_dbg_us[1] += q2 - q1;
         unsigned sel = 0;                            /* sim cost model only */
-        for (int r = 0; r < fb->h; r++) {
-            int lo = a0[r] > x0 ? a0[r] : x0, hi = a1[r] < x1 ? a1[r] : x1;
-            if (hi <= lo) continue;
-            memcpy(gfx_row(fb, r) + lo, o.px + (size_t)r * GFX_W + lo, (size_t)(hi - lo) * 2);
-            sel += (unsigned)(hi - lo);
+        for (int k = 0; s_scratch && k < 2; k++) {
+            int x0 = span[k][0], x1 = span[k][1];
+            if (x1 <= x0) continue;
+            for (int r = 0; r < fb->h; r++) {
+                uint16_t *d = gfx_row(fb, r), *src = o.px + (size_t)r * GFX_W;
+                int l1 = a0[r] < x1 ? a0[r] : x1, r0 = a1[r] > x0 ? a1[r] : x0;
+                if (l1 > x0) { memcpy(d + x0, src + x0, (size_t)(l1 - x0) * 2); sel += (unsigned)(l1 - x0); }
+                if (x1 > r0 && r0 >= l1) { memcpy(d + r0, src + r0, (size_t)(x1 - r0) * 2); sel += (unsigned)(x1 - r0); }
+            }
         }
         GFX_COST_PX(GFX_COST_SELECT, sel);
-        nos_dbg_us[2] += hal_micros() - q3;
+        nos_dbg_us[2] += hal_micros() - q2;
     }
     gfx_fb e = *fb;                                  /* the rim hides the stair-step */
     gfx_ring(&e, fx, fy, R, 2.0f, IRIS_RIM);
