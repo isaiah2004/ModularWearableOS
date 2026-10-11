@@ -220,7 +220,9 @@ static int static_icon(int cond)
 }
 
 /* ------------------------------------------------------------- data */
+#ifndef ESP_PLATFORM
 static svc_weather_t s_demo;
+#endif
 static const svc_weather_t *wx_data(void)
 {
 #ifndef ESP_PLATFORM
@@ -270,10 +272,9 @@ static void fmt_t(char *o, int n, float c, int deg)
 }
 static void deg_mark(gfx_fb *fb, float x, float y, float pitch, float p, uint16_t col)
 {
-    const float c = pitch * 0.72f, d = pitch * 0.5f * m_clamp(p * 1.5f - 0.5f, 0, 1);
-    for (int r = 0; r < 3; r++)
-        for (int k = 0; k < 3; k++)
-            if (r != 1 || k != 1) dot_disc(fb, x + k * c, y + r * c, d, col);
+    /* the tall font's ring degree glyph, set one cell right of the digits */
+    dot_style s = { DOT_FONT_TALL, pitch, pitch * 0.8f, col, 0, 1, 0 };
+    dot_text_anim(fb, &s, x - pitch * 0.3f, y - pitch * 0.4f, "\xB0", 0, p, DOT_REVEAL_RANDOM, 2u);
 }
 /* hero temperature: digits left-aligned at x (or centred when align = 1) + dot degree */
 static void hero_temp(gfx_fb *fb, const dot_style *st, float x, float y, float c, int align, float p, unsigned seed)

@@ -90,6 +90,17 @@ void nos_pop(void);                         /* reverses the transition the top w
 void nos_pop_with(int tx);                  /* pop with a different transition (boot -> home) */
 void nos_replace(const nos_screen *s, int tx);   /* swap the top screen */
 void nos_home(void);                        /* pop to the root with one transition */
+void nos_home_now(void);                    /* collapse to the root instantly (entering AOD) */
+/* Inside enter(): 1 when the screen is being pulled in by a finger (nos_pull): skip
+ * build-ins, the finger is revealing it. */
+int  nos_entered_by_finger(void);
+/* From a sheet's input during IN_DRAG: its content hit the scroll limit in the closing
+ * direction, so hand the finger to the engine (re-based, no jump) to move the sheet. */
+void nos_sheet_take(void);
+/* Dim what `fb` covers to k (0..1) of its brightness (edit-mode backdrops). */
+void nos_dim(gfx_fb *fb, float k);
+/* Screen the side button's long press opens when the top screen doesn't take it. */
+extern const struct nos_screen *nos_power_screen;
 void nos_set_root(const nos_screen *s);
 const nos_screen *nos_top(void);
 int  nos_depth(void);                       /* 1 = only the root */

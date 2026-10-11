@@ -12,7 +12,7 @@ float fk_ease(float p);                              /* EASE_STANDARD, clamped *
 float fk_mech(float p);                              /* EASE_MECH, clamped */
 float fk_stagger(float enter, float start, float span); /* eased (enter-start)/span */
 
-/* "HH" (24 h or 12 h per prefs, always two digits) and "MM". */
+/* "HH" (24 h zero-padded; 12 h with a blank leading digit, " 9") and "MM". */
 void  fk_hh(char out[3], int hour);
 void  fk_mm(char out[3], int minute);
 int   fk_hour_disp(int hour);                        /* 0-23 or 1-12 per prefs */
@@ -53,6 +53,49 @@ void  fk_dots(gfx_fb *fb, int n, int chunk, fk_dot_fn fn, const void *ctx);
  * clockwise, dots [0, lit) in `on`, the rest in `off` (0 = skip). 8 dots per command. */
 void  fk_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, int lit,
               uint16_t on, uint16_t off);
+
+/* ---- wake from AOD: the time stays on screen and morphs into the awake style ----
+ * Call fk_wake_tick() in tick. While a wake morph runs (about 0.2 s), fk_build()
+ * reports 1 so the face skips its build-in, fk_wake_k() steps 0.25 -> 1 (4 quantised
+ * steps; 0 in AOD), and fk_wake_off() slides the AOD drift back to 0. */
+typedef struct { int last_aod; float t0; int active; int dx, dy; } fk_wake;
+void  fk_wake_tick(fk_wake *w, const face_ctx *c);
+float fk_build(const fk_wake *w, const face_ctx *c);   /* effective build-in progress */
+float fk_wake_k(const fk_wake *w, const face_ctx *c);
+void  fk_wake_off(const fk_wake *w, const face_ctx *c, float *dx, float *dy);
+
+/* ---- unread notifications: one dot at (233, 24) ----
+ * fk_unread_tick() in tick (fades in/out in 4 colour steps); fk_unread() last in draw.
+ * col = C_RED where the face has no other red, else C_PRI (C_INK on white faces).
+ * In AOD it is a 6 px C_SEC dot. backing = colour of the disc behind it. */
+void  fk_unread_tick(const face_ctx *c);
+void  fk_unread(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy);
+
+/* ---- battery status: nothing above 20 % unless charging; else a bolt (charging)
+ * and the percentage as a mono label at baseline y. Returns the drawn width. ---- */
+int   fk_status_shown(const face_ctx *c);
+int   fk_status(gfx_fb *fb, const face_ctx *c, int x, int y, uint16_t col, int align);
+
+/* ---- a font scaled once into PSRAM coverage masks (digits and ':' of nf_hero at a
+ * size the baked fonts do not have). Drawn like ui_text: baseline y, one damage cmd. */
+typedef struct { uint8_t w, h; int8_t xoff, yoff; uint8_t adv; uint8_t *px; } fk_sglyph;
+typedef struct { fk_sglyph g[12]; int ascent, cap; int ok; } fk_sfont;    /* '0'-'9', ':', ' ' */
+int   fk_sfont_build(fk_sfont *sf, const font_t *src, float scale);
+int   fk_stext_width(const fk_sfont *sf, const char *s);
+int   fk_stext(gfx_fb *fb, const fk_sfont *sf, int x, int y, const char *s, uint16_t col, int align);
+
+/* ---- odometer roll of one digit cell: `from` rolls up and out, `to` rises in, both
+ * clipped to [x - 4, x + cell_w + 4) x [base - cap - 6, base + 6). Exactly one of
+ * f / sf is used. p 0..1 (EASE_MECH applied inside). ---- */
+void  fk_roll(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
+              int cap, char from, char to, float p, uint16_t col);
+
+/* once-a-second blink envelope (0..1) from the millisecond clock: grows in 100 ms,
+ * holds to 500 ms, shrinks by 600 ms; 4 steps each way */
+float fk_blink(int ms);
+
+/* glyph metrics of a baked font (0 if missing) */
+const font_glyph *fk_glyph(const font_t *f, unsigned code);
 
 /* A tap at (x, y) inside the circle of radius r around (cx, cy)? */
 static inline int fk_in(int x, int y, float cx, float cy, float r)

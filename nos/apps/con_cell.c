@@ -68,8 +68,8 @@ static void body_line(gfx_fb *fb, int y, const char *s, uint16_t c)
 #define BAR_PITCH 12.0f
 #define BAR_D     9.0f
 #define BAR_BOT   206.0f
-#define BTN_Y     364.0f
-#define BTN_R     40.0f
+#define BTN_Y     360.0f
+#define BTN_R     44.0f              /* 88 px: the OS button size */
 #define BTN_DX    64.0f
 
 enum { CB_NONE = 0, CB_POWER, CB_SMS };
@@ -102,7 +102,8 @@ static int lte_state(void)
 
 static void cell_enter(void)
 {
-    L.t_enter = nos_t;
+    /* back from the inbox: no rebuild; opened by the iris: build from 40% of it */
+    L.t_enter = nos_revealed() ? nos_t - 10.0f : nos_t + 0.4f * 0.42f;
     L.build = L.txt = 0;
     L.pressed = CB_NONE;
     L.want_on = nos_prefs.lte;
@@ -116,8 +117,8 @@ static void cell_enter(void)
 
 static void cell_tick(float dt)
 {
-    L.build = q((nos_t - L.t_enter) / 0.36f, 32);
-    L.txt = q((nos_t - L.t_enter - 0.08f) / 0.2f, 4);
+    L.build = q((nos_t - L.t_enter) / UI_ENTRY_S, 32);
+    L.txt = nos_t >= L.t_enter ? 1.0f : 0.0f;           /* words arrive with the build, at full ink */
     L.present = hal_lte_get(&L.l);
     L.st = lte_state();
     L.unread = 0;
@@ -158,14 +159,20 @@ static void draw_bars(gfx_fb *fb, float build)
     }
 }
 
-static void cell_button(gfx_fb *fb, float cx, int icon, int on, int pressed, int disabled, float r)
+static void cell_button(gfx_fb *fb, float cx, int icon, int on, int pressed, int disabled, float r, float p)
 {
-    if (r < 1) return;
-    uint16_t fill = on ? (pressed ? C_SEC : C_WHITE) : disabled ? C_SURF : (pressed ? C_SURF3 : C_SURF2);
+    uint16_t fill = on ? (pressed ? C_SEC : C_WHITE) : disabled ? C_SURF : (pressed ? C_LINE2 : C_SURF2);
     uint16_t ink = on ? C_BG : disabled ? C_DIS : C_PRI;
     ui_circle(fb, cx, BTN_Y, r, fill);
-    float pitch = 3.4f * r / BTN_R;
-    dot_icon(fb, icon, cx, BTN_Y, pitch, pitch * 0.8f, ink);
+    if (icon) dot_icon_anim(fb, icon, cx, BTN_Y, 3.4f, 2.7f, ink, p, DOT_REVEAL_CENTER);
+}
+
+/* Power glyph in dots: an open ring (gap at the top) and a stem. */
+static void power_glyph(gfx_fb *fb, float cx, float cy, uint16_t ink, float p)
+{
+    if (p <= 0) return;
+    dot_ring(fb, cx, cy + 2, 13, 12, 3.6f, 2, 2 + 9 * p, ink, 0);
+    for (int k = 0; k < 3; k++) if (p * 3 > k) dot_disc(fb, cx, cy - 14 + k * 5.0f, 3.6f, ink);
 }
 
 static void cell_draw(gfx_fb *fb)
@@ -173,12 +180,11 @@ static void cell_draw(gfx_fb *fb)
     ui_title(fb, "CELLULAR", 0);
     uint16_t c1 = ui_dim(C_PRI, L.txt), c2 = ui_dim(C_SEC, L.txt), c3 = ui_dim(C_DIS, L.txt);
     if (L.st == LS_ABSENT) {
-        dot_icon_anim(fb, DOT_ICON_SIGNAL, UI_CX, 176, 7.0f, 5.6f, C_DIS, L.build, DOT_REVEAL_RAIN);
-        body_line(fb, 288, "Module not connected", c1);
-        body_line(fb, 322, "Add the LTE strap for SMS", c2);
-        ui_label(fb, UI_CX, 352, "NO PHONE NEEDED", c3, UI_CENTER);
+        ui_absent(fb, DOT_ICON_SIGNAL, "Not connected", "Add the LTE strap to text from anywhere, no phone needed",
+                  "LTE MODULE", L.build);
         return;
     }
+    if (nos_t < L.t_enter) return;
     draw_bars(fb, L.build);
     char b[40];
     switch (L.st) {
@@ -191,7 +197,7 @@ static void cell_draw(gfx_fb *fb)
         break;
     case LS_OFF:
         ui_state(fb, UI_CX, 238, "OFF", c2);
-        body_line(fb, 290, "Cellular is off", c1);
+        body_line(fb, 290, "Tap RADIO to turn on", c1);
         break;
     case LS_STARTING:
         ui_state(fb, UI_CX, 238, "STARTING", c2);
@@ -210,35 +216,33 @@ static void cell_draw(gfx_fb *fb)
         body_line(fb, 290, "Looking for a network", c1);
         break;
     }
-    /* thumb zone: radio power, messages (grow in, two frames apart) */
-    float b0 = bezier_ease(&EASE_STANDARD, q((nos_t - L.t_enter - 0.05f) / 0.26f, 32));
-    float b1 = bezier_ease(&EASE_STANDARD, q((nos_t - L.t_enter - 0.116f) / 0.26f, 32));
+    /* thumb zone: radio power, messages; full size, the glyphs build */
+    float ib = q((nos_t - L.t_enter) / UI_ENTRY_S, 32);
     int on = L.want_on || L.l.powered;
     {   /* power: a white disc grows from the centre as the radio turns on */
-        float r = BTN_R * b0, f = q(mtw_value(&L.fill), 16);
+        float f = q(mtw_value(&L.fill), 16);
         int pr = L.pressed == CB_POWER;
-        cell_button(fb, UI_CX - BTN_DX, DOT_ICON_NONE, 0, pr, 0, r);
-        if (r * f > 1) ui_circle(fb, UI_CX - BTN_DX, BTN_Y, r * f, pr ? C_SEC : C_WHITE);
-        float pitch = 3.4f * r / BTN_R;
-        if (r > 1) dot_icon(fb, DOT_ICON_SIGNAL, UI_CX - BTN_DX, BTN_Y, pitch, pitch * 0.8f, f > 0.6f ? C_BG : C_PRI);
+        cell_button(fb, UI_CX - BTN_DX, DOT_ICON_NONE, 0, pr, 0, BTN_R, ib);
+        if (BTN_R * f > 1) ui_circle(fb, UI_CX - BTN_DX, BTN_Y, BTN_R * f, pr ? C_SEC : C_WHITE);
+        power_glyph(fb, UI_CX - BTN_DX, BTN_Y, f > 0.6f ? C_BG : C_PRI, ib);
     }
-    cell_button(fb, UI_CX + BTN_DX, DOT_ICON_MSG, 0, L.pressed == CB_SMS, 0, BTN_R * b1);
-    if (L.unread > 0 && b1 >= 1) {
-        float bx = UI_CX + BTN_DX + 29, by = BTN_Y - 29;
+    cell_button(fb, UI_CX + BTN_DX, DOT_ICON_MSG, 0, L.pressed == CB_SMS, 0, BTN_R, ib);
+    if (L.unread > 0 && ib >= 1) {
+        float bx = UI_CX + BTN_DX + 31, by = BTN_Y - 31;
         ui_circle(fb, bx, by, 14, C_WHITE);
         snprintf(b, sizeof b, "%d", L.unread > 9 ? 9 : L.unread);
         ui_text(fb, UI_F_LABEL, (int)bx, (int)(by + UI_F_LABEL->ascent * 0.5f - 1), b, C_BG, UI_CENTER, 0);
     }
-    ui_label(fb, (int)(UI_CX - BTN_DX), 432, on ? "RADIO ON" : "RADIO", c3, UI_CENTER);
-    ui_label(fb, (int)(UI_CX + BTN_DX), 432, "SMS", c3, UI_CENTER);
+    ui_label(fb, (int)(UI_CX - BTN_DX), 430, on ? "RADIO ON" : "RADIO", c2, UI_CENTER);
+    ui_label(fb, (int)(UI_CX + BTN_DX), 430, "SMS", c2, UI_CENTER);
 }
 
 static int cell_btn_at(int x, int y)
 {
     float dy = y - BTN_Y, dx = x - (UI_CX - BTN_DX);
-    if (dx * dx + dy * dy <= 46 * 46) return CB_POWER;
+    if (dx * dx + dy * dy <= 50 * 50) return CB_POWER;
     dx = x - (UI_CX + BTN_DX);
-    if (dx * dx + dy * dy <= 46 * 46) return CB_SMS;
+    if (dx * dx + dy * dy <= 50 * 50) return CB_SMS;
     return CB_NONE;
 }
 
@@ -279,7 +283,9 @@ static int cell_input(const nos_input *in)
 const nos_screen scr_cell = { "CELLULAR", cell_enter, 0, cell_tick, cell_draw, cell_input, 0 };
 
 /* ============================================================= inbox ===== */
-#define ROW_H 104
+#define ROW_H    UI_ROW_H
+#define CARD_X0  53               /* fixed card: 360 px, text at card + 40 */
+#define CARD_W   360
 
 static struct {
     ui_list list;
@@ -294,21 +300,21 @@ static void inbox_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fad
 {
     if (i >= s_nsms) return;
     const hal_sms *m = &s_sms[i];
-    /* rows build in two frames apart */
-    float st = q((nos_t - I.t_enter - 0.066f * i) / 0.2f, 4);
+    /* rows stagger in 34 ms apart (6 rows at most) */
+    float st = q((nos_t - I.t_enter - 0.034f * (i < 6 ? i : 6)) / 0.15f, 4);
     float k = fade * st;
     if (k <= 0) return;
-    int cx0 = x0 + 4, cx1 = x1 - 4;
-    ui_rrect(fb, (float)cx0, (float)(y + 6), (float)(cx1 - cx0), (float)(h - 12), 32,
-             ui_dim(pressed ? C_SURF2 : C_SURF, k));
-    int tx = cx0 + 40;
-    if (m->unread) dot_disc(fb, (float)(cx0 + 22), (float)(y + 36), 9, ui_dim(C_WHITE, k));
-    /* sender gets the whole first line; time leads the preview line */
-    ui_text_fit(fb, UI_F_BODY, tx, y + 44, m->from, ui_dim(m->unread ? C_WHITE : C_PRI, k), UI_LEFT, cx1 - 26 - tx);
+    /* fixed-width cards: the glass edge crops a low card, the text never jumps sideways */
+    ui_rrect(fb, (float)CARD_X0, (float)(y + 4), (float)CARD_W, (float)(h - 8), 40,
+             ui_dim(pressed ? C_LINE2 : C_SURF2, k));
+    int tx = CARD_X0 + 40, tr = UI_VALUE_X;
+    if (m->unread) dot_disc(fb, (float)(CARD_X0 + 21), (float)(y + 30), 9, ui_dim(C_WHITE, k));
+    /* line 1: sender, time at the right; line 2: the whole preview */
     char when[24];
     sms_when(m, when, sizeof when);
-    int ww = ui_label(fb, tx, y + 75, when, ui_dim(C_DIS, k), UI_LEFT);
-    ui_text_fit(fb, UI_F_BODY, tx + ww + 12, y + 76, m->text, ui_dim(C_SEC, k), UI_LEFT, cx1 - 26 - tx - ww - 12);
+    int ww = ui_label(fb, tr, y + 37, when, ui_dim(C_DIS, k), UI_RIGHT);
+    ui_text_fit(fb, UI_F_BODY, tx, y + 38, m->from, ui_dim(m->unread ? C_WHITE : C_PRI, k), UI_LEFT, tr - ww - 12 - tx);
+    ui_text_fit(fb, UI_F_BODY, tx, y + 70, m->text, ui_dim(C_SEC, k), UI_LEFT, tr - tx);
 }
 
 static void inbox_tap(int i)
@@ -324,22 +330,22 @@ static void inbox_enter(void)
     if (!I.inited) { ui_list_init(&I.list, s_nsms, ROW_H, 104, inbox_row, inbox_tap); I.inited = 1; }
     else ui_list_set_n(&I.list, s_nsms);
     I.list.margin = 30;
-    I.t_enter = nos_t;
+    /* revealed by back (reader popped): keep the cards, no re-stagger */
+    if (!nos_revealed()) I.t_enter = nos_t;
 }
 
 static void inbox_tick(float dt)
 {
     ui_list_tick(&I.list, dt);
-    I.txt = q((nos_t - I.t_enter) / 0.2f, 4);
+    I.txt = 1.0f;
 }
 
 static void inbox_draw(gfx_fb *fb)
 {
     if (!s_nsms) {
         ui_title(fb, "MESSAGES", 0);
-        dot_icon_anim(fb, DOT_ICON_MSG, UI_CX, 196, 7.0f, 5.6f, C_DIS, q((nos_t - I.t_enter) / 0.36f, 32), DOT_REVEAL_RAIN);
-        ui_state(fb, UI_CX, 300, "NO MESSAGES", ui_dim(C_PRI, I.txt));
-        body_line(fb, 336, "Texts to your SIM land here", ui_dim(C_SEC, I.txt));
+        ui_absent(fb, DOT_ICON_MSG, "No messages", "Texts to your SIM land here", NULL,
+                  q((nos_t - I.t_enter) / UI_ENTRY_S, 32));
         return;
     }
     ui_list_draw(fb, &I.list);
@@ -351,7 +357,7 @@ static int inbox_input(const nos_input *in) { return s_nsms ? ui_list_input(&I.l
 static const nos_screen scr_cell_sms = { "MESSAGES", inbox_enter, 0, inbox_tick, inbox_draw, inbox_input, 0 };
 
 /* ============================================================ reader ===== */
-#define REPLY_H   80
+#define REPLY_H   UI_ROW_H
 #define NREPLY    5
 #define TEXT_W    320
 #define LINE_H    34
@@ -397,11 +403,11 @@ static int count_lines(const char *s, int max_w)
 
 static void reply_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
 {
-    float st = q((nos_t - R.t_enter - 0.1f - 0.066f * i) / 0.2f, 4);
+    float st = q((nos_t - R.t_enter - 0.1f - 0.034f * i) / 0.15f, 4);
     float k = fade * st;
     if (k <= 0) return;
-    float w = 240, ph = 62;
-    ui_rrect(fb, UI_CX - w / 2, (float)y + (h - ph) / 2, w, ph, ph / 2, ui_dim(pressed ? C_SURF3 : C_SURF2, k));
+    float w = 240, ph = 60;                         /* chip: 60 tall in a 90 px hit row */
+    ui_rrect(fb, UI_CX - w / 2, (float)y + (h - ph) / 2, w, ph, ph / 2, ui_dim(pressed ? C_LINE2 : C_SURF2, k));
     ui_text(fb, UI_F_BODY, UI_CX, y + h / 2 + 8, k_replies[i], ui_dim(C_PRI, k), UI_CENTER, 0);
 }
 
@@ -443,7 +449,7 @@ static void read_enter(void)
 static void read_tick(float dt)
 {
     ui_list_tick(&R.list, dt);
-    R.txt = q((nos_t - R.t_enter) / 0.2f, 4);
+    R.txt = 1.0f;
     if (R.result == 1 && !R.popped && nos_t - R.t_result > 1.3f && !nos_transitioning()) { R.popped = 1; nos_pop(); }
     if (R.result == -1 && nos_t - R.t_result > 1.6f) R.result = 0;
 }

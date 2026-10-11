@@ -37,6 +37,7 @@ void nos_apps_boot(void)
 {
     svc_init();
     nos_bg_tick = svc_tick;
+    nos_power_screen = &scr_power;
     nos_set_root(&scr_home);
     nos_push(&scr_boot, TX_NONE);
 }

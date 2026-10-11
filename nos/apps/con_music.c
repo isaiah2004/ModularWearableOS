@@ -46,7 +46,7 @@ static struct {
 static void player_poll(void)
 {
     const svc_music_t *m = svc_music();
-    P.have = m->have;
+    P.have = m->have && (m->track[0] || m->artist[0]);   /* an empty musicinfo is not a player */
     P.connected = svc_sys()->phone_connected || hal_phone_connected();
     snprintf(P.track, sizeof P.track, "%s", m->track[0] ? m->track : "Unknown track");
     snprintf(P.artist, sizeof P.artist, "%s", m->artist);
@@ -79,9 +79,9 @@ static void fmt_ms(char *b, int n, uint32_t ms, int neg)
 #define EQ_COLS   11
 #define EQ_ROWS   5
 #define EQ_PITCH  10.0f
-#define EQ_Y      86.0f
-#define TITLE_Y   196
-#define ARTIST_Y  232
+#define EQ_Y      96.0f
+#define TITLE_Y   188
+#define ARTIST_Y  224
 #define CTRL_Y    308.0f
 #define PLAY_R    54.0f
 #define SIDE_R    40.0f
@@ -92,6 +92,8 @@ static void fmt_ms(char *b, int n, uint32_t ms, int neg)
 #define MQ_GAP    56
 #define MQ_HOLD   60          /* frames at rest before each lap */
 #define VOL_SHOW  1.8f
+#define WG_CY_SHARED 212.0f   /* the widget's play disc (see wg_music below) */
+#define WG_R_SHARED  60.0f
 
 enum { B_NONE = 0, B_PREV, B_PLAY, B_NEXT };
 
@@ -122,12 +124,18 @@ static struct {
     float t_nudge;
     int   icon_playing;      /* icon state for the swap build */
     float t_icon;
+    int   from_wg;
 } M;
+
+static int s_from_widget;          /* opened by a widget tap: the play disc travels from it */
 
 static void music_enter(void)
 {
     player_poll();
-    M.t_enter = nos_t;
+    /* the build starts at 40% of the opening iris (UI standard) */
+    M.t_enter = nos_t + 0.4f * 0.42f;
+    M.from_wg = s_from_widget;
+    s_from_widget = 0;
     M.build = M.txt = 0;
     M.pressed = B_NONE;
     M.track_h = str_hash(P.track);
@@ -178,11 +186,8 @@ static void music_tick(float dt)
     int frames = (int)lroundf(dt * NOS_FPS);
     if (frames < 1) frames = 1;
     player_poll();
-    M.build = q((nos_t - M.t_enter) / 0.36f, 32);
-    float tf = (nos_t - M.t_enter - 0.08f) / 0.2f;
-    float tt = (nos_t - M.t_track) / 0.2f;
-    M.txt = q(tf < tt ? tf : tt, 4);
-
+    M.build = q((nos_t - M.t_enter) / UI_ENTRY_S, 32);
+    /* a new track is detected before the fade is computed, so it is never drawn at full ink */
     unsigned h = str_hash(P.track);
     if (h != M.track_h) {
         M.track_h = h;
@@ -190,6 +195,11 @@ static void music_tick(float dt)
         M.mq_w = ui_text_width(UI_F_TITLE, P.track, 0);
         M.mq_off = 0; M.mq_hold = MQ_HOLD;
     }
+    /* words arrive with the build at full ink; a new track crossfades in 4 steps */
+    float tf = nos_t >= M.t_enter ? 1.0f : 0.0f;
+    float tt = (nos_t - M.t_track) / 0.2f;
+    M.txt = q(tf < tt ? tf : tt, 4);
+
     /* marquee: whole pixels per frame so the scroll is perfectly even */
     if (M.mq_w > MQ_X1 - MQ_X0) {
         if (M.mq_hold > 0) M.mq_hold -= frames;
@@ -248,11 +258,11 @@ static void marquee(gfx_fb *fb, const char *s, int y, uint16_t col)
     const int B = 14;
     int lf = M.mq_off > 0;
     struct { int x0, x1; float k; } band[5] = {
-        { MQ_X0,         MQ_X0 + B,     lf ? 0.34f : 1.0f },
-        { MQ_X0 + B,     MQ_X0 + 2 * B, lf ? 0.67f : 1.0f },
+        { MQ_X0,         MQ_X0 + B,     lf ? 0.25f : 1.0f },
+        { MQ_X0 + B,     MQ_X0 + 2 * B, lf ? 0.6f : 1.0f },
         { MQ_X0 + 2 * B, MQ_X1 - 2 * B, 1.0f },
-        { MQ_X1 - 2 * B, MQ_X1 - B,     0.67f },
-        { MQ_X1 - B,     MQ_X1,         0.34f },
+        { MQ_X1 - 2 * B, MQ_X1 - B,     0.6f },
+        { MQ_X1 - B,     MQ_X1,         0.25f },
     };
     int x = MQ_X0 - M.mq_off;
     for (int i = 0; i < 5; i++) {
@@ -264,12 +274,11 @@ static void marquee(gfx_fb *fb, const char *s, int y, uint16_t col)
     }
 }
 
-static void side_button(gfx_fb *fb, float cx, float r, int icon, int pressed, int nudge)
+static void side_button(gfx_fb *fb, float cx, float r, int icon, int pressed, int nudge, float p)
 {
-    if (r < 1) return;
-    ui_circle(fb, cx, CTRL_Y, r, pressed ? C_SURF3 : C_SURF2);
+    ui_circle(fb, cx, CTRL_Y, r, pressed ? C_LINE2 : C_SURF2);
     float pitch = 3.4f * (r / SIDE_R);
-    dot_icon(fb, icon, cx + (float)(nudge * 4), CTRL_Y, pitch, pitch * 0.8f, C_PRI);
+    dot_icon_anim(fb, icon, cx + (float)(nudge * 4), CTRL_Y, pitch, pitch * 0.8f, C_PRI, p, DOT_REVEAL_CENTER);
 }
 
 static void draw_volume(gfx_fb *fb, float k)
@@ -288,26 +297,33 @@ static void draw_volume(gfx_fb *fb, float k)
     dot_bar(fb, x0 + 60, y + h / 2, 10, 14.0f, 8.0f, (float)M.vol / 10.0f, C_WHITE, C_LINE2);
 }
 
-static void draw_empty(gfx_fb *fb, float build, float txt, int connected)
+static void draw_empty(gfx_fb *fb, float build, int connected)
 {
-    dot_icon_anim(fb, connected ? DOT_ICON_MUSIC : DOT_ICON_BT, UI_CX, 196, 7.0f, 5.6f, C_DIS, build, DOT_REVEAL_RANDOM);
-    ui_state(fb, UI_CX, 300, connected ? "NOTHING PLAYING" : "NOT CONNECTED", ui_dim(C_PRI, txt));
-    int x0, x1;
-    ui_row_span(330, 40, &x0, &x1);
-    ui_text_fit(fb, UI_F_BODY, UI_CX, 338, connected ? "Play music on your phone" : "Connect your phone",
-                ui_dim(C_SEC, txt), UI_CENTER, x1 - x0);
+    if (!connected)
+        ui_absent(fb, DOT_ICON_BT, "Phone not connected", "Pair in Gadgetbridge as Bangle.js NOS", NULL, build);
+    else
+        ui_absent(fb, DOT_ICON_MUSIC, "Nothing playing", "Play music on your phone", NULL, build);
 }
 
 static void music_draw(gfx_fb *fb)
 {
+    ui_title(fb, "MUSIC", 0);
     float b = bezier_ease(&EASE_STANDARD, M.build);
+    if (!P.have) {
+        dot_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 0, 0, 0, C_LINE);
+        draw_empty(fb, M.build, P.connected);
+        return;
+    }
     draw_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 11.0f, M.ring_pos, b, P.have);
-    if (!P.have) { draw_empty(fb, M.build, M.txt, P.connected); return; }
+    if (nos_t < M.t_enter && !M.from_wg) return;          /* the iris shows black until 40% */
 
-    /* equaliser: columns rise in with the build */
+    /* equaliser: columns rise row by row with the build */
     uint8_t ev[EQ_COLS];
-    for (int c = 0; c < EQ_COLS; c++) ev[c] = (uint8_t)(M.eq[c] * b);
-    if (M.build < 1) for (int c = 0; c < EQ_COLS; c++) if (ev[c] < 51) ev[c] = (uint8_t)(51 * b);
+    for (int c = 0; c < EQ_COLS; c++) {
+        int rows = M.eq[c] * EQ_ROWS / 255, cap = (int)(b * EQ_ROWS + 0.5f);
+        if (rows < 1) rows = 1;
+        ev[c] = (uint8_t)((rows < cap ? rows : cap) * 255 / EQ_ROWS);
+    }
     dot_columns(fb, UI_CX - EQ_COLS * EQ_PITCH * 0.5f, EQ_Y, EQ_COLS, EQ_ROWS, EQ_PITCH, 7.0f, ev,
                 P.playing ? C_PRI : C_DIS, 0);
 
@@ -315,23 +331,25 @@ static void music_draw(gfx_fb *fb)
     marquee(fb, P.track, TITLE_Y, c1);
     if (P.artist[0]) ui_text_fit(fb, UI_F_BODY, UI_CX, ARTIST_Y, P.artist, c2, UI_CENTER, MQ_X1 - MQ_X0);
 
-    /* controls grow in: prev, play, next, two frames apart */
-    float bp = bezier_ease(&EASE_STANDARD, q((nos_t - M.t_enter) / 0.26f, 32));
-    float bc = bezier_ease(&EASE_STANDARD, q((nos_t - M.t_enter - 0.066f) / 0.26f, 32));
-    float bn = bezier_ease(&EASE_STANDARD, q((nos_t - M.t_enter - 0.133f) / 0.26f, 32));
-    side_button(fb, UI_CX - SIDE_DX, SIDE_R * bp, DOT_ICON_PREV, M.pressed == B_PREV, M.nudge < 0 ? -1 : 0);
-    side_button(fb, UI_CX + SIDE_DX, SIDE_R * bn, DOT_ICON_NEXT, M.pressed == B_NEXT, M.nudge > 0 ? 1 : 0);
-    float pr = PLAY_R * bc;
-    if (pr > 1) {
-        ui_circle(fb, UI_CX, CTRL_Y, pr, M.pressed == B_PLAY ? C_SEC : C_WHITE);
-        int icon = P.playing ? DOT_ICON_PAUSE : DOT_ICON_PLAY;
-        float ip = q((nos_t - M.t_icon) / 0.15f, 16);
-        float ib = q((nos_t - M.t_enter - 0.1f) / 0.3f, 32);
-        float pitch = 4.4f * (pr / PLAY_R);
-        /* the play triangle sits right of its cell centre; nudge it back to optical centre */
-        float ox = icon == DOT_ICON_PLAY ? -pitch * 0.9f : 0;
-        dot_icon_anim(fb, icon, UI_CX + ox, CTRL_Y, pitch, pitch * 0.8f, C_BG, ip < ib ? ip : ib, DOT_REVEAL_CENTER);
+    /* controls are there at full size; their icons build from the centre */
+    float ib = q((nos_t - M.t_enter) / UI_ENTRY_S, 32);
+    side_button(fb, UI_CX - SIDE_DX, SIDE_R, DOT_ICON_PREV, M.pressed == B_PREV, M.nudge < 0 ? -1 : 0, ib);
+    side_button(fb, UI_CX + SIDE_DX, SIDE_R, DOT_ICON_NEXT, M.pressed == B_NEXT, M.nudge > 0 ? 1 : 0, ib);
+    /* from the widget the play disc slides from the widget's place and size into its own */
+    float cy = CTRL_Y, pr = PLAY_R;
+    if (M.from_wg) {
+        float e = bezier_ease(&EASE_STANDARD, q((nos_t - (M.t_enter - 0.168f)) / 0.30f, 32));
+        cy = m_lerp(WG_CY_SHARED, CTRL_Y, e);
+        pr = m_lerp(WG_R_SHARED, PLAY_R, e);
     }
+    ui_circle(fb, UI_CX, cy, pr, M.pressed == B_PLAY ? C_SEC : C_WHITE);
+    int icon = P.playing ? DOT_ICON_PAUSE : DOT_ICON_PLAY;
+    float ip = q((nos_t - M.t_icon) / 0.15f, 16);
+    float pitch = 4.4f * (pr / PLAY_R);
+    /* the play triangle sits right of its cell centre; nudge it back to optical centre */
+    float ox = icon == DOT_ICON_PLAY ? -pitch * 0.9f : 0;
+    float ipb = M.from_wg ? 1.0f : ib;
+    dot_icon_anim(fb, icon, UI_CX + ox, cy, pitch, pitch * 0.8f, C_BG, ip < ipb ? ip : ipb, DOT_REVEAL_CENTER);
 
     float vk = q(mtw_value(&M.vol_w), 32);
     if (vk > 0.01f) { draw_volume(fb, vk); return; }
@@ -342,7 +360,7 @@ static void music_draw(gfx_fb *fb)
     if (P.dur_ms) {
         fmt_ms(r, sizeof r, P.dur_ms - P.pos_ms, 1);
         ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, r, ui_dim(C_DIS, M.txt), UI_LEFT, 1);
-    } else ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, "--:--", ui_dim(C_DIS, M.txt), UI_LEFT, 1);
+    } else ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, UI_NONE ":" UI_NONE, ui_dim(C_DIS, M.txt), UI_LEFT, 1);
 }
 
 /* --------------------------------------------------------------- input */
@@ -424,8 +442,8 @@ static int music_input(const nos_input *in)
 const nos_screen scr_music = { "MUSIC", music_enter, 0, music_tick, music_draw, music_input, 0 };
 
 /* ============================================================ widget ===== */
-#define WG_CY     212.0f
-#define WG_R      60.0f
+#define WG_CY     WG_CY_SHARED
+#define WG_R      WG_R_SHARED
 #define WG_RING_R 88.0f
 #define WG_RING_N 36
 
@@ -443,7 +461,7 @@ static void wg_tick(float dt, int visible)
     /* off-glass the ring empties, so it fills dot by dot once the page settles */
     if (!visible) { G.t_shown = 1e9f; return; }
     player_poll();
-    G.build = nos_t < G.t_shown ? 0 : q((nos_t - G.t_shown) / 0.36f, 32);
+    G.build = nos_t < G.t_shown ? 0 : q((nos_t - G.t_shown) / UI_ENTRY_S, 32);
     G.pos = P.dur_ms ? (int)((uint64_t)P.pos_ms * WG_RING_N / P.dur_ms) : 0;
     if (G.pos >= WG_RING_N) G.pos = WG_RING_N - 1;
     if (P.playing != G.icon_playing) { G.icon_playing = P.playing; G.t_icon = nos_t; }
@@ -453,12 +471,10 @@ static void wg_shown(void) { G.t_shown = nos_t; }
 
 static void wg_draw(gfx_fb *fb)
 {
-    ui_label(fb, UI_CX, 70, "MUSIC", C_SEC, UI_CENTER);
+    ui_title(fb, "MUSIC", 0);
     float b = bezier_ease(&EASE_STANDARD, G.build);
     if (!P.have) {
-        dot_ring(fb, UI_CX, WG_CY, WG_RING_R, WG_RING_N, 4.0f, 0, 0, 0, C_LINE);
-        dot_icon_anim(fb, P.connected ? DOT_ICON_MUSIC : DOT_ICON_BT, UI_CX, WG_CY, 6.0f, 4.8f, C_DIS, G.build, DOT_REVEAL_RANDOM);
-        ui_state(fb, UI_CX, 352, P.connected ? "NOTHING PLAYING" : "NOT CONNECTED", C_SEC);
+        draw_empty(fb, 1.0f, P.connected);
         return;
     }
     dot_ring(fb, UI_CX, WG_CY, WG_RING_R, WG_RING_N, 4.0f, 0, (float)G.pos * b, C_SEC, C_LINE2);
@@ -488,7 +504,8 @@ static void wg_tap(int x, int y)
         nos_feedback(FB_TAP);
         return;
     }
-    nos_open(&scr_music, x, y);
+    s_from_widget = 1;
+    nos_open(&scr_music, UI_CX, (int)WG_CY);       /* the iris grows from the play disc */
 }
 
 const nos_widget wg_music = { "MUSIC", wg_tick, wg_draw, wg_tap, wg_shown };

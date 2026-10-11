@@ -36,7 +36,7 @@ const nos_screen *sys_launcher_last(void);    /* sys_launcher.c: last app opened
 #define NPAGE    (NWG + 1)
 #define FLICK_V  350.0f      /* px/s: faster releases always change page */
 #define ENTER_S  0.40f       /* face build-in duration */
-#define DOTS_Y   440
+#define DOTS_Y   448
 
 /* Dim a neutral grey without the RGB565 rounding casts (keeps G = 2R, B = R). */
 static uint16_t gdim(uint16_t c, float k)
@@ -62,7 +62,8 @@ static struct {
     int alias;               /* >0: widget page drawn in slot 1 (return-to-face trip) */
     int page;                /* nearest real page (haptic detents) */
     int shown_page;          /* page whose shown() ran last */
-    float dots_a;            /* page-dot opacity, quantised */
+    float dots_a;            /* page-dot opacity, quantised to 8 levels */
+    float dots_raw, dots_hold;
     face_ctx c;
     float enter_t0;
     int face_idx;
@@ -241,12 +242,15 @@ static void home_tick(float dt)
     int p = nearest_page();
     if (p != H.page) { H.page = p; nos_feedback(FB_TICK); }
 
-    /* page dots: on widget pages and while the pager moves */
-    float tgt = (!nos_aod && (H.dragging || H.settling || H.x > 0.5f)) ? 1.0f : 0.0f;
-    float k = dt * (tgt > H.dots_a ? 9.0f : 4.0f);
-    H.dots_a += (tgt - H.dots_a) * (k > 1 ? 1 : k);
-    if (fabsf(tgt - H.dots_a) < 0.07f) H.dots_a = tgt;
-    H.dots_a = floorf(H.dots_a * 8.0f + 0.5f) / 8.0f;
+    /* page dots: on widget pages and while the pager moves. A linear ramp on the raw
+     * value (quantised only when drawn): in over 0.12 s; out over 0.3 s after a 0.2 s
+     * hold once the pager has settled on the face (gone within ~0.5 s). */
+    int want = !nos_aod && (H.dragging || H.settling || H.x > 0.5f);
+    if (want) H.dots_hold = nos_t;
+    if (want) H.dots_raw += dt / 0.12f;
+    else if (nos_t - H.dots_hold > 0.2f) H.dots_raw -= dt / 0.30f;
+    H.dots_raw = m_clamp(H.dots_raw, 0, 1);
+    H.dots_a = floorf(H.dots_raw * 8.0f + 0.5f) / 8.0f;
 
     /* face + widgets */
     build_ctx(dt);
@@ -272,8 +276,10 @@ static void draw_dots(gfx_fb *fb)
     const float pitch = 14.0f, d = 7.0f;
     float pos = real_pos();
     float x0 = UI_CX - (NPAGE - 1) * pitch * 0.5f;
-    /* a black capsule keeps the dots legible over widget art (bezel rings) */
-    ui_rrect(fb, x0 - 13, DOTS_Y - 12, (NPAGE - 1) * pitch + 26, 24, 12, C_BG);
+    /* a black capsule keeps the dots legible over widget art (bezel rings), but only once
+     * the face has slid clear of the dots: the face itself never gets a backdrop */
+    if (floorf(H.x + 0.5f) >= UI_CX + (NPAGE - 1) * pitch * 0.5f + 16)
+        ui_rrect(fb, x0 - 13, DOTS_Y - 12, (NPAGE - 1) * pitch + 26, 24, 12, C_BG);
     for (int i = 0; i < NPAGE; i++) {
         float near = 1.0f - m_clamp(fabsf(pos - i), 0, 1);
         near = floorf(near * 8.0f + 0.5f) / 8.0f;

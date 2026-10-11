@@ -45,6 +45,26 @@ int   ui_half_width(float y);
 /* Inset x range usable at row y with a margin from the bezel. */
 void  ui_row_span(float y, float margin, int *x0, int *x1);
 
+/* ---- layout standards (docs/NOS_DESIGN.md §8) — use these, not local numbers ---- */
+#define UI_TITLE_Y     70     /* ui_title baseline */
+#define UI_BANNER_TOP  52     /* banner card top when shown */
+#define UI_BTN_H       88     /* every action button: height 88, radius 44 */
+#define UI_BTN_W       200    /* single action */
+#define UI_BTN_PAIR_W  140    /* two actions side by side at UI_BTN_PAIR_X0 / X1 */
+#define UI_BTN_PAIR_X0 154
+#define UI_BTN_PAIR_X1 312
+#define UI_BTN_Y       372    /* centre of the thumb-zone action row */
+#define UI_DOTS_Y      440    /* page dots centre */
+#define UI_HERO_PITCH  9.0f   /* the one big dot-matrix number, <= 4 glyphs */
+#define UI_HEROW_PITCH 8.0f   /* hero with 5-8 glyphs (times, 914.6, +8:45) */
+#define UI_LIST_PITCH  4.4f   /* numbers in rows and tiles */
+#define UI_SUB_PITCH   3.0f   /* secondary numbers (5x7 font) */
+#define UI_ENTRY_S     0.30f  /* entry build duration; iris entries start at 40% of the iris */
+#define UI_ROW_H       90     /* list rows; section headers 60 */
+#define UI_ROW_X0      62     /* list row content inside |y-233| < 150 */
+#define UI_ROW_X1      404
+#define UI_VALUE_X     384    /* right edge of row values / chevrons */
+
 /* ---- type ---- */
 extern const font_t *UI_F_HERO;     /* grotesk digits, full-screen clock */
 extern const font_t *UI_F_DISPLAY;  /* grotesk ~64 px */
@@ -110,6 +130,17 @@ void ui_slider(gfx_fb *fb, float x, float y, float w, float h, float value, int 
 /* Value block: big dot-matrix number with a mono caps unit label beneath. */
 void ui_value(gfx_fb *fb, float cx, float y, const char *value, const char *unit,
               float pitch, uint16_t color);
+/* Module-absent / phone-absent / empty standard screen (keep the screen's ui_title):
+ * dot icon C_DIS at y 170, `head` in UI_F_TITLE at baseline 270 ("Not connected",
+ * "Phone not connected", "No alarms"), up to 2 body lines in C_SEC (what it adds /
+ * what to do), and an optional caps footer in C_DIS at y 398 (e.g. "COMPASS MODULE").
+ * `p` = entry build progress 0..1 (icon builds, text follows). */
+void ui_absent(gfx_fb *fb, int icon, const char *head, const char *body, const char *footer, float p);
+/* Caps label that keeps unit case: ui_label_unit(fb, x, y, "4.00", "V") draws "4.00 V";
+ * units like mV, dB, hPa, uT keep their case. */
+int  ui_label_unit(gfx_fb *fb, int x, int y, const char *value, const char *unit, uint16_t color, int align);
+/* Placeholder for a missing value: always "--". */
+#define UI_NONE "--"
 /* "[ LOADING ]"-style bracketed state text (Nothing shows states as text). */
 void ui_state(gfx_fb *fb, int cx, int y, const char *s, uint16_t color);
 

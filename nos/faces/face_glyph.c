@@ -34,7 +34,19 @@ static void hand_outline(gfx_fb *fb, float a, float len, float hw, float t, uint
     gfx_taper(fb, x0, y0, x0 + s * len, y0 - c * len, hw - t, hw - t, C_BG);
 }
 
-static void tick(const face_ctx *c, float dt) { fk_aod_update(c); }
+/* the minute hand clicks to each new minute with a short mechanical ease */
+static struct { int last_hm; float t0; } S = { -1, -100.0f };
+#define CLICK_S 0.18f
+
+static void tick(const face_ctx *c, float dt)
+{
+    fk_aod_update(c);
+    int hm = c->dt.hour * 60 + c->dt.minute;
+    if (hm != S.last_hm) {
+        if (S.last_hm >= 0 && (hm - S.last_hm == 1 || (S.last_hm == 1439 && hm == 0))) S.t0 = c->t;
+        S.last_hm = hm;
+    }
+}
 
 /* tick ring: dot i of 60; hour dots bigger and brighter. ctx = fill (dots lit so far) */
 typedef struct { float fill, dx, dy; int aod; } ring_ctx;
@@ -88,6 +100,13 @@ static void draw(gfx_fb *fb, const face_ctx *c)
 
     float ah, am;
     angles(c, &ah, &am);
+    float click = (c->t - S.t0) / CLICK_S;
+    if (click < 1.0f && e >= 1.0f) {                 /* stepping from the previous minute */
+        float k = fk_mech(click);
+        k = (float)(int)(k * 32.0f) / 32.0f;
+        am -= (1.0f - k) * (TWO_PI / 60.0f);
+        ah -= (1.0f - k) * (TWO_PI / 720.0f);
+    }
     if (e < 1.0f) {
         /* both hands swing clockwise into place from a quarter / a third behind */
         float k = fk_ease(e / 0.8f);

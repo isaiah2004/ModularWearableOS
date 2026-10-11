@@ -382,14 +382,16 @@ static void sky_draw(gfx_fb *fb)
     ui_circle_line(fb, UI_CX, SKY_CY, 128, 2, C_LINE2);
     ui_circle_line(fb, UI_CX, SKY_CY, 84, 2, C_LINE);
     ui_circle_line(fb, UI_CX, SKY_CY, 40, 2, C_LINE);
+    ui_text(fb, UI_F_SMALL, UI_CX, (int)SKY_CY - 108, "N", C_DIS, UI_CENTER, 0);   /* north up */
     dot_disc(fb, UI_CX, SKY_CY, 9.0f * b, C_WHITE);              /* you */
     for (int i = 0; i < 16; i++) {
         float d = N.sat_d[i] * b;
         if (d <= 0.2f) continue;
-        /* stable pseudo sky position per slot: azimuth by hash, ring by elevation hash */
-        float az = m_hash01((unsigned)i, 11u) * 2 * PI_F;
-        float rr = 30.0f + m_hash01((unsigned)i, 12u) * 92.0f;
-        float x = UI_CX + gfx_fast_sin(az) * rr, y = SKY_CY - gfx_fast_cos(az) * rr;
+        /* real sky position, north up: horizon on the outer ring, zenith at the centre */
+        float az = N.g.az[i] * (PI_F / 180.0f);
+        float rr = (90.0f - m_clamp(N.g.el[i], 0, 90)) / 90.0f * 128.0f;
+        float x = floorf((UI_CX + gfx_fast_sin(az) * rr) * 2 + 0.5f) / 2;
+        float y = floorf((SKY_CY - gfx_fast_cos(az) * rr) * 2 + 0.5f) / 2;
         /* brightness by signal: in use = white, others ramp from grey with SNR */
         int used = i < N.g.sats_used;
         float k = m_clamp((N.g.snr[i] - 12) / 30.0f, 0, 1);

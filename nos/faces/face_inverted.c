@@ -19,7 +19,7 @@
 #define Y_TIME  (UI_CY - 4.5f * P)
 #define R_RING  220.0f
 #define C_INK   0x0000
-#define C_GHOSTW 0xE71C                 /* #E0E0E0 unlit cells on white */
+#define C_GHOSTW 0xEF5D                 /* #E8E8E8 unlit cells on white */
 #define C_LABW  0x6B4D                  /* #6A6A6A labels on white */
 
 static struct { fk_morph tm; int steps; } S;

@@ -238,7 +238,7 @@ static void go_state(int st)
     if (st == s_pwr) return;
     s_pwr = st;
     if (st == PWR_ON) { nos_aod = 0; nos_invalidate(); nos_keep_awake(); }
-    else if (st == PWR_AOD) { nos_aod = 1; nos_home(); nos_invalidate(); }
+    else if (st == PWR_AOD) { nos_aod = 1; nos_home_now(); nos_invalidate(); }
     else set_level(0);
 }
 

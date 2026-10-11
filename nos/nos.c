@@ -44,7 +44,11 @@ static struct {
     int axis, sign;         /* finger travel that increases p: sign * d(axis) */
     float p0;
     int cancel_pops;        /* finger pull-in: cancelling pops the pulled screen */
+    float lin_v;            /* > 0: leaving at constant speed (p per second) toward p = 0 */
 } T;
+static int s_by_finger;                     /* inside enter(): pulled in by a finger */
+int nos_entered_by_finger(void) { return s_by_finger; }
+const nos_screen *nos_power_screen;         /* set by the app registry: long-press target */
 
 static int s_force_full = 1;
 void nos_invalidate(void) { s_force_full = 1; }
@@ -74,7 +78,7 @@ static void tx_begin(int type, const nos_screen *under, const nos_screen *over, 
     T.p = p_from;
     T.use_tween = (type == TX_IRIS || type == TX_DISSOLVE);
     if (T.use_tween) {
-        float dur = type == TX_IRIS ? 0.42f : 0.30f;
+        float dur = type == TX_IRIS ? 0.34f : 0.30f;
         mtw_start(&T.tw, p_from, p_to, dur, type == TX_IRIS ? &EASE_STANDARD : &EASE_INOUT);
     } else {
         msp_init(&T.sp, p_from * T.span, SPRING_PAGE);
@@ -83,6 +87,7 @@ static void tx_begin(int type, const nos_screen *under, const nos_screen *over, 
     /* which finger travel grows p, so a moving transition can be grabbed */
     T.axis = (type == TX_RISE || type == TX_DROP) ? AXIS_Y : AXIS_X;
     T.sign = type == TX_DROP ? 1 : -1;
+    T.lin_v = 0;
     T.state = TXS_AUTO;
     s_force_full = 1;
 }
@@ -157,9 +162,19 @@ void nos_home(void)
     call_leave(top);
     while (s_depth > 1) s_depth--;
     s_stack[1].s = top; s_stack[1].tx = tx == TX_NONE ? TX_DISSOLVE : tx; s_depth = 2;
+    if (tx == TX_IRIS) { nos_iris_x = GFX_W; nos_iris_y = GFX_H / 2; }   /* close toward the button */
     nos_pop();
 }
 
+void nos_home_now(void)
+{
+    T.state = TXS_IDLE; T.popping = 0;
+    while (s_depth > 1) { call_leave(s_stack[s_depth - 1].s); s_depth--; }
+    call_reveal(top_screen());
+    s_force_full = 1;
+}
+
+static void P_rebase(void);
 /* Finger-driven transition. axis/sign say which finger travel grows p. */
 static void finger_begin(int type, const nos_screen *under, const nos_screen *over,
                          float p0, int popping, int axis, int sign)
@@ -172,7 +187,9 @@ static void finger_begin(int type, const nos_screen *under, const nos_screen *ov
     msp_init(&T.sp, p0 * T.span, SPRING_SHEET);
     T.popping = popping;
     T.axis = axis; T.sign = sign;
+    T.lin_v = 0;
     T.state = TXS_FINGER;
+    P_rebase();                     /* measure from here: the slop must not jump the screen */
     s_force_full = 1;
 }
 
@@ -182,7 +199,7 @@ void nos_pull(const nos_screen *s, int tx, const nos_input *start)
     const nos_screen *under = top_screen();
     call_leave(under);
     s_stack[s_depth].s = s; s_stack[s_depth].tx = tx; s_depth++;
-    call_enter(s);
+    s_by_finger = 1; call_enter(s); s_by_finger = 0;
     int axis = (tx == TX_RISE || tx == TX_DROP) ? AXIS_Y : AXIS_X;
     int sign = tx == TX_RISE ? -1 : tx == TX_DROP ? 1 : -1;  /* rise: finger up; push: finger left */
     finger_begin(tx, under, s, 0.0f, 0, axis, sign);
@@ -200,7 +217,7 @@ static struct {
     float shown_t;
     int dragging;
 } B;
-#define BANNER_H 150.0f
+#define BANNER_H 190.0f      /* travel: card top 52 + height 136 + margin */
 #define BANNER_SHOW_S 4.0f
 
 void nos_banner(const char *title, const char *body, int icon, void (*on_tap)(void))
@@ -333,7 +350,8 @@ static int near_left_edge(int x, int y)
 
 static int in_banner(int x, int y)
 {
-    return B.active && B.y.x > 40 && y < B.y.x && x > 40 && x < GFX_W - 40;
+    float top = UI_BANNER_TOP + (B.y.x - BANNER_H);
+    return B.active && B.y.x > 40 && y >= top && y < top + 136 && x > 83 && x < GFX_W - 83;
 }
 
 static void finger_update(void)
@@ -358,6 +376,14 @@ static void finger_release(void)
     msp_init(&T.sp, T.p * T.span, SPRING_PAGE);
     T.sp.v = v * T.span;
     msp_to(&T.sp, commit ? T.span : 0.0f);
+    T.lin_v = 0;
+    if (!commit) {
+        /* leaving the glass: keep the finger's speed (never brake an exit), at least
+         * a full span in 0.22 s */
+        float sp = -v;
+        if (sp < 1.0f / 0.22f) sp = 1.0f / 0.22f;
+        T.lin_v = sp;
+    }
     if (T.popping) {
         /* back-swipe: p 1 = stay; reaching 0 pops */
         if (!commit) nos_feedback(FB_BACK);
@@ -365,6 +391,9 @@ static void finger_release(void)
     else T.popping = 1;               /* a pull or grabbed push let go: the over screen leaves */
 }
 
+
+static void tx_finish(void);
+static void P_rebase(void) { P.x0 = P.x; P.y0 = P.y; }
 
 static void press_begin(int x, int y)
 {
@@ -374,14 +403,15 @@ static void press_begin(int x, int y)
     P.sx[0] = x; P.sy[0] = y; P.st[0] = hal_millis(); P.ns = 1;
     nos_keep_awake();
     if (in_banner(x, y)) { P.owner = 2; B.dragging = 1; return; }
-    if (T.state == TXS_AUTO && !T.use_tween) {
+    if (T.state == TXS_AUTO && !T.use_tween && !T.lin_v &&
+        fabsf(T.sp.v) > 150.0f && fabsf(T.sp.x - T.sp.target) > 6.0f) {
         /* grab a moving transition mid-flight: the finger takes over from the spring */
         T.state = TXS_FINGER;
         T.p0 = T.p;
         P.owner = 1;
         return;
     }
-    if (T.state != TXS_IDLE) { P.owner = 3; return; }   /* tween transitions are not grabbable */
+    if (T.state == TXS_AUTO) tx_finish();          /* nearly settled / tween: land it, tap through */
     send(IN_DOWN);
 }
 
@@ -393,7 +423,9 @@ static void drag_decide(void)
     const nos_screen *s = top_screen();
     uint32_t fl = s ? s->flags : 0;
     /* system back gesture: rightward drag on any pushed screen */
-    if (P.axis == AXIS_X && P.x > P.x0 && s_depth > 1 && !(fl & SCR_NOBACK) &&
+    int top_tx = s_depth > 1 ? s_stack[s_depth - 1].tx : TX_NONE;
+    int sheet = top_tx == TX_RISE || top_tx == TX_DROP;   /* sheets close along their own axis */
+    if (P.axis == AXIS_X && P.x > P.x0 && s_depth > 1 && !(fl & SCR_NOBACK) && !sheet &&
         (!(fl & SCR_HDRAG) || near_left_edge(P.x0, P.y0))) {
         finger_begin(TX_PUSH, s_stack[s_depth - 2].s, s, 1.0f, 1, AXIS_X, -1);
         P.owner = 1;
@@ -415,6 +447,15 @@ static void drag_decide(void)
     }
     send(IN_DRAG_START);
     if (T.state == TXS_FINGER) P.owner = 1;   /* the screen called nos_pull() */
+}
+
+void nos_sheet_take(void)
+{
+    if (!P.down || P.owner != 0 || s_depth <= 1 || T.state != TXS_IDLE) return;
+    int tx = s_stack[s_depth - 1].tx;
+    if (tx != TX_RISE && tx != TX_DROP) return;
+    finger_begin(tx, s_stack[s_depth - 2].s, top_screen(), 1.0f, 1, AXIS_Y, tx == TX_RISE ? -1 : 1);
+    P.owner = 1;
 }
 
 static void process_touch(void)
@@ -442,7 +483,8 @@ static void process_touch(void)
         B.dragging = 0;
         float vx, vy; velocity(&vx, &vy);
         if (P.y - P.y0 < -24 || vy < -500) msp_kick(&B.y, 0, vy);           /* flick away */
-        else if (abs(P.x - P.x0) < SLOP && abs(P.y - P.y0) < SLOP) {
+        else if (P.y - P.y0 > 60 || (abs(P.x - P.x0) < SLOP && abs(P.y - P.y0) < SLOP)) {
+            /* a tap, or pulling the banner down, opens it */
             msp_to(&B.y, 0);
             nos_feedback(FB_TAP);
             if (B.on_tap) B.on_tap();
@@ -474,9 +516,14 @@ static void dispatch_btn(nos_in_type t)
 {
     nos_keep_awake();
     nos_input in; memset(&in, 0, sizeof in); in.type = t;
+    if (P.down && P.owner == 1) P.owner = 3;     /* a finger mid-sheet goes inert until release */
     const nos_screen *s = top_screen();
     if (s && s->input && s->input(&in)) return;
     if (t == IN_BTN && s_depth > 1) { nos_feedback(FB_BACK); nos_home(); }
+    else if (t == IN_BTN_LONG && nos_power_screen && s != nos_power_screen) {
+        nos_feedback(FB_OPEN);
+        nos_push(nos_power_screen, TX_RISE);
+    }
 }
 
 static void process_button(void)
@@ -486,19 +533,17 @@ static void process_button(void)
     else if (!s_btn_raw && s_btn_down) {
         s_btn_down = 0;
         if (!s_btn_long_sent) {
+            /* act at once on every press; a quick second press adds IN_BTN_DOUBLE to
+             * whatever is on top by then (the launcher opens the last app) */
             if (s_btn_pending && now - s_btn_last_up < DOUBLE_MS) { s_btn_pending = 0; dispatch_btn(IN_BTN_DOUBLE); }
-            else if (s_depth > 1 && !T.state) dispatch_btn(IN_BTN);   /* only home uses double press */
-            else { s_btn_pending = 1; s_btn_last_up = now; }
+            else { s_btn_pending = 1; s_btn_last_up = now; dispatch_btn(IN_BTN); }
         }
     }
     if (s_btn_down && !s_btn_long_sent && now - s_btn_t0 >= BTN_LONG_MS) {
         s_btn_long_sent = 1; s_btn_pending = 0;
         dispatch_btn(IN_BTN_LONG);
     }
-    if (s_btn_pending && !s_btn_down && now - s_btn_last_up >= DOUBLE_MS) {
-        s_btn_pending = 0;
-        dispatch_btn(IN_BTN);
-    }
+    if (s_btn_pending && !s_btn_down && now - s_btn_last_up >= DOUBLE_MS) s_btn_pending = 0;
 }
 
 static int s_air;
@@ -533,8 +578,12 @@ static void dim_rows(gfx_fb *fb, int c0, int c1, int k)
             uint32_t c = p[x];
             if (!c) continue;
             uint32_t d = (c | (c << 16)) & 0x07E0F81Fu;
-            d = ((d * (uint32_t)k) >> 5) & 0x07E0F81Fu;
-            p[x] = (uint16_t)(d | (d >> 16));
+            d = ((d * (uint32_t)k + 0x00400802u) >> 5) & 0x07E0F81Fu;   /* rounded */
+            uint16_t o = (uint16_t)(d | (d >> 16));
+            /* keep neutral greys neutral (5-6-5 truncation tints them green) */
+            unsigned r5 = c >> 11, g6 = (c >> 5) & 63, b5 = c & 31;
+            if (r5 == b5 && (g6 >> 1) == r5) { unsigned rr = o >> 11; o = (uint16_t)(rr << 11 | (rr << 1) << 5 | rr); }
+            p[x] = o;
         }
     }
     GFX_COST_PX(GFX_COST_DIM, fb->h * (c1 - c0));   /* sim cost model only */
@@ -561,6 +610,13 @@ static int sub_fb(const gfx_fb *fb, gfx_fb *out, int x0, int y0, int x1, int y1,
     out->y_base = fb->y_base + r0;
     out->h = r1 - r0;
     return 1;
+}
+
+void nos_dim(gfx_fb *fb, float k)
+{
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    dim_rows(fb, c0, c1, (int)lroundf(m_clamp(k, 0, 1) * 32.0f));
 }
 
 int nos_subview(const gfx_fb *fb, gfx_fb *out, int x0, int y0, int x1, int y1, int ox, int oy)
@@ -620,14 +676,11 @@ static void composite_two(const gfx_fb *fb, const nos_screen *over, float p, int
     }
     /* iris: the radius grows to the farthest corner; a dithered band makes the edge
      * a ring of dots rather than a hard line */
-    float fx = (float)nos_iris_x, fy = (float)nos_iris_y, far = 0;
-    float cxs[4] = { 0, GFX_W, 0, GFX_W }, cys[4] = { 0, 0, GFX_H, GFX_H };
-    for (int i = 0; i < 4; i++) {
-        float dx = cxs[i] - fx, dy = cys[i] - fy, d = sqrtf(dx * dx + dy * dy);
-        if (d > far) far = d;
-    }
-    const float band = 34.0f;
-    float R = p * (far + band) - band * 0.5f;
+    float fx = (float)nos_iris_x, fy = (float)nos_iris_y;
+    /* the glass is a circle: the farthest visible pixel is centre distance + radius */
+    float far = sqrtf((fx - GFX_CX) * (fx - GFX_CX) + (fy - GFX_CY) * (fy - GFX_CY)) + GFX_W * 0.5f;
+    const float band = 34.0f, R0 = 36.0f;      /* the tapped icon is the seed, not a hole */
+    float R = R0 + p * (far + band - R0) - band * 0.5f;
     float rin = R - band * 0.5f, rout = R + band * 0.5f;
     if (rout <= 0) return;
     float rin2 = rin > 0 ? rin * rin : 0, rout2 = rout * rout;
@@ -691,10 +744,19 @@ static void scene_draw(gfx_fb *fb)
         int off = (int)lroundf(H * (1.0f - p));
         int top = rise ? off : 0, bot = rise ? H : H - off;
         int uoy = (int)lroundf((rise ? -1 : 1) * H * 0.10f * p);
-        int dimk = 32 - (int)lroundf(20.0f * p);
+        int dimk = 32 - (int)lroundf(26.0f * p);
         if (rise) draw_screen(fb, T.under, 0, 0, W, top, 0, uoy, dimk);
         else      draw_screen(fb, T.under, 0, bot, W, H, 0, uoy, dimk);
         draw_screen(fb, T.over, 0, top, W, bot, 0, rise ? off : -off, 32);
+        /* the sheet's leading edge: a hairline across the glass and a grabber pill, so
+         * the face reads as covered, not sliced */
+        if (off > 0 && off < H) {
+            int ey = rise ? top : bot - 2;
+            gfx_fb e;
+            if (nos_subview(fb, &e, 0, ey, W, ey + 2, 0, 0)) gfx_fill_rect(&e, 0, ey, W, 2, GFX_RGB(51, 51, 51));
+            float gy = rise ? top + 14.0f : bot - 16.0f;
+            gfx_fill_pill(fb, GFX_CX - 15, gy, GFX_CX + 15, 2.5f, GFX_RGB(102, 102, 102));
+        }
         break;
     }
     case TX_IRIS: case TX_DISSOLVE: {
@@ -851,31 +913,51 @@ static void tick_screens(float dt)
     }
 }
 
-static void tick_transition(float dt)
+static void tx_complete(void)
 {
-    if (T.state != TXS_AUTO) return;
-    int moving;
-    if (T.use_tween) { T.p = mtw_value(&T.tw); moving = !mtw_done(&T.tw); if (!moving) T.p = T.tw.to; }
-    else {
-        moving = msp_step(&T.sp, dt);
-        /* end as soon as the picture stops changing: within half a pixel of the target
-         * and slower than a pixel per frame (a critically damped tail is otherwise
-         * ~10 frames of full repaints that look identical) */
-        if (moving && fabsf(T.sp.x - T.sp.target) < 0.5f && fabsf(T.sp.v) < 30.0f) {
-            msp_set(&T.sp, T.sp.target);
-            moving = 0;
-        }
-        T.p = T.sp.x / T.span;
-    }
-    if (moving) return;
     if (T.p <= 0.001f && T.popping && s_depth > 1) {      /* the over screen leaves */
         call_leave(top_screen());
         s_depth--;
         call_reveal(top_screen());
     }
     T.state = TXS_IDLE;
-    T.popping = 0; T.cancel_pops = 0;
+    T.popping = 0; T.cancel_pops = 0; T.lin_v = 0;
     s_force_full = 1;
+}
+
+static void tick_transition(float dt)
+{
+    if (T.state != TXS_AUTO) return;
+    int moving;
+    if (T.lin_v > 0) {
+        T.p -= T.lin_v * dt;
+        moving = T.p > 0;
+        if (!moving) T.p = 0;
+        T.sp.x = T.p * T.span;
+    } else if (T.use_tween) { T.p = mtw_value(&T.tw); moving = !mtw_done(&T.tw); if (!moving) T.p = T.tw.to; }
+    else {
+        moving = msp_step(&T.sp, dt);
+        /* end as soon as the picture stops changing: within 1.5 px of the target
+         * and slower than 3 px per frame (a critically damped tail is otherwise
+         * ~10 frames of full repaints that look identical) */
+        if (moving && fabsf(T.sp.x - T.sp.target) < 1.5f && fabsf(T.sp.v) < 90.0f) {
+            msp_set(&T.sp, T.sp.target);
+            moving = 0;
+        }
+        T.p = T.sp.x / T.span;
+    }
+    if (moving) return;
+    tx_complete();
+}
+
+/* Land a running transition at its destination now (a tap during its last frames). */
+static void tx_finish(void)
+{
+    if (T.state != TXS_AUTO) return;
+    if (T.lin_v > 0) T.p = 0;
+    else if (T.use_tween) T.p = T.tw.to;
+    else { msp_set(&T.sp, T.sp.target); T.p = T.sp.x / T.span; }
+    tx_complete();
 }
 
 static void tick_overlays(float dt)

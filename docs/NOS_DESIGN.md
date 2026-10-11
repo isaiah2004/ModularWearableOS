@@ -140,3 +140,27 @@ Rules:
 - [ ] Device cost model: no late frames in the screen's motion scripts.
 - [ ] Damage check passes (no stale pixels).
 - [ ] AOD variant where relevant (faces): < 10% lit pixels, no red fills.
+
+## 8. Standards (adopted after the round-1 consistency audit, docs/polish/system_r1.md §B)
+
+Constants live in `nos/ui.h` (`UI_*`). Use them; never local numbers.
+
+| Property | Standard |
+|---|---|
+| Title | `ui_title()` baseline y 70, C_SEC, every pushed screen and widget. Exempt: faces, Compass dial, Torch, full-screen rings (Activity ring, Find watch), sheets. |
+| Back | engine swipe only; no chevrons. |
+| Buttons | height 88, radius 44 (`UI_BTN_H`). Single: 200 wide centred at y 372. Pair: 140 wide at x 154 / 312, y 372. Primary white/black, secondary C_SURF2. Hit area ≥ 88 px everywhere. Chips may be 56 tall with 88 px hit rows. |
+| Destructive / disruptive confirm | arm-then-tap-again: first tap arms (red outline + "TAP AGAIN TO …" + 3 red 6 px dots expiring one per second), second tap acts. Used by power off, restart, reset settings, delete alarm. No confirm pages. |
+| List rows | 90 px pitch, headers 60. Content x 62–404 while \|cy−233\| < 150 (no sideways drift), values/chevrons right-aligned at x 384, a chevron on every row that pushes. Pressed pill shows ≥ 3 frames even on a quick tap. Cards: fixed width, r 40, C_SURF2. |
+| Labels | `ui_label` (caps, tracking 2). Units keep case: `ui_label_unit(value, unit)` → "4.00 V", "39 dB", "914.6 hPa", "48 uT". UI_F_SMALL only for technical identifiers (caps, tracking 1). |
+| Red | one element per screen, as a dot or a single glyph — never a column/area fill. Over-limit / alerts / recording / live. No amber. Banners without an icon use a white bell. |
+| Dot numerals | hero ≤ 4 glyphs pitch 9; hero 5–8 glyphs pitch 8; rows/tiles 4.4; secondary 5x7 pitch 3. Ghost cells only on faces and on the empty value `--`. A value with a degree mark is centred as a group. |
+| Empty | `ui_absent(icon, head, body, footer|NULL, p)`; then either one `[ STATE ]` at y 340 or one primary button at y 372. |
+| Module absent | `ui_absent(icon, "Not connected", what it adds, "<NAME> MODULE", p)`. Settings inline notes: `[ NO <NAME> MODULE ]`, toasts in the same words. |
+| Phone absent | `ui_absent(DOT_ICON_BT, "Phone not connected", "Pair in Gadgetbridge as Bangle.js NOS", NULL, p)`. |
+| Entry build | hero `DOT_REVEAL_RANDOM` 0.30 s, icons `DOT_REVEAL_CENTER`, rows stagger 34 ms (≤ 6 rows), buttons with the hero at full colour (no grey fade-ups), iris entries start their build at 40 % of the iris, no scale-ups, no count-up longer than the build, never show `0` as a resting value. Screens revealed by back (`nos_revealed()`) or pulled by a finger (`nos_entered_by_finger()`) don't rebuild. |
+| State changes | never a hard cut: dot build-out/in, colour-step crossfade (≤ 8 levels) or a rigid slide, 150–300 ms. Values change with `dot_text_morph` (~0.28 s), at most ~1 Hz for live readings. |
+| Page dots | `ui_page_dots` at y 440 (`UI_DOTS_Y`). |
+| Placeholders | missing value `--` (`UI_NONE`). Thousands separator only ≥ 10,000. |
+| Hints | caps labels (`ui_label`), not sentence-case body text. |
+| Toasts | top of screen (y≈46), bracketed by `ui_draw_toast` itself — pass plain words. |

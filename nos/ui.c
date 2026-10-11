@@ -477,7 +477,8 @@ void ui_segments(gfx_fb *fb, float x, float y, float w, float h, int n, float va
     float sw = (w - gap * (n - 1)) / n;
     for (int i = 0; i < n; i++) {
         float sx = x + i * (sw + gap);
-        float f = m_clamp(value - i, 0, 1);
+        /* discrete progress: a segment is on or off, never a sliver */
+        float f = value - i >= 0.5f ? 1.0f : 0.0f;
         int x0 = (int)lroundf(sx), x1 = (int)lroundf(sx + sw);
         if (f >= 1) gfx_fill_rect(fb, x0, (int)y, x1 - x0, (int)h, on);
         else if (f <= 0) { if (off) gfx_fill_rect(fb, x0, (int)y, x1 - x0, (int)h, off); }
@@ -521,6 +522,33 @@ void ui_value(gfx_fb *fb, float cx, float y, const char *value, const char *unit
     dot_style st = { DOT_FONT_TALL, pitch, pitch * 0.8f, color, 0, 1, 1 };
     dot_text_a(fb, &st, cx, y, value, 1);
     if (unit && *unit) ui_label(fb, (int)cx, (int)(y + dot_text_height(&st) + 26), unit, C_SEC, UI_CENTER);
+}
+
+void ui_absent(gfx_fb *fb, int icon, const char *head, const char *body, const char *footer, float p)
+{
+    p = m_clamp(p, 0, 1);
+    if (icon) dot_icon_anim(fb, icon, UI_CX, 170, 4.2f, 3.4f, C_DIS, m_clamp(p / 0.7f, 0, 1), DOT_REVEAL_CENTER);
+    float k = floorf(m_clamp((p - 0.3f) / 0.7f, 0, 1) * 8.0f + 0.5f) / 8.0f;   /* text follows the icon */
+    if (k <= 0) return;
+    if (head && *head) ui_text(fb, UI_F_TITLE, UI_CX, 270, head, ui_dim(C_PRI, k), UI_CENTER, 0);
+    if (body && *body) ui_text_wrap(fb, UI_F_BODY, UI_CX, 306, 330, 32, 2, body, ui_dim(C_SEC, k), UI_CENTER);
+    if (footer && *footer) ui_label(fb, UI_CX, 398, footer, ui_dim(C_DIS, k), UI_CENTER);
+}
+
+int ui_label_unit(gfx_fb *fb, int x, int y, const char *value, const char *unit, uint16_t color, int align)
+{
+    char v[32];
+    int i = 0;
+    for (; value && value[i] && i < 31; i++) v[i] = (char)toupper((unsigned char)value[i]);
+    v[i] = 0;
+    int wv = ui_text_width(UI_F_LABEL, v, LABEL_TRACK);
+    int gap = unit && *unit ? 8 : 0;
+    int wu = unit && *unit ? ui_text_width(UI_F_LABEL, unit, LABEL_TRACK) : 0;
+    int w = wv + gap + wu;
+    int x0 = align == UI_CENTER ? x - w / 2 : align == UI_RIGHT ? x - w : x;
+    ui_text(fb, UI_F_LABEL, x0, y, v, color, UI_LEFT, LABEL_TRACK);
+    if (wu) ui_text(fb, UI_F_LABEL, x0 + wv + gap, y, unit, color, UI_LEFT, LABEL_TRACK);
+    return w;
 }
 
 void ui_state(gfx_fb *fb, int cx, int y, const char *s, uint16_t color)
@@ -642,14 +670,21 @@ void ui_list_draw(gfx_fb *fb, ui_list *l)
 /* ----------------------------------------------------- engine overlays */
 void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, float y)
 {
-    const float w = 312, h = 116, top = 38 + y;
+    /* top 52 / width 300 keeps the rounded corners inside the glass; two body lines */
+    const float w = 300, h = 136, top = UI_BANNER_TOP + y;
     float x = UI_CX - w / 2;
     ui_rrect(fb, x, top, w, h, 40, C_SURF2);
-    float iy = top + 36;
-    if (icon) dot_icon(fb, icon, x + 44, iy, 2.6f, 2.1f, C_WHITE);
-    else dot_disc(fb, x + 44, iy, 10, C_RED);
-    ui_label(fb, (int)(x + 66), (int)(iy + 6), title, C_SEC, UI_LEFT);
-    ui_text_fit(fb, UI_F_BODY, (int)(x + 32), (int)(top + 88), body, C_PRI, UI_LEFT, (int)w - 64);
+    float iy = top + 34;
+    dot_icon(fb, icon ? icon : DOT_ICON_BELL, x + 42, iy, 2.6f, 2.1f, C_WHITE);   /* never a red */
+    char t[40];
+    int n = 0;
+    for (; title[n] && n < 39; n++) t[n] = (char)toupper((unsigned char)title[n]);
+    t[n] = 0;
+    /* fit the caps title to the card with an ellipsis */
+    const int maxw = (int)w - 64 - 30;
+    while (n > 1 && ui_text_width(UI_F_LABEL, t, LABEL_TRACK) > maxw) { t[--n] = 0; if (n > 3) memcpy(t + n - 3, "...", 4); }
+    ui_text(fb, UI_F_LABEL, (int)(x + 64), (int)(iy + 6), t, C_SEC, UI_LEFT, LABEL_TRACK);
+    ui_text_wrap(fb, UI_F_BODY, (int)(x + 30), (int)(top + 82), (int)w - 60, 30, 2, body, C_PRI, UI_LEFT);
 }
 
 void ui_draw_toast(gfx_fb *fb, const char *text, float t)
@@ -658,13 +693,18 @@ void ui_draw_toast(gfx_fb *fb, const char *text, float t)
     k = m_clamp(k, 0, 1);
     k = floorf(k * 8.0f + 0.5f) / 8.0f;
     if (k <= 0) return;
-    char b[48];
-    int i = 0;
-    for (; text[i] && i < 47; i++) b[i] = (char)toupper((unsigned char)text[i]);
-    b[i] = 0;
+    /* states read as bracketed caps text: "[ SAVED ]" */
+    char b[52];
+    int i = 0, o = 0;
+    while (text[i] == '[' || text[i] == ' ') i++;
+    b[o++] = '['; b[o++] = ' ';
+    for (; text[i] && o < 46; i++) b[o++] = (char)toupper((unsigned char)text[i]);
+    while (o > 2 && (b[o - 1] == ']' || b[o - 1] == ' ')) o--;
+    b[o++] = ' '; b[o++] = ']'; b[o] = 0;
     int tw = ui_text_width(UI_F_LABEL, b, LABEL_TRACK);
-    float w = tw + 48.0f, h = 46;
-    float y = 352 + (1 - k) * 10;
+    float w = tw + 40.0f, h = 42;
+    if (w > 290) w = 290;                     /* the chord at the top of the glass */
+    float y = 30 - (1 - k) * 8;               /* the top: never over the thumb-zone actions */
     ui_rrect(fb, UI_CX - w / 2, y, w, h, h / 2, ui_dim(C_WHITE, k));
     ui_text(fb, UI_F_LABEL, UI_CX, (int)(y + h / 2 + UI_F_LABEL->ascent * 0.5f - 2), b, C_BG, UI_CENTER, LABEL_TRACK);
 }

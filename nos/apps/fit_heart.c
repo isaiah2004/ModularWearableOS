@@ -36,17 +36,12 @@
 #define TRACE_MAX 420
 #define ILLU_MAX  64
 #define LOCK_Q   0.6f
+#define T_BUILD0 0.17f        /* iris entries start their build at 40% of the iris */
+#define XOUT     0.15f        /* state change: outgoing content fades out */
+#define XIN      0.20f        /* ... then the incoming content fades in */
 
 static float qz(float v, float steps) { return floorf(v * steps + 0.5f) / steps; }
 
-/* Neutral grey at a fraction of a grey token (ui_dim rounds the 5/6-bit channels
- * separately, which tints dark greys magenta). */
-static uint16_t gdim(uint16_t c, float k)
-{
-    float lvl = (float)((c >> 5) & 63) / 63.0f * m_clamp(k, 0, 1);
-    int r = (int)lroundf(lvl * 31.0f), g = (int)lroundf(lvl * 63.0f);
-    return (uint16_t)(r << 11 | g << 5 | r);
-}
 
 /* ------------------------------------------------------------ dot lists
  * A list of dots prepared in tick and drawn as one recorded command. */
@@ -151,18 +146,21 @@ static int vp_input(vpager *v, const nos_input *in)
 static void vp_tick(vpager *v, float dt)
 {
     if (!v->drag && msp_step(&v->sp, dt)) v->bar_t = nos_t;
+    /* linear ramp at a fixed rate (in 0.17 s, out 0.4 s); quantised only when drawn,
+     * so it always reaches 0 instead of rounding back up */
     float target = nos_t - v->bar_t < 0.7f ? 1.0f : 0.0f;
-    float k = dt * (target > v->bar_k ? 10.0f : 3.5f);
-    v->bar_k += (target - v->bar_k) * (k > 1 ? 1 : k);
-    if (v->bar_k < 0.04f) v->bar_k = 0;
-    v->bar_k = qz(v->bar_k, 16.0f);
+    float step = dt * (target > v->bar_k ? 6.0f : 2.5f);
+    if (v->bar_k < target) { v->bar_k += step; if (v->bar_k > target) v->bar_k = target; }
+    else { v->bar_k -= step; if (v->bar_k < target) v->bar_k = target; }
 }
+/* the arc is gfx_arc (expensive): gone below 20% */
+static float vp_bar_alpha(const vpager *v) { return v->bar_k < 0.2f ? 0.0f : qz(v->bar_k, 16.0f); }
 
 /* ---------------------------------------------------------- history data */
 typedef struct {
     uint8_t hist[144];
     int nhist;
-    int resting, mn, mx, last, spo2;
+    int resting, mn, mx, avg, last, spo2;
     uint32_t last_epoch;
 } hdata;
 
@@ -181,17 +179,20 @@ static void hdata_read(hdata *h, int allow_hal)
     if (h->nhist <= 0 && allow_hal && (hal_ext_present() & EXT_HR)) h->nhist = hal_hr_history(h->hist, 144);
     if (h->nhist < 0) h->nhist = 0;
     /* derive what the service didn't give */
-    int lo = 255, hi = 0, cnt = 0, sum_low = 0;
+    int lo = 255, hi = 0, cnt = 0, sum_low = 0, sum = 0;
     for (int i = 0; i < h->nhist; i++) {
         int v = h->hist[i];
         if (!v) continue;
         if (v < lo) lo = v;
         if (v > hi) hi = v;
+        sum += v;
         cnt++;
     }
     if (cnt) {
-        if (!h->mn) h->mn = lo;
-        if (!h->mx) h->mx = hi;
+        /* the page shows the same rolling 24 h as its chart: min / avg / max of it */
+        h->mn = lo;
+        h->mx = hi;
+        h->avg = (sum + cnt / 2) / cnt;
         if (!h->resting) {
             /* resting ~ mean of the lowest quarter of the readings */
             int want = cnt / 4 > 0 ? cnt / 4 : 1, got = 0;
@@ -218,7 +219,8 @@ static int hdata_columns(const hdata *h, uint8_t *out, int cols, int rows, float
         float g = stagger ? bezier_ease(&EASE_STANDARD, m_stagger(grow_p, c, cols, 0.45f)) : grow_p;
         float f = n ? ((float)s / (float)n - flo) / (fhi - flo) : 0;
         if (n) { f = floorf(m_clamp(f, 0, 1) * (float)rows + 0.5f) / (float)rows; if (f < 1.0f / (float)rows) f = 1.0f / (float)rows; }
-        out[c] = (uint8_t)lroundf(m_clamp(f * g, 0, 1) * 255.0f);
+        /* at rest: whole dots, rounded down so no sub-pixel speck grows above a column */
+        out[c] = (uint8_t)(g >= 1.0f ? floorf(f * 255.0f) : lroundf(m_clamp(f * g, 0, 1) * 255.0f));
     }
     return 1;
 }
@@ -266,13 +268,18 @@ static struct {
     float u;                    /* measuring -> locked layout, eased */
     float heart_scale;
     float now_h;                /* local clock, hours */
+    /* state transitions: the outgoing mode fades out (XOUT), then the new one in (XIN) */
+    int prev_mode;              /* -1 = none (entry build) */
+    int prev_locked, prev_bpm, prev_spo2;
+    float prev_u;
+    float kin, kout;            /* quantised alphas for this frame */
 } H;
 
 static float trace_y(float v, float yc, float h)
 {
     float lo = H.lo, hi = H.hi;
     if (hi - lo < 40) { float m = (lo + hi) * 0.5f; lo = m - 20; hi = m + 20; }
-    return yc + h * 0.5f - (v - lo) / (hi - lo) * h;
+    return m_clamp(yc + h * 0.5f - (v - lo) / (hi - lo) * h, yc - h * 0.5f, yc + h * 0.5f);
 }
 
 static int sample_at(uint32_t k, float *out)
@@ -343,15 +350,18 @@ static void playhead_tick(float dt)
     for (uint32_t k = k0; k <= (uint32_t)H.ph; k++)
         if (sample_at(k, &v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
     if (hi >= lo) {
+        /* widen at once (a bigger beat never escapes the box), narrow smoothly */
         float a = dt * 2.5f;
-        H.lo += (lo - H.lo) * a;
-        H.hi += (hi - H.hi) * a;
+        if (lo < H.lo) H.lo = lo; else H.lo += (lo - H.lo) * a;
+        if (hi > H.hi) H.hi = hi; else H.hi += (hi - H.hi) * a;
     }
 }
 
 /* Lay out the trace: rigid chain of dots, samples joined by interpolated dots. */
-static void build_trace(float xl, float xr, float yc, float h, uint16_t ink, float dsz)
+static void build_trace(float xl, float xr, float yc, float h, uint16_t ink, uint16_t pen, float dsz, int step)
 {
+    /* step: use every `step`-th sample (absolute index, so the choice never changes as
+     * the trace scrolls) — the narrow locked trace keeps its dots apart that way */
     dlist *l = &H.trace;
     dl_reset(l);
     if (!l->d || !H.ph_ok) return;
@@ -360,12 +370,13 @@ static void build_trace(float xl, float xr, float yc, float h, uint16_t ink, flo
     float frac = H.ph - (float)kn;
     float px = 0, py = 0;
     int have = 0;
-    const float spacing = dsz * 0.8f;
-    for (int i = WIN + 1; i >= -1; i--) {
+    const float spacing = dsz * 1.35f;          /* separate dots: the trace reads as dots */
+    for (int i = WIN + 2; i >= -1; i--) {
         float v, x, y;
         if (i >= 0) {
             if ((uint32_t)i > kn) continue;
             uint32_t k = kn - (uint32_t)i;
+            if (k % (uint32_t)step) continue;
             if (!sample_at(k, &v)) continue;
             x = xr - ((float)i + frac) * pitch;
         } else {
@@ -377,26 +388,22 @@ static void build_trace(float xl, float xr, float yc, float h, uint16_t ink, flo
             x = xr;
         }
         y = trace_y(v, yc, h);
-        if (x < xl - pitch) { px = x; py = y; have = 1; continue; }
+        if (x < xl - pitch * step) { px = x; py = y; have = 1; continue; }
         if (have) {
             float dx = x - px, dy = y - py, dist = sqrtf(dx * dx + dy * dy);
-            int nf = (int)(dist / spacing);
+            int nf = (int)(dist / spacing) - 1;
             for (int f = 1; f <= nf; f++) {
                 float t = (float)f / (float)(nf + 1);
                 float fx = px + dx * t, fy = py + dy * t;
-                if (fx < xl) continue;
-                float fade = m_clamp((fx - xl) / 70.0f, 0, 1);
-                dl_add(l, fx, fy, dsz, gdim(ink, qz(0.2f + 0.8f * fade, 4.0f)));
+                if (fx < xl) continue;                 /* clipped at the left edge, no fade */
+                dl_add(l, fx, fy, dsz, ink);
             }
         }
-        if (x >= xl && i >= 0) {
-            float fade = m_clamp((x - xl) / 70.0f, 0, 1);
-            dl_add(l, x, y, dsz, gdim(ink, qz(0.2f + 0.8f * fade, 4.0f)));
-        }
+        if (x >= xl && i >= 0) dl_add(l, x, y, dsz, ink);
         px = x; py = y; have = 1;
     }
     /* pen dot */
-    if (have) dl_add(l, xr, py, dsz * 1.7f, C_WHITE);
+    if (have) dl_add(l, xr, py, dsz * 1.8f, pen);
 }
 
 /* Not on the wrist: the watch (a dot pill) settles onto the wrist (a dot arc). */
@@ -411,7 +418,7 @@ static void build_illu(float t, float k)
     float press = c < 0.45f ? bezier_ease(&EASE_INOUT, c / 0.45f) : c < 0.75f ? 1.0f : 1.0f - bezier_ease(&EASE_INOUT, (c - 0.75f) / 0.25f);
     float lift = (1.0f - press) * 16.0f;
     int touch = press > 0.95f;
-    uint16_t dim = gdim(C_DIS, k), mid = gdim(C_SEC, k), lit = gdim(C_PRI, k);
+    uint16_t dim = ui_dim(C_DIS, k), mid = ui_dim(C_SEC, k), lit = ui_dim(C_PRI, k);
     /* wrist: an arc of a big circle */
     for (int i = -7; i <= 7; i++) {
         float a = (float)i * 0.07f;
@@ -437,14 +444,18 @@ static void build_illu(float t, float k)
     for (int i = -1; i <= 1; i++) dl_add(l, cx + (float)i * 11.0f, wy + 33, 5.0f, touch ? lit : mid);
 }
 
+static int is_live(int m) { return m == M_MEASURING || m == M_LOCKED; }
+
 static void heart_enter(void)
 {
     memset(H.v, 128, sizeof H.v);
-    H.n = WIN + 8;   /* a flat baseline the live signal scrolls in over */ H.have_last = 0; H.acc = 0; H.ph = 0; H.ph_ok = 0;
+    H.n = WIN + 8;   /* a flat baseline the live signal scrolls in over */
+    H.have_last = 0; H.acc = 0; H.ph = 0; H.ph_ok = 0;
     H.lo = 100; H.hi = 156; H.npk = 0; H.last_peak = 0; H.beat_t = 10;
     H.off_t = 0; H.good_t = 0; H.locked = 0; H.lock_t = 0;
     H.bpm_shown = 0; H.bpm_prev = 0; H.bpm_morph = 1; H.bpm_change_t = 0; H.spo2 = 0;
-    H.t = 0; H.u = 0; H.heart_scale = 1;
+    H.t = nos_revealed() ? 10.0f : 0.0f;          /* back from a cover: no rebuild */
+    H.u = 0; H.heart_scale = 1;
     dl_alloc(&H.trace, TRACE_MAX);
     dl_alloc(&H.illu, ILLU_MAX);
     dl_reset(&H.trace); dl_reset(&H.illu);
@@ -453,6 +464,8 @@ static void heart_enter(void)
     if (H.present) hal_hr_enable(1);
     H.mode = H.present ? M_MEASURING : M_ABSENT;
     H.mode_t = 0;
+    H.prev_mode = -1; H.prev_locked = 0; H.prev_bpm = 0; H.prev_spo2 = 0; H.prev_u = 0;
+    H.kin = H.kout = 0;
     vp_init(&H.vp, NPAGES);
     hdata_read(&H.hd, 1);
     H.hist_p = 0; H.hist_started = 0;
@@ -464,7 +477,35 @@ static void heart_leave(void)
     if (H.locked && H.bpm_shown > 0) svc_heart_record(H.bpm_shown, H.spo2);
 }
 
-static void set_mode(int m) { if (H.mode != m) { H.mode = m; H.mode_t = 0; } }
+static void set_mode(int m)
+{
+    if (H.mode == m) return;
+    /* measuring -> locked is carried by the layout tween, not a crossfade */
+    if (is_live(H.mode) && is_live(m)) { H.mode = m; return; }
+    H.prev_mode = H.mode; H.prev_locked = H.locked; H.prev_u = H.u;
+    H.prev_bpm = H.bpm_shown; H.prev_spo2 = H.spo2;
+    H.mode = m; H.mode_t = 0;
+}
+
+static float mode_in(void)
+{
+    if (H.prev_mode < 0) return qz(m_clamp((H.t - T_BUILD0) / UI_ENTRY_S, 0, 1), 8.0f);
+    return qz(m_clamp((H.mode_t - XOUT) / XIN, 0, 1), 8.0f);
+}
+static float mode_out(void)
+{
+    if (H.prev_mode < 0 || H.mode_t >= XOUT) return 0;
+    return qz(1.0f - H.mode_t / XOUT, 8.0f);
+}
+
+static void trace_for(float u, int locked, float k)
+{
+    if (k <= 0.01f) { dl_reset(&H.trace); return; }
+    float xl = m_lerp(58, 118, u), xr = m_lerp(408, 348, u);
+    float yc = m_lerp(238, 324, u), h = m_lerp(100, 38, u);
+    build_trace(xl, xr, yc, h, ui_dim(locked ? C_SEC : C_PRI, k), ui_dim(C_WHITE, k),
+                m_lerp(3.4f, 2.8f, u), u > 0.5f ? 2 : 1);
+}
 
 static void heart_tick(float dt)
 {
@@ -488,8 +529,7 @@ static void heart_tick(float dt)
         int lockable = H.r.on_wrist && H.r.bpm > 0 && H.r.quality >= LOCK_Q;
         H.good_t = lockable ? H.good_t + dt : 0;
         if (H.off_t > 1.0f) {
-            if (H.mode != M_NOCONTACT) { H.locked = 0; H.good_t = 0; }
-            set_mode(M_NOCONTACT);
+            if (H.mode != M_NOCONTACT) { set_mode(M_NOCONTACT); H.locked = 0; H.good_t = 0; }
         } else if (H.r.on_wrist || H.mode != M_NOCONTACT) {
             if (!H.locked && H.good_t >= 0.5f) {
                 H.locked = 1; H.lock_t = 0;
@@ -501,7 +541,7 @@ static void heart_tick(float dt)
         if (H.locked) {
             H.lock_t += dt;
             H.bpm_change_t += dt;
-            if (H.bpm_morph < 1) H.bpm_morph = m_clamp(H.bpm_morph + dt / 0.3f, 0, 1);
+            if (H.bpm_morph < 1) H.bpm_morph = m_clamp(H.bpm_morph + dt / 0.28f, 0, 1);
             if (H.r.bpm > 0 && H.r.bpm != H.bpm_shown && H.bpm_morph >= 1 && H.bpm_change_t > 1.2f) {
                 H.bpm_prev = H.bpm_shown; H.bpm_shown = H.r.bpm; H.bpm_morph = 0; H.bpm_change_t = 0;
             }
@@ -514,94 +554,109 @@ static void heart_tick(float dt)
     float bt = H.beat_t;
     float pulse = bt < 0.067f ? bt / 0.067f : expf(-(bt - 0.067f) / 0.16f);
     H.heart_scale = 1.0f + 0.55f * qz(m_clamp(pulse, 0, 1), 16.0f);   /* the outline swells bold on each beat */
-    if (H.mode == M_MEASURING || H.mode == M_LOCKED) {
-        float u = H.u;
-        float xl = m_lerp(58, 118, u), xr = m_lerp(408, 348, u);
-        float yc = m_lerp(238, 324, u), h = m_lerp(100, 38, u);
-        build_trace(xl, xr, yc, h, H.locked ? C_SEC : C_PRI, m_lerp(4.5f, 3.5f, u));
-    } else dl_reset(&H.trace);
-    if (H.mode == M_NOCONTACT) build_illu(H.mode_t, qz(m_clamp(H.mode_t / 0.3f, 0, 1), 6.0f));
+    H.kin = mode_in();
+    H.kout = mode_out();
+    if (is_live(H.mode)) trace_for(H.u, H.locked, H.kin);
+    else if (H.kout > 0 && is_live(H.prev_mode)) trace_for(H.prev_u, H.prev_locked, H.kout);
+    else dl_reset(&H.trace);
+    if (H.mode == M_NOCONTACT && H.kin > 0) build_illu(H.t, H.kin);
+    else if (H.kout > 0 && H.prev_mode == M_NOCONTACT) build_illu(H.t, H.kout);
     else dl_reset(&H.illu);
-    /* history page builds when first seen */
-    if (!H.hist_started && H.vp.sp.x > PAGE_H * 0.45f) { H.hist_started = 1; hdata_read(&H.hd, 1); }
-    if (H.hist_started && H.hist_p < 1) H.hist_p = m_clamp(H.hist_p + dt / 0.55f, 0, 1);
+    /* the history page builds from its first revealed pixel */
+    if (!H.hist_started && H.vp.sp.x > PAGE_H * 0.05f) { H.hist_started = 1; hdata_read(&H.hd, 1); }
+    if (H.hist_started && H.hist_p < 1) H.hist_p = m_clamp(H.hist_p + dt / 0.45f, 0, 1);
 }
 
 /* ---- page 0 ---- */
-static void draw_absent(gfx_fb *fb, float oy)
+/* Signal quality as a labelled 5-segment meter (not a row of page-dot lookalikes). */
+static void draw_signal(gfx_fb *fb, float y, float q, float k)
 {
-    float k = qz(m_clamp(H.mode_t / 0.3f, 0, 1), 6.0f);
-    dot_icon_anim(fb, DOT_ICON_HEART, UI_CX, 170 + oy, 5.0f, 4.0f, C_DIS, m_clamp(H.mode_t / 0.4f, 0, 1), DOT_REVEAL_CENTER);
-    ui_text(fb, UI_F_BODY, UI_CX, (int)(268 + oy), "Module not connected", gdim(C_PRI, k), UI_CENTER, 0);
-    ui_text_wrap(fb, UI_F_BODY, UI_CX, (int)(306 + oy), 330, 30, 3,
-                 "Add the heart rate strap module to measure BPM and SpO2.", gdim(C_SEC, k), UI_CENTER);
+    int lw = ui_text_width(UI_F_LABEL, "SIGNAL", 2);
+    const float bw = 60, gap = 14;
+    float x0 = UI_CX - (lw + gap + bw) * 0.5f;
+    ui_label(fb, (int)x0, (int)y, "SIGNAL", ui_dim(C_DIS, k), UI_LEFT);
+    float by = y - (float)UI_F_LABEL->ascent * 0.5f - 3.0f;
+    ui_segments(fb, x0 + (float)lw + gap, by, bw, 6, 5, m_clamp(q, 0, 1) * 5.0f, ui_dim(C_SEC, k), ui_dim(C_LINE2, k));
 }
 
-static void draw_nocontact(gfx_fb *fb, float oy)
+static void draw_absent(gfx_fb *fb, float oy, float k)
 {
-    float k = qz(m_clamp(H.mode_t / 0.3f, 0, 1), 6.0f);
-    dl_draw(fb, &H.illu, oy);
-    ui_text(fb, UI_F_BODY, UI_CX, (int)(304 + oy), "Place the watch snugly", gdim(C_PRI, k), UI_CENTER, 0);
-    ui_state(fb, UI_CX, (int)(346 + oy), "NO CONTACT", gdim(C_DIS, k));
+    gfx_fb sub;
+    if (!nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, (int)oy)) return;
+    float p = H.prev_mode < 0 ? m_clamp((H.t - T_BUILD0) / 0.4f, 0, 1) : k;
+    ui_absent(&sub, DOT_ICON_HEART, "Not connected", "Add the heart rate strap to measure BPM and SpO2.",
+              "HEART RATE MODULE", p);
 }
 
-static void draw_live(gfx_fb *fb, float oy)
+static void draw_nocontact(gfx_fb *fb, float oy, float k)
 {
-    float u = H.u;
-    float k = qz(m_clamp(H.mode_t / 0.25f, 0, 1), 6.0f);
-    /* heart: white while measuring, red once locked */
+    ui_text(fb, UI_F_BODY, UI_CX, (int)(304 + oy), "Place the watch snugly", ui_dim(C_PRI, k), UI_CENTER, 0);
+    ui_state(fb, UI_CX, (int)(346 + oy), "NO CONTACT", ui_dim(C_DIS, k));
+}
+
+/* out = 1: the outgoing copy of a live state (static, faded by k) */
+static void draw_live(gfx_fb *fb, float oy, float k, int out)
+{
+    int locked = out ? H.prev_locked : H.locked;
+    float u = out ? H.prev_u : H.u;
+    /* heart: white while measuring, red (hard switch) once locked */
     float hy = m_lerp(134, 112, u) + oy;
-    float pitch = m_lerp(3.4f, 3.0f, u);
-    uint16_t hc = H.locked ? ui_mix(C_PRI, C_RED, qz(m_clamp(H.lock_t / 0.2f, 0, 1), 4.0f)) : gdim(C_PRI, k);
-    dot_icon_anim(fb, DOT_ICON_HEART, UI_CX, hy, pitch, qz(pitch * 0.8f * H.heart_scale, 4.0f), hc,
-                  m_clamp(H.t / 0.35f, 0, 1), DOT_REVEAL_CENTER);
-    dl_draw(fb, &H.trace, oy);
-    /* [ MEASURING ] fades out as the number arrives */
-    float km = qz(m_clamp(1.0f - u * 2.0f, 0, 1), 6.0f) * k;
+    const float pitch = 4.0f;
+    uint16_t hc = ui_dim(locked ? C_RED : C_PRI, k);
+    float hb = out ? 1.0f : m_clamp((H.t - T_BUILD0) / UI_ENTRY_S, 0, 1);
+    dot_icon_anim(fb, DOT_ICON_HEART, UI_CX, hy, pitch, qz(pitch * 0.8f * (out ? 1.0f : H.heart_scale), 4.0f), hc,
+                  hb, DOT_REVEAL_CENTER);
+    /* [ MEASURING ] + signal: fade out over 0.2 s from the lock */
+    float km = locked ? (out ? 0.0f : qz(1.0f - m_clamp(H.lock_t / 0.2f, 0, 1), 8.0f)) : 1.0f;
+    km *= k;
     if (km > 0.01f) {
-        ui_state(fb, UI_CX, (int)(340 + oy), "MEASURING", gdim(C_SEC, km));
-        float ql = floorf(m_clamp(H.r.quality / LOCK_Q, 0, 1) * 5.0f + 0.5f);
-        dot_bar(fb, UI_CX - 2 * 14.0f, 376 + oy, 5, 14.0f, 5.0f, ql,
-                gdim(C_SEC, km), gdim(C_LINE2, km));
+        ui_state(fb, UI_CX, (int)(340 + oy), "MEASURING", ui_dim(C_SEC, km));
+        draw_signal(fb, 382 + oy, H.r.quality / LOCK_Q, km);
     }
-    if (!H.locked) return;
+    if (!locked) return;
     /* the number */
-    dot_style st = { DOT_FONT_TALL, 10.0f, 8.0f, C_WHITE, 0, 1, 1 };
+    dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, ui_dim(C_WHITE, k), 0, 1, 1 };
     char a[8], b[8];
-    fmt_bpm(b, sizeof b, H.bpm_shown);
-    float bp = m_clamp(H.lock_t / 0.45f, 0, 1);
-    if (bp < 1) dot_text_anim(fb, &st, UI_CX, 148 + oy, b, 1, bp, DOT_REVEAL_CENTER, 11);
-    else if (H.bpm_morph < 1) { fmt_bpm(a, sizeof a, H.bpm_prev); dot_text_morph(fb, &st, UI_CX, 148 + oy, a, b, 1, qz(H.bpm_morph, 16.0f)); }
-    else dot_text_a(fb, &st, UI_CX, 148 + oy, b, 1);
-    float kl = qz(m_clamp((H.lock_t - 0.15f) / 0.3f, 0, 1), 6.0f);
-    ui_label(fb, UI_CX, (int)(272 + oy), "BPM", gdim(C_SEC, kl), UI_CENTER);
-    /* SpO2 + signal quality on one line */
-    char s[24];
-    if (H.spo2 > 0) snprintf(s, sizeof s, "SPO2 %d%%", H.spo2);
-    else snprintf(s, sizeof s, "SPO2 --");
-    ui_label(fb, UI_CX, (int)(378 + oy), s, gdim(H.spo2 ? C_SEC : C_DIS, kl), UI_CENTER);
-    float q = m_clamp((H.r.quality - 0.4f) / 0.5f, 0, 1) * 5.0f;
-    dot_bar(fb, UI_CX - 2 * 12.0f, 404 + oy, 5, 12.0f, 4.5f, floorf(q + 0.5f) < 1 ? 1 : floorf(q + 0.5f),
-            gdim(C_SEC, kl), gdim(C_LINE2, kl));
+    fmt_bpm(b, sizeof b, out ? H.prev_bpm : H.bpm_shown);
+    float bp = out ? 1.0f : m_clamp(H.lock_t / UI_ENTRY_S, 0, 1);
+    if (bp < 1) dot_text_anim(fb, &st, UI_CX, 150 + oy, b, 1, bp, DOT_REVEAL_RANDOM, 11);
+    else if (!out && H.bpm_morph < 1) { fmt_bpm(a, sizeof a, H.bpm_prev); dot_text_morph(fb, &st, UI_CX, 150 + oy, a, b, 1, qz(H.bpm_morph, 16.0f)); }
+    else dot_text_a(fb, &st, UI_CX, 150 + oy, b, 1);
+    float kl = out ? k : qz(m_clamp((H.lock_t - 0.1f) / 0.2f, 0, 1), 8.0f) * k;
+    ui_label(fb, UI_CX, (int)(266 + oy), "BPM", ui_dim(C_SEC, kl), UI_CENTER);
+    int spo2 = out ? H.prev_spo2 : H.spo2;
+    if (spo2 > 0) {
+        char s[8];
+        snprintf(s, sizeof s, "%d%%", spo2 > 100 ? 100 : spo2);
+        ui_label_unit(fb, UI_CX, (int)(376 + oy), "SPO2", s, ui_dim(C_SEC, kl), UI_CENTER);
+    } else ui_label_unit(fb, UI_CX, (int)(376 + oy), "SPO2", UI_NONE, ui_dim(C_DIS, kl), UI_CENTER);
+    draw_signal(fb, 406 + oy, (H.r.quality - 0.4f) / 0.5f, kl);
 }
 
-/* ---- page 1: today ---- */
+static void draw_mode(gfx_fb *fb, float oy, int mode, float k, int out)
+{
+    if (mode == M_ABSENT) draw_absent(fb, oy, k);
+    else if (mode == M_NOCONTACT) draw_nocontact(fb, oy, k);
+    else if (is_live(mode)) draw_live(fb, oy, k, out);
+}
+
+/* ---- page 1: the last 24 h ---- */
 static void stat_block(gfx_fb *fb, float cx, float oy, int v, const char *label, float p)
 {
     char b[8];
     fmt_bpm(b, sizeof b, v);
-    dot_style st = { DOT_FONT_TALL, 5.0f, 4.0f, v ? C_WHITE : C_DIS, 0, 1, 1 };
-    dot_text_anim(fb, &st, cx, 112 + oy, b, 1, p, DOT_REVEAL_RAIN, 9);
-    ui_label(fb, (int)cx, (int)(184 + oy), label, gdim(C_SEC, qz(m_clamp(p * 1.4f, 0, 1), 6.0f)), UI_CENTER);
+    dot_style st = { DOT_FONT_TALL, UI_LIST_PITCH, UI_LIST_PITCH * 0.8f, v ? C_WHITE : C_DIS, v ? 0 : C_GHOST, 1, 1 };
+    dot_text_anim(fb, &st, cx, 116 + oy, b, 1, p, DOT_REVEAL_RANDOM, 9);
+    ui_label(fb, (int)cx, (int)(184 + oy), label, ui_dim(C_SEC, qz(m_clamp(p * 1.4f, 0, 1), 8.0f)), UI_CENTER);
 }
 
 static void draw_history(gfx_fb *fb, float oy)
 {
     const hdata *h = &H.hd;
     float p = H.hist_p;
-    ui_label(fb, UI_CX, (int)(78 + oy), "TODAY", C_SEC, UI_CENTER);
-    stat_block(fb, UI_CX - 120, oy, h->resting, "RESTING", m_stagger(p, 0, 3, 0.6f));
-    stat_block(fb, UI_CX, oy, h->mn, "MIN", m_stagger(p, 1, 3, 0.6f));
+    ui_label(fb, UI_CX, (int)(UI_TITLE_Y + oy), "LAST 24 H", C_SEC, UI_CENTER);
+    stat_block(fb, UI_CX - 120, oy, h->mn, "MIN", m_stagger(p, 0, 3, 0.6f));
+    stat_block(fb, UI_CX, oy, h->avg, "AVG", m_stagger(p, 1, 3, 0.6f));
     stat_block(fb, UI_CX + 120, oy, h->mx, "MAX", m_stagger(p, 2, 3, 0.6f));
     const int cols = 48, rows = 8;
     const float pitch = 7.0f, d = 5.4f;
@@ -643,13 +698,15 @@ static void heart_draw(gfx_fb *fb)
         float oy = pg * PAGE_H - off;
         if (oy <= -PAGE_H || oy >= PAGE_H) continue;
         if (pg == 0) {
-            ui_label(fb, UI_CX, (int)(70 + oy), "HEART RATE", C_SEC, UI_CENTER);
-            if (H.mode == M_ABSENT) draw_absent(fb, oy);
-            else if (H.mode == M_NOCONTACT) draw_nocontact(fb, oy);
-            else draw_live(fb, oy);
+            ui_label(fb, UI_CX, (int)(UI_TITLE_Y + oy), "HEART RATE", C_SEC, UI_CENTER);
+            dl_draw(fb, &H.trace, oy);              /* the lists carry their own alpha */
+            dl_draw(fb, &H.illu, oy);
+            if (H.kout > 0.01f) draw_mode(fb, oy, H.prev_mode, H.kout, 1);
+            if (H.kin > 0.01f) draw_mode(fb, oy, H.mode, H.kin, 0);
         } else draw_history(fb, oy);
     }
-    ui_scrollbar(fb, H.vp.sp.x, PAGE_H * NPAGES, PAGE_H, H.vp.bar_k);
+    float ba = vp_bar_alpha(&H.vp);
+    if (ba > 0) ui_scrollbar(fb, H.vp.sp.x, PAGE_H * NPAGES, PAGE_H, ba);
 }
 
 static int heart_input(const nos_input *in) { return vp_input(&H.vp, in); }
@@ -658,11 +715,13 @@ const nos_screen scr_heart = { "HEART RATE", heart_enter, heart_leave, heart_tic
 
 /* ============================================================== WIDGET
  * Last reading + a 24-column mini history + "TAP TO MEASURE". The number builds in
- * with a dot sparkle and the columns grow when the pager settles on the page. */
+ * (dot sparkle, 0.30 s) as soon as the page slides into view. Without the HR module:
+ * "--" on a ghost grid, [ NO HR MODULE ], no tap hint. */
 static struct {
     hdata hd;
     float t;
     int started;
+    int present;
     float hist_age;        /* s since hdata was refreshed */
     char ago[24];
     uint8_t cols[24];
@@ -672,6 +731,7 @@ static struct {
 static void wgh_refresh(void)
 {
     hdata_read(&WH.hd, 1);
+    WH.present = (hal_ext_present() & EXT_HR) != 0;
     WH.hist_age = 0;
     WH.ago[0] = 0;
     if (WH.hd.last_epoch) {
@@ -703,27 +763,28 @@ static void wgh_tick(float dt, int visible)
         if (!WH.started) { wgh_refresh(); WH.t = 0; WH.started = 1; }
         else WH.t += dt;
     }
-    float p = WH.started ? m_clamp((WH.t - 0.08f) / 0.5f, 0, 1) : 0;
+    float p = WH.started ? m_clamp((WH.t - 0.05f) / 0.4f, 0, 1) : 0;
     WH.any = hdata_columns(&WH.hd, WH.cols, 24, 5, p, 1);
 }
 
 static void wgh_draw(gfx_fb *fb)
 {
-    float p = WH.started ? m_clamp(WH.t / 0.4f, 0, 1) : 0;
-    float k = qz(m_clamp(WH.t / 0.3f, 0, 1), 6.0f);
-    if (!WH.started) k = 0;
-    dot_icon(fb, DOT_ICON_HEART, UI_CX, 108, 3.0f, 2.4f, C_PRI);
-    dot_style st = { DOT_FONT_TALL, 10.0f, 8.0f, WH.hd.last ? C_WHITE : C_DIS, WH.hd.last ? 0 : C_GHOST, 1, 1 };
+    float p = WH.started ? m_clamp(WH.t / UI_ENTRY_S, 0, 1) : 0;
+    int val = WH.present ? WH.hd.last : 0;
+    ui_label(fb, UI_CX, UI_TITLE_Y, "HEART RATE", C_SEC, UI_CENTER);
+    dot_icon_anim(fb, DOT_ICON_HEART, UI_CX, 112, 3.0f, 2.4f, WH.present ? C_PRI : C_DIS, p, DOT_REVEAL_CENTER);
+    dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, val ? C_WHITE : C_DIS, val ? 0 : C_GHOST, 1, 1 };
     char b[8];
-    fmt_bpm(b, sizeof b, WH.hd.last);
-    dot_text_anim(fb, &st, UI_CX, 142, b, 1, WH.hd.last ? p : 1, DOT_REVEAL_RANDOM, 5);
-    ui_label(fb, UI_CX, 266, "BPM", C_SEC, UI_CENTER);
-    if (WH.ago[0]) ui_label(fb, UI_CX, 294, WH.ago, gdim(C_DIS, k), UI_CENTER);
-    else ui_label(fb, UI_CX, 294, "NO READINGS YET", C_DIS, UI_CENTER);
+    fmt_bpm(b, sizeof b, val);
+    dot_text_anim(fb, &st, UI_CX, 146, b, 1, val ? p : 1, DOT_REVEAL_RANDOM, 5);
+    ui_label(fb, UI_CX, 260, "BPM", C_SEC, UI_CENTER);
+    if (!WH.present) ui_state(fb, UI_CX, 288, "NO HR MODULE", C_DIS);
+    else if (WH.ago[0]) ui_label(fb, UI_CX, 288, WH.ago, C_DIS, UI_CENTER);
+    else ui_label(fb, UI_CX, 288, "NO READINGS YET", C_DIS, UI_CENTER);
     const float pitch = 9.0f;
     float x0 = UI_CX - 12 * pitch;
-    dot_columns(fb, x0, 312, 24, 5, pitch, 6.6f, WH.cols, C_SEC, C_GHOST);
-    ui_label(fb, UI_CX, 396, "TAP TO MEASURE", C_DIS, UI_CENTER);
+    dot_columns(fb, x0, 308, 24, 5, pitch, 6.6f, WH.cols, C_SEC, C_GHOST);
+    if (WH.present) ui_label(fb, UI_CX, 394, "TAP TO MEASURE", C_DIS, UI_CENTER);
 }
 
 static void wgh_tap(int x, int y) { nos_open(&scr_heart, x, y); }
