@@ -95,6 +95,18 @@ static void f_enter(void)
 
 static void finish(void);
 static float close_s(void) { return F.cancel ? CANCEL_S : F.on_home ? CLOSE_S : SET_CLOSE_S; }
+/* how far into the edit dim the face is, linear in time, 8 steps (0 = home's face, 1 =
+ * edit mode); from Settings it is dimmed throughout */
+static float dim_lin(void)
+{
+    if (!F.on_home) return 1.0f;
+    float lin = m_clamp((nos_t - F.t_enter) / OPEN_S, 0, 1);
+    if (F.chosen) {
+        float c = 1.0f - m_clamp((nos_t - F.t_chosen) / close_s(), 0, 1);
+        if (c < lin) lin = c;
+    }
+    return floorf(lin * 8.0f + 0.5f) / 8.0f;
+}
 static void f_tick(float dt)
 {
     if (F.on_home) sys_home_rec_tick(dt);
@@ -115,6 +127,12 @@ static void f_tick(float dt)
     if (hc) F.c = *hc;
     F.c.enter = 1.0f;
     F.c.aod = 0;
+    /* lite draw: the faces drop their near-invisible ghost/unlit detail as the face dims
+     * into edit mode (and back with it), and whenever two faces are on the glass (a
+     * slide draws both) */
+    float pos = F.x / PAGE_W;
+    int sliding = fabsf(pos - floorf(pos + 0.5f)) * PAGE_W > 0.5f;
+    F.c.lite = sliding ? 1.0f : dim_lin();
     int s0 = (int)floorf(F.x / PAGE_W);
     for (int s = s0; s <= s0 + 1; s++) {
         if (s < 0 || s >= nos_face_count) continue;
@@ -216,7 +234,7 @@ static void f_draw(gfx_fb *fb)
     float fa = floorf(b * 8.0f + 0.5f) / 8.0f;
     /* the face recedes with the build (ink dim: no pixel pass). nos_dim records nothing,
      * so the level is recorded as a full-screen command: a change repaints everything. */
-    float dk = F.on_home ? 1.0f - (1.0f - EDIT_DIM) * floorf(lin * 8.0f + 0.5f) / 8.0f : EDIT_DIM;
+    float dk = 1.0f - (1.0f - EDIT_DIM) * dim_lin();
     if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(0xd17u, dk));
     const char *name = nos_faces[F.page]->name ? nos_faces[F.page]->name : "FACE";
     int w = ui_text_width(UI_F_LABEL, name, 2) + 44;
