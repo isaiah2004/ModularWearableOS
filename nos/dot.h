@@ -56,6 +56,11 @@ int  dot_text_morph(gfx_fb *fb, const dot_style *st, float x, float y,
                     const char *from, const char *to, int align, float p);
 
 /* A single anti-aliased dot. */
+/* Bake all dot masks up front (call dot_prebake_begin() before the UI starts, then
+ * dot_prebake_all() from a low-priority task on the other core). */
+int  dot_prebake_begin(void);
+void dot_prebake_all(void);
+
 void dot_disc(gfx_fb *fb, float cx, float cy, float d, uint16_t color);
 
 /* Icons on an 11x11 cell grid, drawn centred at (cx, cy). */

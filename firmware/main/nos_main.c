@@ -46,6 +46,7 @@
 #include "svc.h"
 #include "apps/nos_apps.h"
 #include "faces/face.h"
+#include "dot.h"
 
 #if CONFIG_WATCH_BOARD_143C
 #error "nos_main.c targets the 1.43-B; the 1.43C build still uses main.c"
@@ -201,6 +202,14 @@ static void IRAM_ATTR btn_isr(void *arg)
         if (pressed) s_btn_presses++;
     }
     portEXIT_CRITICAL_ISR(&s_btn_mux);
+}
+
+static void dotbake_task(void *arg)
+{
+    int64_t t0 = esp_timer_get_time();
+    dot_prebake_all();
+    printf("DOT masks baked in %d ms\n", (int)((esp_timer_get_time() - t0) / 1000));
+    vTaskDelete(NULL);
 }
 
 /* ------------------------------------------------------------------ power */
@@ -403,6 +412,9 @@ void app_main(void)
     nos_set_scratch(scratch);
     nos_init(NULL);
     nos_apps_boot();
+    /* bake every dot mask on core 1 while the boot animation plays (first-use bakes
+     * cost 50-470 ms frames in wakes and builds) */
+    if (dot_prebake_begin()) xTaskCreatePinnedToCore(dotbake_task, "dotbake", 3072, NULL, 1, NULL, 1);
     wake_service_init(nos_prefs.raise_wake);
 
     s_frame_tick = xSemaphoreCreateBinary();

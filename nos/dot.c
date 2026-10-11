@@ -159,6 +159,7 @@ typedef struct {
 } dmask;
 
 static dmask **g_masks;          /* [MASK_QMAX + 1], allocated on first use */
+int dot_prebake_begin(void);
 
 static dmask *bake_mask(int q)
 {
@@ -219,13 +220,36 @@ static const dmask *mask_get(float d, int *q_out)
     int q = (int)(d * 4.0f + 0.5f);
     *q_out = q;
     if (q <= 0 || q > MASK_QMAX) return NULL;
-    if (!g_masks) {
-        g_masks = (dmask **)hal_big_alloc((uint32_t)sizeof(dmask *) * (MASK_QMAX + 1));
-        if (!g_masks) return NULL;
-        memset(g_masks, 0, sizeof(dmask *) * (MASK_QMAX + 1));
+    if (!g_masks && !dot_prebake_begin()) return NULL;
+    dmask *m = __atomic_load_n(&g_masks[q], __ATOMIC_ACQUIRE);
+    if (!m) {
+        m = bake_mask(q);
+        dmask *none = NULL;           /* the background baker may have won: keep its mask */
+        if (m && !__atomic_compare_exchange_n(&g_masks[q], &none, m, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            m = none;
     }
-    if (!g_masks[q]) g_masks[q] = bake_mask(q);
-    return g_masks[q];
+    return m;
+}
+
+/* Bake every mask size ahead of use (a host task on the idle core at boot): a growing
+ * dot otherwise bakes a new size per 0.25 px on its first run, 0.5-2.5 ms each on the
+ * watch, which turned first wakes and picker builds into 50-470 ms frames. ~550 KB. */
+int dot_prebake_begin(void)
+{
+    if (g_masks) return 1;
+    g_masks = (dmask **)hal_big_alloc((uint32_t)sizeof(dmask *) * (MASK_QMAX + 1));
+    if (!g_masks) return 0;
+    memset(g_masks, 0, sizeof(dmask *) * (MASK_QMAX + 1));
+    return 1;
+}
+void dot_prebake_all(void)
+{
+    if (!dot_prebake_begin()) return;
+    for (int q = 1; q <= MASK_QMAX; q++) {
+        if (__atomic_load_n(&g_masks[q], __ATOMIC_ACQUIRE)) continue;
+        dmask *m = bake_mask(q), *none = NULL;
+        if (m) __atomic_compare_exchange_n(&g_masks[q], &none, m, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    }
 }
 
 /* ---- stamping ------------------------------------------------------------- */
