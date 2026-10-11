@@ -8,7 +8,9 @@
  * (about one dot per 8 minutes). The red dot by the date is the recording lamp, on the
  * shared blink envelope; its unlit lamp stays as a dark dot so the pair stays centred.
  * Wake from AOD: rims and hubs grow, the packs fade up, HH:MM slides left as the
- * seconds grow in.
+ * seconds grow in. Midnight: a 0.5 s rewind (the take-up drains back into the supply
+ * dot by dot, hubs spinning a turn backwards) with the timecode morph; the date
+ * cross-fades.
  *
  * Cost: still between ticks; each second the two hubs (~70 px boxes) move for 6
  * frames and the timecode's seconds morph for 4 frames. The packs change every ~8 min. Full redraw: ~300 small dots. */
@@ -25,8 +27,9 @@
 #define TC_P   6.0f                      /* timecode pitch */
 #define TC_Y   322.0f
 #define STEP_S 0.22f                     /* hub step duration */
+#define REW_S  0.50f                     /* the midnight rewind */
 
-static struct { fk_morph tc; fk_wake w; } S;
+static struct { fk_morph tc; fk_wake w; fk_xfade date; int last_hm; float rew_t0; } S = { .last_hm = -1, .rew_t0 = -100.0f };
 
 static void enter(void) { S.tc.init = 0; }
 
@@ -37,11 +40,22 @@ static void tick(const face_ctx *c, float dt)
     fk_aod_update(c);
     fk_wake_tick(&S.w, c);
     fk_unread_tick(c);
-    char b[12], hh[3], mm[3];
-    fk_hh(hh, c->dt.hour); fk_mm(mm, c->dt.minute);
-    snprintf(b, sizeof b, "%s:%s:%02d", hh, mm, c->dt.second);
-    if (fk_build(&S.w, c) < 1.0f) S.tc.init = 0;
+    char b[12], hm[8], db[16];
+    fk_time(hm, c->dt.hour, c->dt.minute);               /* 12 h: "9:41:13", centred as is */
+    snprintf(b, sizeof b, "%s:%02d", hm, c->dt.second % 60);
+    float e = fk_build(&S.w, c);
+    int stale = fk_wake_stale(&S.w);
+    int calm = c->aod || stale || e < 1.0f || fk_wake_k(&S.w, c) < 1.0f;
+    if (e < 1.0f) S.tc.init = 0;
     fk_morph_tick(&S.tc, b, c->t);
+    if (stale) fk_morph_settle(&S.tc);
+    /* midnight: the take-up reel rewinds into the supply, starting with the timecode morph */
+    int now_hm = c->dt.hour * 60 + c->dt.minute;
+    if (S.last_hm == 1439 && now_hm == 0 && !calm) S.rew_t0 = c->t;
+    if (calm) S.rew_t0 = -100.0f;
+    S.last_hm = now_hm;
+    fk_date(db, c);
+    fk_xfade_tick(&S.date, db, c->t, calm);
 }
 
 /* reel geometry: pack rings of dots at fixed radii, lit dot by dot from the hub out */
@@ -124,6 +138,15 @@ static void draw(gfx_fb *fb, const face_ctx *c)
      * ~180 per reel is ~8 minutes */
     int np = pack_dots();
     int lit_l = (int)((1.0f - day) * (float)np + 0.5f), lit_r = np - lit_l;
+    /* the midnight rewind: the full take-up drains outer dot first while the supply
+     * winds back on from the hub, both hubs spinning one turn backwards */
+    float spin = 0.0f, ru = c->t - S.rew_t0;
+    if (!c->aod && ru >= 0.0f && ru < REW_S) {
+        float q = fk_ease(ru / REW_S);
+        int moved = (int)(q * (float)np + 0.5f);
+        lit_l = moved; lit_r = np - moved;
+        spin = -6.2831853f * q;
+    }
     /* hub rotation: 30 degrees per second, stepped with a short ease (also during the
      * build-in, so the hubs never jump when it ends) */
     float rot = 0;
@@ -131,7 +154,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         float ph = (float)c->dt.millis * 0.001f;
         float q = ph < STEP_S ? fk_mech(ph / STEP_S) : 1.0f;
         q = q > 0.93f ? 1.0f : (float)(int)(q * 32.0f) / 32.0f;
-        rot = ((float)(c->dt.second % 12) + q) * 0.5235988f;  /* one turn per 12 s */
+        rot = ((float)(c->dt.second % 12) + q) * 0.5235988f + spin;  /* one turn per 12 s */
     }
     float build = e >= 1.0f ? 1.0f : fk_ease(e / 0.7f);
     reel_ctx L = { RX_L, RY, rot, dx, dy, lit_l, k, build };
@@ -146,7 +169,9 @@ static void draw(gfx_fb *fb, const face_ctx *c)
      * seconds grow in */
     dot_style st = { DOT_FONT_TALL, TC_P, TC_P * 0.8f, C_WHITE, 0, 1, 1 };
     if (c->aod || k < 1.0f) {
-        char hm[8]; memcpy(hm, S.tc.to, 5); hm[5] = 0;
+        int nh = (int)strlen(S.tc.to) - 3;                 /* HH:MM (H:MM in 12 h) before ":SS" */
+        if (nh < 0) nh = 0;
+        char hm[8]; memcpy(hm, S.tc.to, (size_t)nh); hm[nh] = 0;
         int w5 = dot_text_width(&st, hm), w8 = dot_text_width(&st, S.tc.to);
         float x_aod = UI_CX - (float)w5 * 0.5f, x_awk = UI_CX - (float)w8 * 0.5f;
         st.color = ui_mix(C_SEC, C_WHITE, k); st.dot = TC_P * (0.6f + 0.2f * k);
@@ -154,7 +179,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         dot_text(fb, &st, xh, TC_Y + dy, hm);
         if (k > 0.0f) {                                  /* ":SS" rides along, growing */
             st.dot = TC_P * 0.8f * k;
-            dot_text(fb, &st, xh + (float)w5 + TC_P, TC_Y + dy, S.tc.to + 5);
+            dot_text(fb, &st, xh + (float)w5 + TC_P, TC_Y + dy, S.tc.to + nh);
         }
     } else if (e < 1.0f)
         dot_text_anim(fb, &st, UI_CX, TC_Y, S.tc.to, 1, m_clamp((e - 0.25f) / 0.6f, 0, 1), DOT_REVEAL_SCAN, 0);
@@ -163,19 +188,21 @@ static void draw(gfx_fb *fb, const face_ctx *c)
 
     /* date with the recording lamp: the lamp is always there (off = #1A1A1A), so the
      * pair stays centred; it lights with the shared blink envelope */
-    char b[16];
-    snprintf(b, sizeof b, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
-    int w = ui_text_width(UI_F_LABEL, b, 2);
+    int w = ui_text_width(UI_F_LABEL, S.date.to, 2);
     int lx = UI_CX - (w + 16) / 2;                       /* lamp 9 px + 7 px gap, then text */
-    ui_label(fb, lx + 16 + (int)dx, 96 + (int)dy, b, c->aod ? C_DIS : ui_mix(C_DIS, C_SEC, k), UI_LEFT);
+    fk_xfade_label(fb, &S.date, c->t, lx + 16 + (int)dx, 96 + (int)dy,
+                   c->aod ? C_DIS : ui_mix(C_DIS, C_SEC, k), UI_LEFT);
     if (!c->aod && k >= 1.0f) {
         float g = fk_stagger(e, 0.8f, 0.2f);
         dot_disc(fb, (float)lx + 4.5f, 90.0f, 9.0f * g, C_SURF2);
         float d = 9.0f * fk_blink(c->dt.millis) * g;
         if (d > 0.5f) dot_disc(fb, (float)lx + 4.5f, 90.0f, d, C_RED);
-        fk_status(fb, c, UI_CX, 406, C_SEC, UI_CENTER);
     }
-    fk_unread(fb, c, c->aod ? C_SEC : C_PRI, C_BG, dx, dy);
+    /* battery: a critical one shows in AOD too and brightens; otherwise it fades up */
+    face_ctx ca = *c; ca.aod = 1;
+    uint16_t sc = c->aod ? C_DIS : k >= 1.0f ? C_SEC : fk_status_shown(&ca) ? ui_mix(C_DIS, C_SEC, k) : ui_dim(C_SEC, k);
+    fk_status(fb, c, UI_CX + (int)dx, 406 + (int)dy, sc, UI_CENTER);
+    fk_unread(fb, c, ui_mix(C_SEC, C_PRI, k), C_BG, dx, dy);
 }
 
 const nos_face face_tape = { "TAPE", enter, tick, draw, 0 };

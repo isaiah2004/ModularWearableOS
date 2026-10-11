@@ -47,6 +47,7 @@ static void tick(const face_ctx *c, float dt)
     fk_mm(mm, c->dt.minute);
     now[0] = hh[0]; now[1] = hh[1]; now[2] = mm[0]; now[3] = mm[1]; now[4] = 0;
     if (hh[0] == ' ') { now[0] = hh[1]; now[1] = ' '; }   /* 12 h: a single hour digit keeps the left edge */
+    if (fk_wake_stale(&S.w)) S.init = 0;                  /* off the glass: settle, don't roll */
     if (!S.init) {
         memcpy(S.from, now, 5); memcpy(S.to, now, 5);
         for (int i = 0; i < 4; i++) S.t0[i] = -100.0f;
@@ -84,33 +85,44 @@ static int nrows(void) { return S.wx ? 4 : 3; }
 static int row_y(int k, int n) { return 240 + (int)(((float)k - (float)(n - 1) * 0.5f) * 50.0f); }
 static int val_x(void) { return X_COL + ui_text_width(UI_F_LABEL, "STP", 2) + 16; }
 
-static void data_row(gfx_fb *fb, int k, int n, float a, const face_ctx *c, float dx, float dy)
+/* row k of n: its label, value text and value colour; returns the row kind
+ * (0 HR, 1 STP, 2 TMP, 3 BAT) */
+static int row_text(int k, int n, char b[16], const char **labp, uint16_t *vcolp)
 {
-    char b[16];
     const char *lab = "BAT";
     uint16_t vcol = C_PRI;
     int kind = k == 0 ? 0 : k == 1 ? 1 : (k == 2 && n == 4) ? 2 : 3;
     switch (kind) {
     case 0:
         lab = "HR";
-        if (S.bpm > 0) snprintf(b, sizeof b, "%d", S.bpm); else snprintf(b, sizeof b, "--");
+        if (S.bpm > 0) snprintf(b, 16, "%d", S.bpm); else snprintf(b, 16, "--");
         if (hr_alarm()) vcol = C_RED;
         break;
     case 1:
         lab = "STP";
-        if (S.steps >= 10000) snprintf(b, sizeof b, "%d.%dK", S.steps / 1000, (S.steps % 1000) / 100);
-        else snprintf(b, sizeof b, "%d", S.steps);
+        if (S.steps >= 10000) snprintf(b, 16, "%d.%dK", S.steps / 1000, (S.steps % 1000) / 100);
+        else snprintf(b, 16, "%d", S.steps);
         break;
     case 2:
         lab = "TMP";
-        snprintf(b, sizeof b, "%d\xB0", (int)(S.temp + (S.temp < 0 ? -0.5f : 0.5f)));
+        snprintf(b, 16, "%d\xB0", (int)(S.temp + (S.temp < 0 ? -0.5f : 0.5f)));
         break;
     default:
-        if (S.batt > 0 || S.charging) snprintf(b, sizeof b, "%d", S.batt);
-        else snprintf(b, sizeof b, "--");
+        if (S.batt > 0 || S.charging) snprintf(b, 16, "%d", S.batt);
+        else snprintf(b, 16, "--");
         if (bat_alarm()) vcol = hr_alarm() ? C_WHITE : C_RED;
         break;
     }
+    *labp = lab; *vcolp = vcol;
+    return kind;
+}
+
+static void data_row(gfx_fb *fb, int k, int n, float a, const face_ctx *c, float dx, float dy)
+{
+    char b[16];
+    const char *lab;
+    uint16_t vcol;
+    int kind = row_text(k, n, b, &lab, &vcol);
     int y = row_y(k, n) + (int)dy, x = X_COL + (int)dx;
     uint16_t lc = ui_dim(kind == 3 && bat_alarm() ? C_PRI : C_DIS, a);
     ui_label(fb, x, y, lab, lc, UI_LEFT);
@@ -150,7 +162,8 @@ static void draw(gfx_fb *fb, const face_ctx *c)
             }
         } else
             for (int r = 0; r < n; r++) data_row(fb, r, n, k, c, dx, dy);
-        fk_unread(fb, c, C_PRI, C_BG, dx, dy);
+        /* grey in AOD, reaching its rest colour (red unless an alarm owns the red) */
+        fk_unread(fb, c, ui_mix(C_SEC, (hr_alarm() || bat_alarm()) ? C_PRI : C_RED, k), C_BG, dx, dy);
         return;
     }
     float e = fk_build(&S.w, c);
@@ -186,7 +199,12 @@ const struct nos_screen *face_split_hit(int x, int y, int r[4])
         if (y < ry - 25 || y >= ry + 25) continue;
         const struct nos_screen *s = k == 0 ? &scr_heart : k == 1 ? &scr_activity :
                                      (k == 2 && n == 4) ? &scr_weather : 0;
-        if (s && r) { r[0] = X_COL - 16; r[1] = ry - 22; r[2] = X_COL + 140; r[3] = ry + 22; }
+        if (s && r) {                                /* hugs the row's ink: label to value end */
+            char b[16]; const char *lab; uint16_t vc;
+            row_text(k, n, b, &lab, &vc);
+            r[0] = X_COL - 16; r[1] = ry - 22;
+            r[2] = val_x() + ui_text_width(UI_F_LABEL, b, 2) + 16; r[3] = ry + 22;
+        }
         return s;
     }
     return 0;

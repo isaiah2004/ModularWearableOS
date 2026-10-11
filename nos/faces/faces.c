@@ -62,6 +62,16 @@ void fk_mm(char out[3], int minute)
 {
     out[0] = (char)('0' + minute / 10); out[1] = (char)('0' + minute % 10); out[2] = 0;
 }
+void fk_time(char out[8], int hour, int minute)
+{
+    char hh[3], mm[3];
+    fk_hh(hh, hour); fk_mm(mm, minute);
+    snprintf(out, 8, "%s:%s", hh[0] == ' ' ? hh + 1 : hh, mm);
+}
+void fk_date(char out[16], const face_ctx *c)
+{
+    snprintf(out, 16, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
+}
 
 void fk_view_of(const gfx_fb *fb, fk_view *v)
 {
@@ -73,7 +83,7 @@ void fk_view_of(const gfx_fb *fb, fk_view *v)
 
 void fk_morph_tick(fk_morph *m, const char *now, float t)
 {
-    if (!m->init || strlen(now) != strlen(m->to)) {
+    if (!m->init) {
         strncpy(m->from, now, 11); m->from[11] = 0;
         strncpy(m->to, now, 11); m->to[11] = 0;
         m->t0 = -100.0f; m->init = 1;
@@ -89,6 +99,44 @@ float fk_morph_p(const fk_morph *m, float t, float dur)
 {
     float p = (t - m->t0) / dur;
     return p >= 1.0f ? 1.0f : p <= 0.0f ? 0.0f : p;
+}
+void fk_morph_settle(fk_morph *m)
+{
+    memcpy(m->from, m->to, sizeof m->from);
+    m->t0 = -100.0f;
+}
+
+/* ---- label cross-fade ------------------------------------------------------------------ */
+#define XF_S 0.33f
+void fk_xfade_tick(fk_xfade *x, const char *now, float t, int snap)
+{
+    if (!x->init || snap) {
+        if (!x->init || strcmp(now, x->to)) { strncpy(x->to, now, 15); x->to[15] = 0; }
+        memcpy(x->from, x->to, sizeof x->from);
+        x->t0 = -100.0f; x->init = 1;
+        return;
+    }
+    if (strcmp(now, x->to)) {
+        memcpy(x->from, x->to, sizeof x->from);
+        strncpy(x->to, now, 15); x->to[15] = 0;
+        x->t0 = t;
+    }
+}
+void fk_xfade_k(const fk_xfade *x, float t, float *a_from, float *a_to)
+{
+    int st = (int)(m_clamp((t - x->t0) / XF_S, 0, 1) * 5.0f);
+    static const float kf[5] = { 2.0f / 3.0f, 1.0f / 3.0f, 0, 0, 0 };
+    static const float kt[5] = { 0, 0, 1.0f / 3.0f, 2.0f / 3.0f, 1.0f };
+    if (st >= 5 || !strcmp(x->from, x->to)) { *a_from = 0; *a_to = 1.0f; return; }
+    *a_from = kf[st]; *a_to = kt[st];
+}
+int fk_xfade_label(gfx_fb *fb, const fk_xfade *x, float t, int px, int py, uint16_t col, int align)
+{
+    float af, at;
+    fk_xfade_k(x, t, &af, &at);
+    if (af > 0.0f) ui_label(fb, px, py, x->from, ui_dim(col, af), align);
+    if (at > 0.0f) return ui_label(fb, px, py, x->to, at >= 1.0f ? col : ui_dim(col, at), align);
+    return ui_text_width(UI_F_LABEL, x->to, 2);
 }
 
 void fk_text_outline(gfx_fb *fb, const font_t *f, int x, int y, const char *s,
@@ -171,11 +219,13 @@ void fk_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, int lit,
 }
 
 /* ---- wake from AOD ---------------------------------------------------------------- */
-#define WAKE_S 0.20f
+#define WAKE_N 6                                      /* frames: 0.2 s at 30 fps */
 int fk_wake_skip(const fk_wake *w) { return w->skip; }
+int fk_wake_stale(const fk_wake *w) { return w->stale; }
 void fk_wake_tick(fk_wake *w, const face_ctx *c)
 {
     uint32_t now = hal_millis();
+    w->stale = w->last_ms != 0 && now - w->last_ms > 500u;
     if (!c->aod && !w->last_aod && c->enter < w->last_enter && now - w->last_ms < 200u)
         w->skip = 1;                                   /* rebuilt without ever leaving the glass */
     if (c->enter >= 1.0f || c->aod) w->skip = 0;
@@ -187,8 +237,9 @@ void fk_wake_tick(fk_wake *w, const face_ctx *c)
     } else if (w->last_aod) {
         w->active = 1;
         w->t0 = c->t;
-    }
-    if (w->active && !c->aod && c->t - w->t0 > WAKE_S + 0.25f && c->enter >= 1.0f) w->active = 0;
+        w->frames = 0;
+    } else if (w->active) w->frames++;
+    if (w->active && !c->aod && w->frames >= WAKE_N + 6 && c->enter >= 1.0f) w->active = 0;
     w->last_aod = c->aod;
 }
 float fk_build(const fk_wake *w, const face_ctx *c)
@@ -199,9 +250,9 @@ float fk_wake_k(const fk_wake *w, const face_ctx *c)
 {
     if (c->aod) return 0.0f;
     if (!w->active) return 1.0f;
-    /* six frames, four quantised steps (0.25, 0.5, 0.75, 1), linear so every step shows */
-    float k = m_clamp((c->t - w->t0 + 1.0f / 30.0f) / WAKE_S, 0, 1);
-    return (float)(int)(k * 4.0f + 0.999f) / 4.0f;
+    /* counted frames, one even step each (1/6 .. 1): no step is ever held twice */
+    int f = w->frames + 1;
+    return f >= WAKE_N ? 1.0f : (float)f / (float)WAKE_N;
 }
 void fk_wake_off(const fk_wake *w, const face_ctx *c, float *dx, float *dy)
 {
@@ -222,20 +273,30 @@ void fk_unread_tick(const face_ctx *c)
     if (s_unread_k < 0.0f) s_unread_k = 0.0f;
     if (s_unread_k > 1.0f) s_unread_k = 1.0f;
 }
-void fk_unread(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy)
+float fk_unread_level(const face_ctx *c)
+{
+    return c->aod ? (c->unread > 0 ? 1.0f : 0.0f) : s_unread_k;
+}
+void fk_unread_a(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy, float a)
 {
     if (c->aod) {
         if (c->unread > 0) dot_disc(fb, UI_CX + dx, 24.0f + dy, 6.0f, C_SEC);
         return;
     }
-    if (s_unread_k <= 0.0f) return;
-    dot_disc(fb, UI_CX + dx, 24.0f + dy, 20.0f, backing);
-    dot_disc(fb, UI_CX + dx, 24.0f + dy, 9.0f, ui_mix(backing, col, s_unread_k));
+    float k = s_unread_k * m_clamp(a, 0, 1);
+    if (k <= 0.0f) return;
+    if (a >= 1.0f) dot_disc(fb, UI_CX + dx, 24.0f + dy, 20.0f, backing);   /* no moat while fading */
+    dot_disc(fb, UI_CX + dx, 24.0f + dy, 9.0f, ui_mix(backing, col, k));
+}
+void fk_unread(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy)
+{
+    fk_unread_a(fb, c, col, backing, dx, dy, 1.0f);
 }
 
 /* ---- battery status ----------------------------------------------------------------- */
 int fk_status_shown(const face_ctx *c)
 {
+    if (c->aod) return !c->charging && c->battery > 0 && c->battery < 10;
     return c->charging || (c->battery > 0 && c->battery <= 20);
 }
 int fk_status(gfx_fb *fb, const face_ctx *c, int x, int y, uint16_t col, int align)

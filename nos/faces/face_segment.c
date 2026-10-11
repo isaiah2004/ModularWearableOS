@@ -6,8 +6,9 @@
  * (the other rings stay full white, so there is one red element). In the centre the
  * time in the grotesk hero face at ~74 px cap, the date (or the battery while low /
  * charging) above, and the three values below with mono caps labels.
- * Build-in: from the fill shown last time to now (never a stale replay); wake from
- * AOD: the AOD step dots grow and the outlined time fills in.
+ * Build-in: from the fill shown last time to now (never a stale replay). Wake from
+ * AOD (6 frames): the step dots grow and the outlined time fills in, then the rings,
+ * values and labels fade up over the last 3 frames (no frame adds over ~25 % light).
  *
  * The rings are cached: they live in four quadrant sprites (PSRAM) and a segment is
  * re-rasterised into its quadrant only when its colour changes (a few per hour), so
@@ -159,6 +160,7 @@ static void cache_update(void)
 static fk_sfont s_font;                     /* nf_hero at 0.66: an ~74 px cap time */
 static fk_wake  s_w;
 static fk_morph s_tm;
+static fk_xfade s_date;
 static int      s_cold = 1;                 /* sprites hold nothing yet */
 static float    s_from[NRING];
 
@@ -183,9 +185,14 @@ static void tick(const face_ctx *c, float dt)
     fk_unread_tick(c);
     cache_init();
     fk_sfont_build(&s_font, UI_F_HERO, T_SCALE);
-    char tb[8];
-    ui_fmt_time(tb, sizeof tb, c->dt.hour, c->dt.minute);
+    int stale = fk_wake_stale(&s_w);
+    char tb[8], db[16];
+    fk_time(tb, c->dt.hour, c->dt.minute);
     fk_morph_tick(&s_tm, tb, c->t);
+    if (stale) fk_morph_settle(&s_tm);
+    float e = fk_build(&s_w, c);
+    fk_date(db, c);
+    fk_xfade_tick(&s_date, db, c->t, c->aod || stale || e < 1.0f);
     const svc_activity_t *a = svc_activity();
     int steps = c->steps > 0 ? c->steps : a->steps;
     int goal = c->step_goal > 0 ? c->step_goal : a->goal > 0 ? a->goal : 8000;
@@ -212,8 +219,11 @@ static void tick(const face_ctx *c, float dt)
         for (int q = 0; q < 4; q++) G->key[q] += 97;
         s_cold = 0;
     }
+    /* AOD shows the steps as dots at their target, so the rings wake at the fill on
+     * screen; a face that was off the glass shows its fill as it is now */
+    if (c->aod || (stale && e >= 1.0f))
+        for (int r = 0; r < NRING; r++) s_shown[r] = s_from[r] = s_target[r];
     if (c->aod) { cache_update(); return; }
-    float e = fk_build(&s_w, c);
     for (int r = 0; r < NRING; r++) {
         if (e < 1.0f) {
             float q = fk_ease(m_clamp((e - 0.08f * (float)r) / 0.75f, 0, 1));
@@ -265,6 +275,67 @@ static void draw_time(gfx_fb *fb, const face_ctx *c, float k, float dx, float dy
     }
 }
 
+/* AOD step dots: one per lit segment, centred on it (so they sink into the white
+ * segments as the rings fade in on a wake); the second lap reddens with the rings */
+typedef struct { float dx, dy, d; int lit, lap2; uint16_t on, red; } aod_ctx;
+static void step_dot(int i, const void *vc, float *x, float *y, float *d, uint16_t *col)
+{
+    const aod_ctx *A = (const aod_ctx *)vc;
+    if (i >= A->lit) { *d = 0; *col = 0; return; }
+    float a = ((float)i + 0.5f) * (6.2831853f / NSEG);
+    *x = UI_CX + A->dx + fk_sin(a) * k_r[0];
+    *y = UI_CY + A->dy - fk_cos(a) * k_r[0];
+    *d = A->d;
+    *col = i < A->lap2 ? A->red : A->on;
+}
+
+/* the value columns, nudged so the values and labels rows balance together (a wide
+ * step count on the left would otherwise pull the row left); counted in digit cells
+ * so it only moves when a value gains or loses a digit */
+static int values_shift(char v[3][16])
+{
+    static const char *lab[3] = { "STP", "KCAL", "MIN" };
+    const int xs[3] = { UI_CX - 88, UI_CX, UI_CX + 80 };
+    int dw = ui_text_width(UI_F_BODY, "0", 0);
+    float vl = (float)xs[0] - (float)((int)strlen(v[0]) * dw) * 0.5f;
+    float vr = (float)xs[2] + (float)((int)strlen(v[2]) * dw) * 0.5f;
+    float ll = (float)xs[0] - (float)ui_text_width(UI_F_LABEL, lab[0], 2) * 0.5f;
+    float lr = (float)xs[2] + (float)ui_text_width(UI_F_LABEL, lab[2], 2) * 0.5f;
+    float mid = ((vl + vr) * 0.5f + (ll + lr) * 0.5f) * 0.5f;
+    return (int)((float)UI_CX - mid + (mid < UI_CX ? 0.5f : -0.5f));
+}
+
+static void draw_values(gfx_fb *fb, float a)
+{
+    static const char *lab[3] = { "STP", "KCAL", "MIN" };
+    char v[3][16];
+    for (int i = 0; i < 3; i++) fmt_k(v[i], sizeof v[i], s_val[i]);
+    int sh = values_shift(v);
+    const int xs[3] = { UI_CX - 88 + sh, UI_CX + sh, UI_CX + 80 + sh };
+    for (int i = 0; i < 3; i++) {
+        ui_text(fb, UI_F_BODY, xs[i], Y_VAL, v[i], ui_dim(C_PRI, a), UI_CENTER, 0);
+        ui_label(fb, xs[i], Y_LAB, lab[i], ui_dim(C_DIS, a), UI_CENTER);
+    }
+}
+
+static void blit_rings(gfx_fb *fb, float a)
+{
+    if (G && G->ok) {
+        gfx_fb d = *fb;
+        if (a < 1.0f) nos_ink_dim(&d, a);
+        unsigned dk = (unsigned)d.dim * 0x9E37u;            /* the dim is part of the look */
+        for (int q = 0; q < 4; q++) sprite_blit(&d, &G->q[q], qx(q), qy(q), G->key[q] + dk);
+        return;
+    }
+    /* no PSRAM: segments as dots (cheap, still discrete) */
+    for (int r = 0; r < NRING; r++) {
+        float sh = s_shown[r];
+        float lap1 = sh > NSEG ? NSEG : sh;
+        fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)lap1, ui_dim(C_WHITE, a), ui_dim(COL_OFF, a));
+        if (sh > NSEG) fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)(sh - NSEG), ui_dim(C_RED, a), 0);
+    }
+}
+
 static void draw(gfx_fb *fb, const face_ctx *c)
 {
     char b[24];
@@ -272,57 +343,71 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     fk_wake_off(&s_w, c, &dx, &dy);
     float k = fk_wake_k(&s_w, c);
     float e = fk_build(&s_w, c);
+    uint16_t unread_rest = red_used() ? C_PRI : C_RED;
     if (c->aod || k < 1.0f) {
-        /* AOD: the steps ring as small dots for the lit segments only, time outlined;
-         * the wake morph grows the dots and fills the time */
+        /* AOD: the steps ring as small dots for the lit segments only, time outlined.
+         * Wake (6 frames): the dots grow and the time fills in; from the half-way frame
+         * the rings, values and labels fade up in 3 even steps while "STEPS" has gone,
+         * so no single frame adds more than about a quarter of the light */
+        float kr = c->aod ? 0.0f : m_clamp((k - 0.5f) / 0.5f, 0, 1);
+        float kd = m_clamp(k / 0.5f, 0, 1);
+        if (kr > 0.0f) blit_rings(fb, kr);
         int lit = (int)s_target[0];
         if (lit > NSEG) lit = NSEG;
-        if (lit > 0) fk_ring(fb, UI_CX + dx, UI_CY + dy, k_r[0], NSEG, 3.0f + 3.0f * k, lit,
-                             ui_mix(C_DIS, C_WHITE, k), 0);
+        aod_ctx A = { dx, dy, 3.0f + 3.0f * kd, lit, kr > 0.0f ? (int)s_target[0] - NSEG : 0,
+                      ui_mix(C_DIS, C_WHITE, kd), ui_mix(C_WHITE, C_RED, kr) };
+        if (lit > 0) fk_dots(fb, NSEG, 8, step_dot, &A);
         draw_time(fb, c, k, dx, dy);
-        snprintf(b, sizeof b, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
-        ui_label(fb, UI_CX + (int)dx, Y_DATE + (int)dy, b, ui_mix(C_DIS, C_SEC, k), UI_CENTER);
-        char v[16]; fmt_k(v, sizeof v, s_val[0]);
-        snprintf(b, sizeof b, "%s STEPS", v);
-        ui_label(fb, UI_CX + (int)dx, Y_VAL + (int)dy, b, ui_mix(C_DIS, C_BG, k), UI_CENTER);
-        fk_unread(fb, c, C_PRI, C_BG, dx, dy + 74.0f);
+        /* the date row: the battery holds it in AOD only when critical, awake from 20 % */
+        face_ctx ca = *c; ca.aod = 1;
+        face_ctx cw = *c; cw.aod = 0;
+        int st_a = fk_status_shown(&ca), st_w = fk_status_shown(&cw);
+        int xd = UI_CX + (int)dx, yd = Y_DATE + (int)dy;
+        uint16_t lc = ui_mix(C_DIS, C_SEC, k);
+        if (c->aod || st_a == st_w) {
+            if (st_a) fk_status(fb, c->aod ? c : &cw, xd, yd, lc, UI_CENTER);
+            else ui_label(fb, xd, yd, s_date.to, lc, UI_CENTER);
+        } else if (k < 0.5f) {
+            float o = 1.0f - k / 0.5f;
+            if (st_a) fk_status(fb, &ca, xd, yd, ui_dim(C_DIS, o), UI_CENTER);
+            else ui_label(fb, xd, yd, s_date.to, ui_dim(C_DIS, o), UI_CENTER);
+        } else {
+            if (st_w) fk_status(fb, &cw, xd, yd, ui_dim(C_SEC, kr), UI_CENTER);
+            else ui_label(fb, xd, yd, s_date.to, ui_dim(C_SEC, kr), UI_CENTER);
+        }
+        /* "2871 STEPS" leaves over the first half; the values row arrives with the rings */
+        if (k < 0.5f) {
+            char v[16]; fmt_k(v, sizeof v, s_val[0]);
+            snprintf(b, sizeof b, "%s STEPS", v);
+            ui_label(fb, UI_CX + (int)dx, Y_VAL + (int)dy, b, ui_dim(C_DIS, 1.0f - k / 0.5f), UI_CENTER);
+        }
+        if (kr > 0.0f) draw_values(fb, kr);
+        fk_unread(fb, c, ui_mix(C_SEC, unread_rest, k), C_BG, dx, dy + 74.0f);
         return;
     }
-    if (G && G->ok) {
-        for (int q = 0; q < 4; q++) sprite_blit(fb, &G->q[q], qx(q), qy(q), G->key[q]);
-    } else {
-        /* no PSRAM: segments as dots (cheap, still discrete) */
-        for (int r = 0; r < NRING; r++) {
-            float sh = s_shown[r];
-            float lap1 = sh > NSEG ? NSEG : sh;
-            fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)lap1, C_WHITE, COL_OFF);
-            if (sh > NSEG) fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)(sh - NSEG), C_RED, 0);
-        }
-    }
+    blit_rings(fb, 1.0f);
     float la = e >= 1.0f ? 1.0f : (float)(int)(fk_ease(e * 1.4f) * 4.0f) / 4.0f;
     draw_time(fb, c, 1.0f, 0, 0);
     /* the date row; the battery takes it over while low or charging */
     if (fk_status_shown(c)) fk_status(fb, c, UI_CX, Y_DATE, ui_dim(C_SEC, la), UI_CENTER);
-    else {
-        snprintf(b, sizeof b, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
-        ui_label(fb, UI_CX, Y_DATE, b, ui_dim(C_SEC, la), UI_CENTER);
-    }
-    /* three values: STP / KCAL / MIN (columns balanced for a wide left value) */
-    static const char *lab[3] = { "STP", "KCAL", "MIN" };
-    const int xs[3] = { UI_CX - 88, UI_CX, UI_CX + 80 };
-    for (int i = 0; i < 3; i++) {
-        char v[16]; fmt_k(v, sizeof v, s_val[i]);
-        ui_text(fb, UI_F_BODY, xs[i], Y_VAL, v, ui_dim(C_PRI, la), UI_CENTER, 0);
-        ui_label(fb, xs[i], Y_LAB, lab[i], ui_dim(C_DIS, la), UI_CENTER);
-    }
-    fk_unread(fb, c, red_used() ? C_PRI : C_RED, C_BG, 0, 74.0f);   /* y 98: inside the rings */
+    else fk_xfade_label(fb, &s_date, c->t, UI_CX, Y_DATE, ui_dim(C_SEC, la), UI_CENTER);
+    draw_values(fb, la);
+    fk_unread(fb, c, unread_rest, C_BG, 0, 74.0f);       /* y 98: inside the rings */
 }
 
-/* press rect of the complication under (x, y) */
+/* press rect of the complication under (x, y). The rings light a square that hugs the
+ * three tracks where the finger is (home lightens it under the segments). */
 const struct nos_screen *face_segment_hit(int x, int y, int r[4])
 {
     float dx = (float)x - UI_CX, dy = (float)y - UI_CY, d2 = dx * dx + dy * dy;
-    if (d2 >= 160.0f * 160.0f) { if (r) { r[0] = r[1] = r[2] = r[3] = 0; } return &scr_activity; }
+    if (d2 >= 160.0f * 160.0f) {
+        if (r) {
+            float d = gfx_fast_sqrt(d2), rm = (k_r[0] + k_r[2]) * 0.5f;
+            int px = (int)(UI_CX + dx / d * rm), py = (int)(UI_CY + dy / d * rm);
+            r[0] = px - 30; r[1] = py - 30; r[2] = px + 30; r[3] = py + 30;
+        }
+        return &scr_activity;
+    }
     if (y > Y_VAL - 30 && y < Y_LAB + 16) {
         if (r) { r[0] = UI_CX - 140; r[1] = Y_VAL - 30; r[2] = UI_CX + 140; r[3] = Y_LAB + 14; }
         return &scr_activity;

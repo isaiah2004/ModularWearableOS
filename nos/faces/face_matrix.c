@@ -13,8 +13,8 @@
  * damage command per run of 5 cells (bbox + hash of their levels), so a changing cell
  * repaints an 88 x 18 px box. Full redraw (pager): ~11 ms on the cost model.
  * Motion: build-in = a ripple from the centre switches cells on, digits light behind it;
- * wake from AOD = the AOD digit dots grow into the grid while the grid fades up (no
- * blank frame); minute change = the ring drains backwards while the changed digit
+ * wake from AOD (6 frames) = the AOD digit dots grow into the grid while the grid fades
+ * up, the seconds ring and its head rising from it over the last 3 (no blank frame); minute change = the ring drains backwards while the changed digit
  * cells fade out/in through the levels, each line scanning from its top (6 frames). */
 #include "faces/face_kit.h"
 #include "nos.h"
@@ -65,6 +65,7 @@ static int s_last_hm = -1;
 static float s_wake_k = 1.0f;          /* published by tick for draw */
 static uint8_t s_lo[N], s_hi[N];       /* first / one-past-last cell per row */
 static fk_wake s_w;
+static int s_bat_aod;                  /* critical battery: its bar shows in AOD too */
 
 static float cell_x(int c) { return UI_CX + (float)(c - CEN) * PITCH; }
 static float cell_y(int r) { return UI_CY + (float)(r - CEN) * PITCH; }
@@ -144,9 +145,10 @@ static void pattern(uint8_t *out, int hour, int minute)
     for (int line = 0; line < 2; line++)
         for (int k = 0; k < 2; k++) {
             char ch = rows[line][k];
-            if (ch < '0' || ch > '9') continue;               /* 12 h blank: ghost cells */
+            if (ch < '0' || ch > '9') continue;
             const uint8_t *g = k_dig[ch - '0'];
             int c0 = k ? 13 : 7, r0 = line ? 13 : 5;
+            if (!line && rows[0][0] == ' ') c0 = 10;          /* 12 h: a lone hour digit centres */
             for (int r = 0; r < 7; r++)
                 for (int c = 0; c < 5; c++)
                     if (g[r] & (0x10 >> c)) out[(r0 + r) * N + c0 + c] = 1;
@@ -162,6 +164,9 @@ static unsigned hsh(unsigned a, unsigned b)
     return h;
 }
 
+static int bat_cell(int i) { int r = i / N, c = i % N; return r == BAT_ROW && c >= 10 && c < 15; }
+static int bat_lit(int batt) { int n = (batt + 19) / 20; return n < 1 ? 1 : n > 5 ? 5 : n; }
+
 static int in_digit_zone(int r, int c) { return r >= 4 && r <= 20 && c >= 6 && c <= 18; }
 
 static void tick(const face_ctx *c, float dt)
@@ -171,6 +176,7 @@ static void tick(const face_ctx *c, float dt)
     fk_wake_tick(&s_w, c);
     fk_unread_tick(c);
     s_wake_k = fk_wake_k(&s_w, c);
+    { face_ctx ca = *c; ca.aod = 1; s_bat_aod = fk_status_shown(&ca); }
     if (!M) return;
     int hm = c->dt.hour * 60 + c->dt.minute;
     if (s_last_hm < 0) { pattern(M->now, c->dt.hour, c->dt.minute); memcpy(M->prev, M->now, N * N); }
@@ -180,9 +186,13 @@ static void tick(const face_ctx *c, float dt)
         s_change_t = c->t;
     }
     s_last_hm = hm;
+    if (fk_wake_stale(&s_w)) {                       /* off the glass: no replayed change */
+        memcpy(M->prev, M->now, N * N);
+        s_change_t = -100.0f;
+    }
 
     float e = fk_build(&s_w, c);
-    int calm = c->aod || s_wake_k < 1.0f;            /* no ring / sparkle / status */
+    int calm = c->aod;                               /* no ring / sparkle / status (the wake fades them up) */
     float since = c->t - s_change_t;
     int sec = c->dt.second;
     int past10 = sec * 60;                            /* ring lit below this angle (0.1 deg) */
@@ -228,7 +238,7 @@ static void tick(const face_ctx *c, float dt)
         }
     if (e >= 1.0f && !calm) {
         /* sparkle: 3 slots, each breathes one background cell to the dim level */
-        for (int j = 0; j < 3; j++) {
+        for (int j = 0; j < 3 && s_wake_k >= 1.0f; j++) {
             float tt = c->t + (float)j * 0.83f;
             int cyc = (int)(tt / 2.4f);
             float ph = tt / 2.4f - (float)cyc;
@@ -241,9 +251,7 @@ static void tick(const face_ctx *c, float dt)
         }
         /* battery: a 5-cell bar on row 22 when low or charging */
         if (fk_status_shown(c)) {
-            int lit = (c->battery + 19) / 20;
-            if (lit < 1) lit = 1;
-            if (lit > 5) lit = 5;
+            int lit = bat_lit(c->battery);
             for (int k = 0; k < 5; k++) {
                 int L = k < lit ? 3 : 1;
                 if (c->charging && k == lit - 1 && c->battery < 100) L = fk_blink(c->dt.millis) > 0.5f ? 3 : 2;
@@ -261,9 +269,31 @@ static int cell_look(int i, float k, float *d, uint16_t *col)
     if (L == L_OFF) return 0;
     if (k >= 1.0f) { *d = DOTD; *col = k_lvl[L]; return 1; }
     if (M->now[i]) { *d = D_AOD + (DOTD - D_AOD) * k; *col = ui_mix(C_SEC, C_WHITE, k); return 1; }
+    if (s_bat_aod && bat_cell(i)) {                   /* the AOD battery bar grows like the digits */
+        *d = D_AOD + (DOTD - D_AOD) * k;
+        *col = ui_mix(L >= 3 ? C_SEC : C_LINE2, k_lvl[L], k);
+        return 1;
+    }
     if (k < 0.5f) return 0;
-    *d = DOTD; *col = ui_mix(C_BG, GHOST, (k - 0.25f) / 0.75f);
+    /* the grid fades up from black; ring, head and battery cells rise from it over
+     * the wake's last 3 frames (never all at once) */
+    uint16_t base = ui_mix(C_BG, GHOST, (k - 0.25f) / 0.75f);
+    *d = DOTD;
+    *col = L > 0 ? ui_mix(base, k_lvl[L], (k - 0.5f) / 0.5f) : base;
     return 1;
+}
+
+/* AOD: the critical battery bar as small dots on its row (1 lit cell of 5) */
+static void aod_battery(gfx_fb *fb, const face_ctx *c, float dx, float dy)
+{
+    int lit = bat_lit(c->battery);
+    float y = cell_y(BAT_ROW) + dy;
+    if (fb->rec) {
+        unsigned h = gfx_hash_f(gfx_hash_f(gfx_hash_u(0xBA7Au, (unsigned)lit), dx), dy);
+        gfx_rec_cmd(fb, (int)(cell_x(10) + dx - 8), (int)(y - 8), (int)(cell_x(14) + dx + 9), (int)(y + 9), h);
+        return;
+    }
+    for (int k = 0; k < 5; k++) dot_disc(fb, cell_x(10 + k) + dx, y, D_AOD, k < lit ? C_SEC : C_LINE2);
 }
 
 static void draw(gfx_fb *fb, const face_ctx *c)
@@ -287,6 +317,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
             for (int col = 7; col < 18; col++)
                 if (M->now[r * N + col]) dot_disc(fb, cell_x(col) + dx, cell_y(r) + dy, D_AOD, C_SEC);
         }
+        if (s_bat_aod) aod_battery(fb, c, dx, dy);
         fk_unread(fb, c, C_SEC, C_BG, dx, dy - 2.2f);
         return;
     }
@@ -315,7 +346,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         }
     }
     /* the unread dot replaces the top centre cell (row 0 sits at y = 21.8) */
-    fk_unread(fb, c, C_RED, C_BG, dx, dy - 2.2f);
+    fk_unread(fb, c, ui_mix(C_SEC, C_RED, k), C_BG, dx, dy - 2.2f);
 }
 
 static const struct nos_screen *tap(int x, int y) { return 0; }
