@@ -21,6 +21,7 @@
 #include "nos.h"
 #include "svc.h"
 #include "sprite.h"
+#include "gfx_cost.h"
 #include "apps/nos_apps.h"
 #include <stdio.h>
 #include <string.h>
@@ -39,6 +40,7 @@ typedef struct {
     sprite   q[4];
     unsigned key[4];
     uint16_t drawn[NRING][NSEG];          /* colour currently in the sprite, 0 = none */
+    int16_t  span[GFX_H][2];              /* per row: the ring band's left span [x0, x1) */
     int      ok;
 } seg_cache;
 
@@ -138,6 +140,20 @@ static void cache_init(void)
         memset(G->q[q].px, 0, (size_t)G->q[q].w * (size_t)G->q[q].h * 2);
         G->key[q] = 0x5E600000u + (unsigned)q * 4096u;
     }
+    /* the band the segments can touch (2 px clear of their AA), as spans per row: the
+     * sprites are black everywhere else, so the blit copies only these */
+    const float ri = k_r[NRING - 1] - SEG_TH * 0.5f - 2.0f, ro = k_r[0] + SEG_TH * 0.5f + 2.0f;
+    for (int y = 0; y < GFX_H; y++) {
+        float dy = (float)y + 0.5f - UI_CY, ady = dy < 0 ? -dy : dy;
+        int x0 = 0, x1 = 0;
+        if (ady < ro) {
+            x0 = (int)(UI_CX - gfx_fast_sqrt(ro * ro - dy * dy)) - 1;
+            x1 = ady < ri ? (int)(UI_CX - gfx_fast_sqrt(ri * ri - dy * dy)) + 2 : UI_CX;
+            if (x0 < 0) x0 = 0;
+            if (x1 > UI_CX) x1 = UI_CX;
+        }
+        G->span[y][0] = (int16_t)x0; G->span[y][1] = (int16_t)x1;
+    }
     G->ok = 1;
 }
 
@@ -171,6 +187,22 @@ static float    s_from[NRING];
 #define Y_DATE  (Y_T - 74 - 24)
 #define Y_VAL   (Y_T + 46)
 #define Y_LAB   (Y_T + 70)
+
+/* the empty track, `n` segments on from where it got to; done = sprites ready */
+static int s_cold_i;
+#define WARM_SEGS 4
+static void cold_track(int n)
+{
+    for (; n > 0 && s_cold_i < NRING * NSEG; n--, s_cold_i++) {
+        int r = s_cold_i / NSEG, i = s_cold_i % NSEG, q = quad_of(i);
+        seg_raster(G->q[q].px, G->q[q].w, qx(q), qy(q), G->q[q].w, G->q[q].h, r, i, COL_OFF);
+        G->drawn[r][i] = COL_OFF;
+    }
+    if (s_cold_i >= NRING * NSEG) {
+        for (int q = 0; q < 4; q++) G->key[q] += 97;
+        s_cold = 0;
+    }
+}
 
 static void enter(void)
 {
@@ -211,16 +243,10 @@ static void tick(const face_ctx *c, float dt)
         s_target[r] = (float)(int)f;                          /* whole segments */
     }
     if (G && G->ok && s_cold) {
-        /* first use: the whole empty track, once, before anything is blitted */
+        /* first use: the rest of the empty track (the warm-up may have done most of
+         * it), once, before anything is blitted */
         for (int r = 0; r < NRING; r++) s_shown[r] = s_from[r] = 0;
-        for (int r = 0; r < NRING; r++)
-            for (int i = 0; i < NSEG; i++) {
-                int q = quad_of(i);
-                seg_raster(G->q[q].px, G->q[q].w, qx(q), qy(q), G->q[q].w, G->q[q].h, r, i, COL_OFF);
-                G->drawn[r][i] = COL_OFF;
-            }
-        for (int q = 0; q < 4; q++) G->key[q] += 97;
-        s_cold = 0;
+        cold_track(NRING * NSEG);
     }
     /* AOD shows the steps as dots at their target, so the rings wake at the fill on
      * screen; a face that was off the glass shows its fill as it is now */
@@ -242,6 +268,17 @@ static void tick(const face_ctx *c, float dt)
         s_from[r] = e < 1.0f ? s_from[r] : s_shown[r];
     }
     cache_update();
+}
+
+/* background warm-up, a little each frame from whichever face is on (faces.c), so that
+ * SEGMENT's first frame (it slides in on the picker or the pager) builds nothing: the
+ * scaled font a glyph a frame, then the ring sprites, then their empty track */
+void face_segment_warm(void)
+{
+    if (!s_cold || s_alloc_failed) return;
+    if (!s_font.ok && !s_font.failed) { fk_sfont_build_step(&s_font, UI_F_HERO, T_SCALE); return; }
+    if (!G) { cache_init(); return; }
+    if (G->ok) cold_track(WARM_SEGS);
 }
 
 static void fmt_k(char *b, int n, int v)
@@ -321,13 +358,48 @@ static void draw_values(gfx_fb *fb, float a)
     }
 }
 
+/* sprite_blit for a ring quadrant, copying only the ring band's spans (the rest of the
+ * sprite is black over a cleared frame): ~3.7x fewer pixels, which matters most under
+ * an ink dim (wake, picker), where every pixel goes through gfx_ink */
+static void blit_quad(gfx_fb *fb, const sprite *s, int x, int y, unsigned key)
+{
+    if (fb->rec || !s->px) { sprite_blit(fb, s, x, y, key); return; }
+    int c0 = fb->cx0, c1 = fb->cx1;
+    if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
+    if (c0 < 0) c0 = 0;
+    if (c1 > GFX_W) c1 = GFX_W;
+    unsigned n = 0;
+    for (int r = 0; r < s->h; r++) {
+        int ly = y + r, by = ly + fb->oy - fb->y_base;
+        if ((unsigned)by >= (unsigned)fb->h || ly < 0 || ly >= GFX_H) continue;
+        int a0 = G->span[ly][0], a1 = G->span[ly][1];
+        if (a1 <= a0) continue;
+        int sp[2][2] = { { a0, a1 }, { GFX_W - a1, GFX_W - a0 } };
+        uint16_t *row = gfx_row(fb, by);
+        const uint16_t *src = &s->px[r * s->w];
+        for (int k = 0; k < 2; k++) {
+            int l0 = sp[k][0] > x ? sp[k][0] : x, l1 = sp[k][1] < x + s->w ? sp[k][1] : x + s->w;
+            if (l0 + fb->ox < c0) l0 = c0 - fb->ox;
+            if (l1 + fb->ox > c1) l1 = c1 - fb->ox;
+            if (l1 <= l0) continue;
+            uint16_t *d = row + l0 + fb->ox;
+            const uint16_t *p = src + (l0 - x);
+            int m = l1 - l0;
+            if (fb->dim) for (int i = 0; i < m; i++) d[i] = gfx_ink(fb, p[i]);
+            else memcpy(d, p, (size_t)m * 2);
+            n += (unsigned)m;
+        }
+    }
+    GFX_COST(GFX_COST_BLIT, n);
+}
+
 static void blit_rings(gfx_fb *fb, float a)
 {
     if (G && G->ok) {
         gfx_fb d = *fb;
         if (a < 1.0f) nos_ink_dim(&d, a);
         unsigned dk = (unsigned)d.dim * 0x9E37u;            /* the dim is part of the look */
-        for (int q = 0; q < 4; q++) sprite_blit(&d, &G->q[q], qx(q), qy(q), G->key[q] + dk);
+        for (int q = 0; q < 4; q++) blit_quad(&d, &G->q[q], qx(q), qy(q), G->key[q] + dk);
         return;
     }
     /* no PSRAM: segments as dots (cheap, still discrete) */

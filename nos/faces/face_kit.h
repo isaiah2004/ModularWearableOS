@@ -121,8 +121,13 @@ int   fk_status(gfx_fb *fb, const face_ctx *c, int x, int y, uint16_t col, int a
 /* ---- a font scaled once into PSRAM coverage masks (digits and ':' of nf_hero at a
  * size the baked fonts do not have). Drawn like ui_text: baseline y, one damage cmd. */
 typedef struct { uint8_t w, h; int8_t xoff, yoff; uint8_t adv; uint8_t *px; } fk_sglyph;
-typedef struct { fk_sglyph g[12]; int ascent, cap; int ok; } fk_sfont;    /* '0'-'9', ':', ' ' */
+typedef struct { fk_sglyph g[12]; int ascent, cap; int ok, next, failed; } fk_sfont;    /* '0'-'9', ':', ' ' */
 int   fk_sfont_build(fk_sfont *sf, const font_t *src, float scale);
+/* one glyph per call (background warm-up: no long frame); 1 once the font is complete */
+int   fk_sfont_build_step(fk_sfont *sf, const font_t *src, float scale);
+
+/* SEGMENT's background warm-up step (font, sprites, track); fk_aod_update runs it */
+void  face_segment_warm(void);
 int   fk_stext_width(const fk_sfont *sf, const char *s);
 int   fk_stext(gfx_fb *fb, const fk_sfont *sf, int x, int y, const char *s, uint16_t col, int align);
 

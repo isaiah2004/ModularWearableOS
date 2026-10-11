@@ -32,8 +32,11 @@ void face_aod_shift(int *dx, int *dy)
 }
 
 int fk_aod_dx, fk_aod_dy;
+static unsigned s_dc_epoch;                           /* bumped by every face tick: dot lists go stale */
 void fk_aod_update(const face_ctx *c)
 {
+    s_dc_epoch++;
+    if (!c->aod && c->enter >= 1.0f) face_segment_warm();   /* ~1 ms a frame until done */
     if (!c->aod) { fk_aod_dx = fk_aod_dy = 0; return; }
     shift_for(c->dt.hour * 60 + c->dt.minute, &fk_aod_dx, &fk_aod_dy);
 }
@@ -165,9 +168,105 @@ float fk_cos(float x) { return fk_sin(x + 1.5707963f); }
 static inline int ifl(float v) { int i = (int)v; return i - (v < (float)i); }
 static inline int icl(float v) { int i = (int)v; return i + (v > (float)i); }
 
+/* ---- dot lists ------------------------------------------------------------------------
+ * A face draws once for the record pass and again for every 16-row stripe (~30 a frame),
+ * so a dot list's callback (trig, mixes, branches) would run ~30x per dot per frame. The
+ * first pass of a frame evaluates each list once into a PSRAM cache (dots + one bbox per 8
+ * dots); later passes re-find the list by call order and only reject and stamp. A frame is
+ * (face tick epoch, nos_t); a list is re-found by (fn, n) plus its first and last dot
+ * re-evaluated and compared, so a different list or changed state never reuses stale dots
+ * (it falls back to evaluating directly). */
+#define DC_DOTS  2048                                 /* both faces of a picker slide fit */
+#define DC_CALLS 64
+#define DC_G     8                                    /* dots per reject box */
+typedef struct { float x, y, d; uint16_t col, pad; } dc_dot;
+typedef struct { fk_dot_fn fn; int n, off; } dc_call;
+typedef struct {
+    dc_dot   dot[DC_DOTS];
+    float    box[DC_DOTS / DC_G][4];
+    dc_call  call[DC_CALLS];
+    int      ncall, used, cursor, failed;
+    unsigned epoch; float t;
+    const void *px; int rec, y_base, h, cx0, cx1;     /* the pass in progress */
+} dc_cache;
+static dc_cache *s_dc;
+
+static int dc_same(const dc_dot *a, fk_dot_fn fn, int i, const void *ctx)
+{
+    float x, y, d; uint16_t col;
+    fn(i, ctx, &x, &y, &d, &col);
+    return x == a->x && y == a->y && d == a->d && col == a->col;
+}
+
+/* the cached list for this call, built on first use this frame; 0 = evaluate directly */
+static const dc_cache *dc_find(const gfx_fb *fb, int n, fk_dot_fn fn, const void *ctx, int *off)
+{
+    if (n <= 0 || n > DC_DOTS) return 0;
+    if (!s_dc) {
+        static int tried;
+        if (tried) return 0;
+        tried = 1;
+        s_dc = (dc_cache *)hal_big_alloc(sizeof *s_dc);
+        if (!s_dc) return 0;
+        memset(s_dc, 0, sizeof *s_dc);
+        s_dc->epoch = s_dc_epoch - 1u;
+    }
+    dc_cache *C = s_dc;
+    if (C->epoch != s_dc_epoch || C->t != nos_t) {     /* a new frame: forget every list */
+        C->epoch = s_dc_epoch; C->t = nos_t;
+        C->ncall = C->used = C->cursor = 0; C->px = 0;
+    }
+    int rec = fb->rec != 0;
+    if (fb->px != C->px || rec != C->rec || fb->y_base != C->y_base || fb->h != C->h ||
+        fb->cx0 != C->cx0 || fb->cx1 != C->cx1) {    /* a new pass: lists come round again */
+        C->px = fb->px; C->rec = rec; C->y_base = fb->y_base; C->h = fb->h;
+        C->cx0 = fb->cx0; C->cx1 = fb->cx1;
+        C->cursor = 0;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        int a = pass ? 0 : C->cursor, b = pass ? C->cursor : C->ncall;
+        for (int k = a; k < b; k++) {
+            const dc_call *L = &C->call[k];
+            if (L->fn != fn || L->n != n) continue;
+            if (!dc_same(&C->dot[L->off], fn, 0, ctx) || !dc_same(&C->dot[L->off + n - 1], fn, n - 1, ctx)) continue;
+            C->cursor = k + 1;
+            *off = L->off;
+            return C;
+        }
+    }
+    /* not seen this frame: evaluate it once */
+    int o = C->used;
+    if (C->ncall >= DC_CALLS || o + n > DC_DOTS) return 0;
+    for (int i = 0; i < n; i++) {
+        dc_dot *D = &C->dot[o + i];
+        fn(i, ctx, &D->x, &D->y, &D->d, &D->col);
+    }
+    for (int g = 0; g < n; g += DC_G) {
+        float *bx = C->box[(o + g) / DC_G];
+        bx[0] = bx[1] = 1e9f; bx[2] = bx[3] = -1e9f;
+        for (int i = g; i < g + DC_G && i < n; i++) {
+            const dc_dot *D = &C->dot[o + i];
+            if (D->d <= 0.0f) continue;
+            float e = D->d * 0.5f + 1.0f;
+            if (D->x - e < bx[0]) bx[0] = D->x - e;
+            if (D->y - e < bx[1]) bx[1] = D->y - e;
+            if (D->x + e > bx[2]) bx[2] = D->x + e;
+            if (D->y + e > bx[3]) bx[3] = D->y + e;
+        }
+    }
+    C->call[C->ncall].fn = fn; C->call[C->ncall].n = n; C->call[C->ncall].off = o;
+    C->ncall++;
+    C->cursor = C->ncall;
+    C->used = (o + n + DC_G - 1) / DC_G * DC_G;           /* keep lists box-aligned */
+    *off = o;
+    return C;
+}
+
 void fk_dots(gfx_fb *fb, int n, int chunk, fk_dot_fn fn, const void *ctx)
 {
     if (chunk < 1) chunk = 1;
+    int off = 0;
+    const dc_cache *C = dc_find(fb, n, fn, ctx, &off);
     if (fb->rec) {
         for (int i0 = 0; i0 < n; i0 += chunk) {
             float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
@@ -175,7 +274,8 @@ void fk_dots(gfx_fb *fb, int n, int chunk, fk_dot_fn fn, const void *ctx)
             int any = 0;
             for (int i = i0; i < i0 + chunk && i < n; i++) {
                 float x, y, d; uint16_t col;
-                fn(i, ctx, &x, &y, &d, &col);
+                if (C) { const dc_dot *D = &C->dot[off + i]; x = D->x; y = D->y; d = D->d; col = D->col; }
+                else fn(i, ctx, &x, &y, &d, &col);
                 if (d <= 0.0f) { h = gfx_hash_u(h, 0xDEADu); continue; }
                 float e = d * 0.5f + 1.0f;
                 if (x - e < x0) x0 = x - e;
@@ -192,6 +292,20 @@ void fk_dots(gfx_fb *fb, int n, int chunk, fk_dot_fn fn, const void *ctx)
     }
     fk_view v;
     fk_view_of(fb, &v);
+    if (C) {
+        for (int g = 0; g < n; g += DC_G) {
+            const float *bx = C->box[(off + g) / DC_G];
+            if (bx[2] < bx[0] || !fk_hit(&v, bx[0], bx[1], bx[2], bx[3])) continue;
+            for (int i = g; i < g + DC_G && i < n; i++) {
+                const dc_dot *D = &C->dot[off + i];
+                if (D->d <= 0.0f) continue;
+                float e = D->d * 0.5f + 1.0f;
+                if (!fk_hit(&v, D->x - e, D->y - e, D->x + e, D->y + e)) continue;
+                dot_disc(fb, D->x, D->y, D->d, D->col);
+            }
+        }
+        return;
+    }
     for (int i = 0; i < n; i++) {
         float x, y, d; uint16_t col;
         fn(i, ctx, &x, &y, &d, &col);
@@ -329,44 +443,84 @@ const font_glyph *fk_glyph(const font_t *f, unsigned code)
 /* ---- scaled font ------------------------------------------------------------------------ */
 static int sidx(unsigned char ch) { return ch >= '0' && ch <= '9' ? ch - '0' : ch == ':' ? 10 : ch == ' ' ? 11 : -1; }
 
-int fk_sfont_build(fk_sfont *sf, const font_t *src, float s)
+static const char k_scodes[12] = { '0','1','2','3','4','5','6','7','8','9',':','0' };
+/* glyph k of the scaled font; 0 on failure */
+static int sglyph_build(fk_sfont *sf, const font_t *src, float s, int k)
 {
-    if (sf->ok) return 1;
-    static const char codes[12] = { '0','1','2','3','4','5','6','7','8','9',':','0' };
-    for (int k = 0; k < 12; k++) {
-        const font_glyph *g = fk_glyph(src, (unsigned char)codes[k]);
-        fk_sglyph *o = &sf->g[k];
-        memset(o, 0, sizeof *o);
-        if (!g) continue;
-        o->adv = (uint8_t)((float)g->xadv * s + 0.5f);
-        if (k == 11) continue;                             /* space: advance only */
-        /* destination pixel (u, v) covers source [u/s, (u+1)/s): 4x4 taps */
-        float sx0 = (float)g->xoff, sy0 = (float)g->yoff;
-        int ox = (int)(sx0 * s) - 1, oy = (int)(sy0 * s) - 1;
-        int w = (int)((sx0 + g->w) * s) + 2 - ox, h = (int)((sy0 + g->h) * s) + 2 - oy;
-        if (w > 255 || h > 255) return 0;
-        uint8_t *px = (uint8_t *)hal_big_alloc((uint32_t)(w * h));
-        if (!px) return 0;
-        const uint8_t *bm = src->bitmap + g->bitmap_off;
-        for (int v = 0; v < h; v++)
-            for (int u = 0; u < w; u++) {
-                int acc = 0;
-                for (int j = 0; j < 4; j++)
-                    for (int i = 0; i < 4; i++) {
-                        float fx = ((float)(ox + u) + ((float)i + 0.5f) * 0.25f) / s - sx0;
-                        float fy = ((float)(oy + v) + ((float)j + 0.5f) * 0.25f) / s - sy0;
-                        int ix = (int)(fx + 64.0f) - 64, iy = (int)(fy + 64.0f) - 64;
-                        if (ix >= 0 && iy >= 0 && ix < g->w && iy < g->h) acc += bm[iy * g->w + ix];
-                    }
-                px[v * w + u] = (uint8_t)(acc / 16);
+    const char *codes = k_scodes;
+    const font_glyph *g = fk_glyph(src, (unsigned char)codes[k]);
+    fk_sglyph *o = &sf->g[k];
+    memset(o, 0, sizeof *o);
+    if (!g) return 1;
+    o->adv = (uint8_t)((float)g->xadv * s + 0.5f);
+    if (k == 11) return 1;                             /* space: advance only */
+    /* destination pixel (u, v) covers source [u/s, (u+1)/s): 4x4 taps */
+    float sx0 = (float)g->xoff, sy0 = (float)g->yoff;
+    int ox = (int)(sx0 * s) - 1, oy = (int)(sy0 * s) - 1;
+    int w = (int)((sx0 + g->w) * s) + 2 - ox, h = (int)((sy0 + g->h) * s) + 2 - oy;
+    if (w > 255 || h > 255) return 0;
+    uint8_t *px = (uint8_t *)hal_big_alloc((uint32_t)(w * h));
+    if (!px) return 0;
+    const uint8_t *bm = src->bitmap + g->bitmap_off;
+    /* the taps are separable: source column per (u, i) and row per (v, j), worked out
+     * once (the same float expressions as a per-tap evaluation, so the same pixels),
+     * then 16 integer adds per pixel. It ran 16 float divides per pixel: ~0.4 s on
+     * the watch the first time the face ticked. */
+    static int16_t *tx;                               /* 2 x 255 x 4 taps, PSRAM (not the stack) */
+    if (!tx) tx = (int16_t *)hal_big_alloc(2u * 255u * 4u * sizeof *tx);
+    if (!tx) return 0;
+    int16_t *ty = tx + 255 * 4;
+    for (int u = 0; u < w; u++)
+        for (int i = 0; i < 4; i++) {
+            float fx = ((float)(ox + u) + ((float)i + 0.5f) * 0.25f) / s - sx0;
+            int ix = (int)(fx + 64.0f) - 64;
+            tx[u * 4 + i] = (int16_t)(ix >= 0 && ix < g->w ? ix : -1);
+        }
+    for (int v = 0; v < h; v++)
+        for (int j = 0; j < 4; j++) {
+            float fy = ((float)(oy + v) + ((float)j + 0.5f) * 0.25f) / s - sy0;
+            int iy = (int)(fy + 64.0f) - 64;
+            ty[v * 4 + j] = (int16_t)(iy >= 0 && iy < g->h ? iy * g->w : -1);
+        }
+    for (int v = 0; v < h; v++)
+        for (int u = 0; u < w; u++) {
+            int acc = 0;
+            for (int j = 0; j < 4; j++) {
+                int ro = ty[v * 4 + j];
+                if (ro < 0) continue;
+                const uint8_t *row = bm + ro;
+                for (int i = 0; i < 4; i++) {
+                    int ix = tx[u * 4 + i];
+                    if (ix >= 0) acc += row[ix];
+                }
             }
-        o->w = (uint8_t)w; o->h = (uint8_t)h; o->xoff = (int8_t)ox; o->yoff = (int8_t)oy; o->px = px;
-    }
+            px[v * w + u] = (uint8_t)(acc / 16);
+        }
+    o->w = (uint8_t)w; o->h = (uint8_t)h; o->xoff = (int8_t)ox; o->yoff = (int8_t)oy; o->px = px;
+    return 1;
+}
+static void sfont_finish(fk_sfont *sf, const font_t *src, float s)
+{
     sf->ascent = (int)((float)src->ascent * s + 0.5f);
     const font_glyph *z = fk_glyph(src, '0');
     sf->cap = z ? (int)((float)(-z->yoff) * s + 0.5f) : sf->ascent;
     sf->ok = 1;
-    return 1;
+}
+int fk_sfont_build_step(fk_sfont *sf, const font_t *src, float s)
+{
+    if (sf->ok) return 1;
+    if (sf->failed) return 0;
+    if (sf->next < 12) {
+        if (!sglyph_build(sf, src, s, sf->next)) { sf->failed = 1; return 0; }
+        sf->next++;
+    }
+    if (sf->next >= 12) sfont_finish(sf, src, s);
+    return sf->ok;
+}
+int fk_sfont_build(fk_sfont *sf, const font_t *src, float s)
+{
+    while (!sf->ok && !sf->failed) fk_sfont_build_step(sf, src, s);
+    return sf->ok;
 }
 
 int fk_stext_width(const fk_sfont *sf, const char *s)
