@@ -547,6 +547,18 @@ static void heart_tick(float dt)
         H.now_h = (float)now.hour + (float)now.minute / 60.0f;
     }
     int fresh = 0;
+    if (!H.present && (hal_ext_present() & EXT_HR)) {
+        /* the strap came back while open: start measuring (absent fades out, then the
+         * live state fades in, like every other state change) on a fresh flat trace */
+        H.present = 1;
+        hal_hr_enable(1);
+        memset(H.v, 128, sizeof H.v);
+        H.n = WIN + 8; H.have_last = 0; H.acc = 0; H.ph = 0; H.ph_ok = 0;
+        H.lo = 100; H.hi = 156; H.npk = 0; H.last_peak = 0; H.beat_t = 10;
+        H.off_t = 0; H.good_t = 0; H.contact_t = 0; H.rearm_t = -1; H.locked = 0; H.lock_t = 0;
+        memset(&H.r, 0, sizeof H.r);
+        set_mode(M_MEASURING);
+    }
     if (H.present) {
         hal_hr r;
         H.present = hal_hr_get(&r);
