@@ -843,7 +843,7 @@ static int ring_input(const nos_input *in)
         else RG.fire = h;
         return 1;
     }
-    case IN_BTN: nos_feedback(FB_TAP); ring_stop(); return 1;
+    case IN_BTN: nos_feedback(FB_TAP); ring_act(RGP_STOP); return 1;   /* sets leaving: no +1 MIN after */
     default: return 1;
     }
 }

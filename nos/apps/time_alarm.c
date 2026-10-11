@@ -850,7 +850,7 @@ static void snooze(void)
 }
 static int ring_input(const nos_input *in)
 {
-    if (R.snz_fire > 0 || R.leaving) return 1;   /* snoozing / leaving */
+    if (R.snz_fire > 0 || R.leaving || R.committed) return 1;   /* snoozing / leaving / a committed stop wins (button too) */
     float span = sl_x1() - sl_x0();
     switch (in->type) {
     case IN_DOWN: {
