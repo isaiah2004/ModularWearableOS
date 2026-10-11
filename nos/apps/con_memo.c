@@ -231,10 +231,10 @@ static void memo_tap(int i)
     R.row_held = i; R.row_t = R.list.press_t;        /* the fill stays >= 3 frames */
     if (R.playing == i) { play_stop(); return; }
     play_stop();
-    if (!R.spk) { nos_feedback(FB_ERROR); nos_toast("No speaker module"); return; }
+    if (!R.spk) { nos_feedback(FB_ERROR); nos_toast("NO SPEAKER"); return; }
     int ok = hal_audio_play_file(s_memos[i].path);
 #ifdef ESP_PLATFORM
-    if (!ok) { nos_feedback(FB_ERROR); nos_toast("Can't play this memo"); return; }
+    if (!ok) { nos_feedback(FB_ERROR); nos_toast("CAN'T PLAY"); return; }
 #endif
     R.real_play = ok;
     R.playing = i;
@@ -267,13 +267,15 @@ static int rec_finish(void)
     return s_seq;
 }
 
-/* A save the user can't see in Recorder: say it on whatever is showing. */
+/* A save the user can't see in Recorder: say it on whatever is showing. Toast copy
+ * stays within 10 caps so the pill keeps the top of the glass: "SAVED 0:04". */
 static void saved_toast(int n)
 {
-    char b[40], len[16];
+    (void)n;
+    char b[24];
     uint32_t s = (s_saved_ms + 500) / 1000;
-    snprintf(len, sizeof len, "%u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
-    snprintf(b, sizeof b, "Saved memo %d \xB7 %s", n, len);
+    if (s < 600) snprintf(b, sizeof b, "SAVED %u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+    else snprintf(b, sizeof b, "MEMO SAVED");
     nos_toast(b);
 }
 
@@ -372,7 +374,7 @@ static void rec_start(void)
 static void memo_leave(void)
 {
     /* a recording keeps going in the background (the REC chip shows it); say so once */
-    if (R.rec && svc_memo_active()) nos_toast("Still recording");
+    if (R.rec && svc_memo_active()) nos_toast("RECORDING");
     R.rec = 0;
     play_stop();
 }
