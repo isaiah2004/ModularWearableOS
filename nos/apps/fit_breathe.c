@@ -248,8 +248,8 @@ static void breathe_enter(void)
     field_alloc();
     B.pressed = CTL_NONE; B.press_hold = 0; B.unpress_at = 0;
     if (nos_revealed()) {
-        /* back from a cover: keep the state; a running session gets its HR back (the
-         * cover's push ran leave()) and keeps its average */
+        /* back from a cover: keep the state; a running session keeps its HR stream (re-
+         * enabled in case the HAL idle-stopped it under a long cover) and its average */
         if ((B.st == ST_INTRO || B.st == ST_SESSION) && (hal_ext_present() & EXT_HR)) { hal_hr_enable(1); B.hr_on = 1; }
         return;
     }
@@ -264,8 +264,10 @@ static void breathe_enter(void)
 
 static void breathe_leave(void)
 {
-    hr_stop();
     B.pressed = CTL_NONE; B.press_hold = 0; B.unpress_at = 0;
+    /* covered by a push: a running session keeps its heart-rate stream */
+    if (nos_leaving_covered()) return;
+    hr_stop();
 }
 
 static void prepare_start(float build)

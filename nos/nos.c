@@ -916,8 +916,13 @@ static void scene_draw(gfx_fb *fb)
             int ey = rise ? top : bot - 2;
             gfx_fb e;
             if (nos_subview(fb, &e, 0, ey, W, ey + 2, 0, 0)) gfx_fill_rect(&e, 0, ey, W, 2, GFX_RGB(51, 51, 51));
+            /* the grabber says "drag me back": not on screens that refuse it, and it
+             * leaves with the last 30 % of the move instead of vanishing on arrival */
+            float gk = m_clamp((1.0f - p) / 0.3f, 0, 1);
+            gk = floorf(gk * 8.0f + 0.5f) / 8.0f;
             float gy = rise ? top + 14.0f : bot - 16.0f;
-            gfx_fill_pill(fb, GFX_CX - 15, gy, GFX_CX + 15, 2.5f, GFX_RGB(102, 102, 102));
+            if (gk > 0 && !(T.over && (T.over->flags & SCR_NOBACK)))
+                gfx_fill_pill(fb, GFX_CX - 15, gy, GFX_CX + 15, 2.5f, ui_dim(GFX_RGB(102, 102, 102), gk));
         }
         break;
     }

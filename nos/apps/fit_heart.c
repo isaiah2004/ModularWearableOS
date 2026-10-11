@@ -458,8 +458,8 @@ static void heart_enter(void)
 {
     if (nos_revealed()) {
         /* Back from a cover (power sheet, notification): keep the reading, the trace, the
-         * mode and the page. leave() kept the stream running, but a long cover lets the
-         * HAL idle-stop it: enable again, and hold a locked reading (trace and meter
+         * mode and the page. leave() kept the stream running (covered), but a long cover
+         * lets the HAL idle-stop it: enable again, and hold a locked reading (trace, meter
          * frozen) until the sensor reads a pulse, so it never drops back to MEASURING. */
         hal_hr r;
         int pres = (hal_ext_present() & EXT_HR) != 0 && hal_hr_get(&r);
@@ -498,12 +498,10 @@ static void heart_enter(void)
 
 static void heart_leave(void)
 {
-    /* Gone (leave() runs as the closing transition completes) vs covered (a sheet or a
-     * notification pushed over us: leave() runs with no transition in flight). Covered,
-     * the stream keeps running so the reading survives the cover; the HAL stops it by
-     * itself if nobody reads it for NOS_EXT_IDLE_MS, and enter() on reveal re-enables. */
-    int gone = nos_transitioning();
-    if (H.present && gone) hal_hr_enable(0);
+    /* Covered by a push (sheet, notification): keep the stream and the reading, they are
+     * revealed again (the HAL idle-stops the sensor if the cover stays NOS_EXT_IDLE_MS). */
+    if (nos_leaving_covered()) return;
+    if (H.present) hal_hr_enable(0);
     if (H.locked && H.bpm_shown > 0) svc_heart_record(H.bpm_shown, H.spo2);
 }
 

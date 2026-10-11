@@ -106,9 +106,13 @@ uint16_t gfx_blend565(uint16_t dst, uint16_t src, uint8_t alpha)
     /* Split RGB565 into G | RB lanes of one 32-bit word so a single
      * multiply blends all three channels. Alpha scaled to 0..32. */
     uint32_t a = ((uint32_t)alpha + 7) >> 3;
+    if (a >= 32) return src;
+    if (a == 0) return dst;
     uint32_t d = (dst | ((uint32_t)dst << 16)) & 0x07E0F81F;
     uint32_t s = (src | ((uint32_t)src << 16)) & 0x07E0F81F;
-    uint32_t r = ((s * a + d * (32 - a)) >> 5) & 0x07E0F81F;
+    /* dropping green's low bit keeps a grey blend grey (g6 = 2 * r5); truncating the
+     * 6-bit lane on its own leaves AA edges of white on black a step green */
+    uint32_t r = ((s * a + d * (32 - a)) >> 5) & 0x07C0F81F;
     return (uint16_t)(r | (r >> 16));
 }
 

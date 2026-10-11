@@ -700,10 +700,12 @@ void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, f
 
 void ui_draw_toast(gfx_fb *fb, const char *text, float t)
 {
-    float k = t < 0.12f ? t / 0.12f : t > 0.82f ? (1.0f - t) / 0.18f : 1.0f;
+    /* drops in from behind the top bezel at full colour and goes back up: no grey
+     * fade over whatever is under it (§8: no fade-ups) */
+    float k = t < 0.12f ? bezier_ease(&EASE_DECEL, t / 0.12f)
+            : t > 0.86f ? 1.0f - bezier_ease(&EASE_ACCEL, (t - 0.86f) / 0.14f) : 1.0f;
     k = m_clamp(k, 0, 1);
-    k = floorf(k * 8.0f + 0.5f) / 8.0f;
-    if (k <= 0) return;
+    if (k <= 0 || t >= 1) return;
     /* states read as bracketed caps text: "[ SAVED ]" */
     char b[52];
     int i = 0, o = 0;
@@ -723,8 +725,8 @@ void ui_draw_toast(gfx_fb *fb, const char *text, float t)
     }
     float wmax = 2.0f * (ui_half_width(y0 + h * 0.5f) - 12.0f - h * 0.5f) + h;
     if (w > wmax) w = wmax;
-    float y = y0 - (1 - k) * 8;
-    ui_rrect(fb, UI_CX - w / 2, y, w, h, h / 2, ui_dim(C_WHITE, k));
+    float y = floorf(y0 - (1 - k) * (y0 + h + 4) + 0.5f);   /* k = 0: fully above the glass */
+    ui_rrect(fb, UI_CX - w / 2, y, w, h, h / 2, C_WHITE);
     ui_text(fb, UI_F_LABEL, UI_CX, (int)(y + h / 2 + UI_F_LABEL->ascent * 0.5f - 2), b, C_BG, UI_CENTER, LABEL_TRACK);
 }
 
