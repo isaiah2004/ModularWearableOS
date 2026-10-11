@@ -16,7 +16,7 @@
 
 #define TORCH_RED   0x7800          /* #780000: deep warm red, kind to dark-adapted eyes */
 #define TORCH_FIELD 0x9800          /* #9A0000: the field under the gauge in red mode */
-#define TORCH_UNLIT 0x2800          /* #2A0000: unlit gauge dots in red mode */
+#define TORCH_UNLIT 0x6000          /* #600000: unlit gauge dots in red mode (10 % reads apart from 100 %) */
 #define DISSOLVE_S  0.15f
 #define HINT_S      2.6f
 #define GAUGE_N     10
@@ -111,7 +111,7 @@ static void torch_draw(gfx_fb *fb)
     if (T.gauge > 0) {
         float lv = T.level[T.mode];
         /* red mode: the gauge sits on a brighter red field (#9A0000) with black lit dots,
-         * #2A0000 unlit ones and black figures, so it reads without lighting the room */
+         * #600000 unlit ones and black figures, so it reads without lighting the room */
         if (T.mode) ui_rrect(fb, UI_CX - 115, 336, 230, 78, 39, ui_mix(bg, TORCH_FIELD, T.gauge));
         uint16_t on = ui_mix(bg, T.mode ? C_BG : C_LINE2, T.gauge);
         uint16_t off = ui_mix(bg, T.mode ? TORCH_UNLIT : 0xD69A, T.gauge);

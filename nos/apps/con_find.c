@@ -19,6 +19,42 @@
 
 static float q(float x, float n) { return floorf(m_clamp(x, 0, 1) * n + 0.5f) / n; }
 
+/* ------------------------------------------- content <-> absent swap */
+/* Losing (or getting back) the phone or a module: the page on the glass leaves over 2
+ * ink steps at 30 fps (2/3, 1/3), then the other page builds from its start: ui_absent's
+ * icon from the centre and its text ladder, or the content's own entry build. Same
+ * timings as the outdoor apps. */
+#define PS_OUT_F 2
+typedef struct { int shown, want; float t_out, t_in; } pswap;
+static void ps_init(pswap *s, int v) { s->shown = s->want = v; s->t_out = s->t_in = -10; }
+static int ps_frames(const pswap *s) { return (int)lroundf((nos_t - s->t_out) * NOS_FPS); }
+/* per tick with the live state; 1 on the frame the other page takes over (its build
+ * clock t_in starts a frame back, so that first frame already shows the build) */
+static int ps_tick(pswap *s, int v)
+{
+    if (v != s->want) { s->want = v; s->t_out = nos_t; }
+    if (s->want != s->shown && ps_frames(s) >= PS_OUT_F) { s->shown = s->want; s->t_in = nos_t - 1.0f / NOS_FPS; return 1; }
+    return 0;
+}
+/* ink of the page on the glass: 1 at rest, 2/3 then 1/3 while it leaves */
+static float ps_ink(const pswap *s)
+{
+    if (s->want == s->shown) return 1.0f;
+    return 1.0f - (float)(ps_frames(s) + 1) / (PS_OUT_F + 1);
+}
+/* dims what is drawn next while the page leaves (restore fb->dim with the return value).
+ * The dim is in no primitive's hash, so the page is recorded once with the step. */
+static int ps_dim(gfx_fb *fb, const pswap *s)
+{
+    int d0 = fb->dim;
+    float k = ps_ink(s);
+    if (k < 1) {
+        if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(0x5A11u, k));
+        nos_ink_dim(fb, k);
+    }
+    return d0;
+}
+
 static uint16_t grey_step(float k)        /* k 0 (bright) .. 1 (gone): 5 discrete steps */
 {
     static const uint16_t ladder[] = { C_PRI, C_SEC, C_DIS, C_LINE2, C_LINE };
@@ -53,6 +89,7 @@ static struct {
     float t_swap;          /* last ringing on/off: the state words change in sequence */
     float err_t;           /* last refused tap (not connected) */
     float txt;             /* text alpha, quantised */
+    pswap sw;              /* 1 = the find page, 0 = phone not connected */
 } F;
 
 static void find_enter(void)
@@ -66,6 +103,7 @@ static void find_enter(void)
     F.active = svc_find_phone_active();
     F.t_active = nos_t;
     F.connected = svc_sys()->phone_connected || hal_phone_connected();
+    ps_init(&F.sw, F.connected);
     mtw_start(&F.fill, F.active ? 1 : 0, F.active ? 1 : 0, 0.01f, &EASE_MECH);
 }
 
@@ -86,9 +124,10 @@ static void set_active(int on)
 
 static void find_tick(float dt)
 {
-    F.build = q((nos_t - F.t_enter) / UI_ENTRY_S, 32);
     F.connected = svc_sys()->phone_connected || hal_phone_connected();
     if (F.active && !F.connected) { svc_find_phone(0); set_active(0); }
+    if (ps_tick(&F.sw, F.connected)) F.t_enter = F.sw.t_in;    /* the other page builds now */
+    F.build = q((nos_t - F.t_enter) / UI_ENTRY_S, 32);
     /* the phone may stop ringing on its own (found, or its timeout) */
     if (F.active && !svc_find_phone_active() && nos_t - F.t_active > 1.0f) set_active(0);
     F.txt = nos_t >= F.t_enter ? 1.0f : 0.0f;
@@ -109,10 +148,19 @@ static void draw_ripples(gfx_fb *fb, float cx, float cy, float t, float r0, floa
     }
 }
 
+static void find_page(gfx_fb *fb);
+
 static void find_draw(gfx_fb *fb)
 {
     ui_title(fb, "FIND PHONE", 0);
-    if (!F.connected) {
+    int d0 = ps_dim(fb, &F.sw);
+    find_page(fb);
+    fb->dim = d0;
+}
+
+static void find_page(gfx_fb *fb)
+{
+    if (!F.sw.shown) {
         ui_absent(fb, DOT_ICON_BT, "Phone not connected", "Pair in Gadgetbridge as Bangle.js NOS", NULL, F.build);
         return;
     }

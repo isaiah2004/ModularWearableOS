@@ -27,6 +27,42 @@
 
 static float q(float x, float n) { return floorf(m_clamp(x, 0, 1) * n + 0.5f) / n; }
 
+/* ------------------------------------------- content <-> absent swap */
+/* Losing (or getting back) the phone or a module: the page on the glass leaves over 2
+ * ink steps at 30 fps (2/3, 1/3), then the other page builds from its start: ui_absent's
+ * icon from the centre and its text ladder, or the content's own entry build. Same
+ * timings as the outdoor apps. */
+#define PS_OUT_F 2
+typedef struct { int shown, want; float t_out, t_in; } pswap;
+static void ps_init(pswap *s, int v) { s->shown = s->want = v; s->t_out = s->t_in = -10; }
+static int ps_frames(const pswap *s) { return (int)lroundf((nos_t - s->t_out) * NOS_FPS); }
+/* per tick with the live state; 1 on the frame the other page takes over (its build
+ * clock t_in starts a frame back, so that first frame already shows the build) */
+static int ps_tick(pswap *s, int v)
+{
+    if (v != s->want) { s->want = v; s->t_out = nos_t; }
+    if (s->want != s->shown && ps_frames(s) >= PS_OUT_F) { s->shown = s->want; s->t_in = nos_t - 1.0f / NOS_FPS; return 1; }
+    return 0;
+}
+/* ink of the page on the glass: 1 at rest, 2/3 then 1/3 while it leaves */
+static float ps_ink(const pswap *s)
+{
+    if (s->want == s->shown) return 1.0f;
+    return 1.0f - (float)(ps_frames(s) + 1) / (PS_OUT_F + 1);
+}
+/* dims what is drawn next while the page leaves (restore fb->dim with the return value).
+ * The dim is in no primitive's hash, so the page is recorded once with the step. */
+static int ps_dim(gfx_fb *fb, const pswap *s)
+{
+    int d0 = fb->dim;
+    float k = ps_ink(s);
+    if (k < 1) {
+        if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(0x5A11u, k));
+        nos_ink_dim(fb, k);
+    }
+    return d0;
+}
+
 static unsigned str_hash(const char *s)
 {
     unsigned h = 2166136261u;
@@ -46,16 +82,20 @@ static struct {
 static void player_poll(void)
 {
     const svc_music_t *m = svc_music();
-    P.have = m->have && (m->track[0] || m->artist[0]);   /* an empty musicinfo is not a player */
     P.connected = svc_sys()->phone_connected || hal_phone_connected();
-    snprintf(P.track, sizeof P.track, "%s", m->track[0] ? m->track : "Unknown track");
-    snprintf(P.artist, sizeof P.artist, "%s", m->artist);
-    P.pos_ms = m->pos_ms;
-    P.dur_ms = m->dur_ms;
-    if (P.dur_ms && P.pos_ms > P.dur_ms) P.pos_ms = P.dur_ms;
-    /* the tap shows at once; the phone's echo (or 2 s of silence) settles it */
-    if (P.want >= 0 && (m->playing == P.want || nos_t - P.t_want > 2.0f)) P.want = -1;
-    P.playing = P.want >= 0 ? P.want : m->playing;
+    /* the player waits for a title (never "Unknown track 0:00"); without one the last
+     * words stay as they were, for the page that is fading out */
+    P.have = P.connected && m->have && m->track[0];
+    if (P.have) {
+        snprintf(P.track, sizeof P.track, "%s", m->track);
+        snprintf(P.artist, sizeof P.artist, "%s", m->artist);
+        P.pos_ms = m->pos_ms;
+        P.dur_ms = m->dur_ms;
+        if (P.dur_ms && P.pos_ms > P.dur_ms) P.pos_ms = P.dur_ms;
+        /* the tap shows at once; the phone's echo (or 2 s of silence) settles it */
+        if (P.want >= 0 && (m->playing == P.want || nos_t - P.t_want > 2.0f)) P.want = -1;
+        P.playing = P.want >= 0 ? P.want : m->playing;
+    } else P.want = -1;
 }
 
 static void player_toggle(void)
@@ -125,7 +165,13 @@ static struct {
     uint8_t eq_target[EQ_COLS];
     int   eq_step, eq_frame;
     /* ring */
-    int   ring_pos;          /* current dot index */
+    int   ring_pos;          /* the playhead's dot index */
+    float ring_show;         /* the dot index on the glass (a jump tweens, 200 ms) */
+    float ring_from, t_ring;
+    int   ring_to;
+    /* times: the strings on the glass, and the outgoing pair during a track change */
+    char  last_e[16], last_r[16], old_e[16], old_r[16];
+    pswap sw;                /* player (0) / nothing playing (1) / phone not connected (2) */
     /* volume */
     int   vol;               /* 0-100 */
     float t_vol;             /* last change */
@@ -142,6 +188,37 @@ static struct {
 
 static int s_from_widget;          /* opened by a widget tap: the play disc travels from it */
 
+static int music_kind(void) { return P.have ? 0 : P.connected ? 1 : 2; }
+static int ring_target(void)
+{
+    int p = P.dur_ms ? (int)((uint64_t)P.pos_ms * RING_N / P.dur_ms) : 0;
+    return p >= RING_N ? RING_N - 1 : p;
+}
+static void fmt_times(char *e, char *r, int n)
+{
+    fmt_ms(e, n, P.pos_ms, 0);
+    if (P.dur_ms) fmt_ms(r, n, P.dur_ms - P.pos_ms, 1);
+    else snprintf(r, (size_t)n, UI_NONE ":" UI_NONE);
+}
+/* the player starts over (entry, or back from an absent page): words, ring, icon */
+static void player_reset(void)
+{
+    M.track_h = str_hash(P.track);
+    M.t_track = -10;
+    snprintf(M.cur_track, sizeof M.cur_track, "%s", P.track);
+    snprintf(M.cur_artist, sizeof M.cur_artist, "%s", P.artist);
+    M.old_track[0] = M.old_artist[0] = 0;
+    M.txt_old = 0;
+    M.mq_off = 0; M.mq_hold = MQ_HOLD;
+    M.mq_w = ui_text_width(UI_F_TITLE, P.track, 0);
+    M.ring_pos = M.ring_to = ring_target();
+    M.ring_show = M.ring_from = (float)M.ring_to;
+    M.t_ring = -10;
+    fmt_times(M.last_e, M.last_r, sizeof M.last_e);
+    M.icon_playing = P.playing;
+    M.t_icon = -10;
+}
+
 static void music_enter(void)
 {
     player_poll();
@@ -151,16 +228,10 @@ static void music_enter(void)
     M.from_wg = s_from_widget;
     s_from_widget = 0;
     M.build = M.txt = 0;
-    M.txt_old = 0;
     M.pressed = M.held = B_NONE;
     M.t_down = -10;
-    M.track_h = str_hash(P.track);
-    M.t_track = -10;
-    snprintf(M.cur_track, sizeof M.cur_track, "%s", P.track);
-    snprintf(M.cur_artist, sizeof M.cur_artist, "%s", P.artist);
-    M.old_track[0] = M.old_artist[0] = 0;
-    M.mq_off = 0; M.mq_hold = MQ_HOLD;
-    M.mq_w = ui_text_width(UI_F_TITLE, P.track, 0);
+    player_reset();
+    ps_init(&M.sw, music_kind());
     memset(M.eq, 0, sizeof M.eq);
     M.eq_step = 0; M.eq_frame = 0;
     int v = svc_music()->volume;
@@ -170,8 +241,6 @@ static void music_enter(void)
     M.vol_shown = 0;
     M.dragging = 0;
     M.nudge = 0;
-    M.icon_playing = P.playing;
-    M.t_icon = -10;
     hal_light_gesture_enable(1);
 }
 
@@ -205,14 +274,22 @@ static void music_tick(float dt)
     int frames = (int)lroundf(dt * NOS_FPS);
     if (frames < 1) frames = 1;
     player_poll();
+    /* phone or player gone (or back): the page leaves, then the other one builds */
+    if (ps_tick(&M.sw, music_kind())) {
+        M.t_enter = M.sw.t_in;
+        M.from_wg = 0;
+        player_reset();
+    }
     M.build = q((nos_t - M.t_enter) / UI_ENTRY_S, 32);
     /* a new track is detected before the fade is computed, so it is never drawn at full ink */
     unsigned h = str_hash(P.track);
     if (h != M.track_h) {
-        /* keep the outgoing words (and where the marquee had them) for their step-down */
+        /* keep the outgoing words, times (and where the marquee had them) for their step-down */
         if (nos_t - M.t_track >= TRK_OUT_S) {             /* not mid-change already */
             memcpy(M.old_track, M.cur_track, sizeof M.old_track);
             memcpy(M.old_artist, M.cur_artist, sizeof M.old_artist);
+            memcpy(M.old_e, M.last_e, sizeof M.old_e);
+            memcpy(M.old_r, M.last_r, sizeof M.old_r);
             M.old_w = M.mq_w; M.old_off = M.mq_off;
         }
         M.track_h = h;
@@ -226,7 +303,9 @@ static void music_tick(float dt)
      * a new track: the old words step down over 3 frames, then the new step up over 4 */
     const float F1 = 1.0f / NOS_FPS;
     float tf = nos_t >= M.t_enter || M.from_wg ? 1.0f : 0.0f;
-    M.ink = nos_t >= M.t_enter ? 1.0f : 0.0f;
+    /* the times step in with the second half of the build (4 steps): the position
+     * a reconnect sends just after the title is there before they show */
+    M.ink = q((M.build - 0.4f) / 0.45f, 4);
     float since = nos_t - M.t_track;
     M.txt_old = since < TRK_OUT_S - 0.5f * F1 && M.old_track[0] ? q(1.0f - (since + F1) / (TRK_OUT_S + F1), 4) : 0;
     float tt = since < TRK_OUT_S - 0.5f * F1 ? 0 : (since - TRK_OUT_S + F1) / (4.0f * F1);   /* 1/4 .. 4/4 */
@@ -243,8 +322,17 @@ static void music_tick(float dt)
 
     eq_tick(frames);
 
-    M.ring_pos = P.dur_ms ? (int)((uint64_t)P.pos_ms * RING_N / P.dur_ms) : 0;
-    if (M.ring_pos >= RING_N) M.ring_pos = RING_N - 1;
+    /* ring: a step of one dot is the playhead moving; a jump (prev, seek, reconnect)
+     * tweens over 200 ms instead of cutting */
+    M.ring_pos = ring_target();
+    if (M.ring_pos != M.ring_to) {
+        int jump = abs(M.ring_pos - M.ring_to) > 1;
+        M.ring_from = jump ? M.ring_show : (float)M.ring_pos;
+        M.ring_to = M.ring_pos;
+        M.t_ring = jump ? nos_t : -10;
+    }
+    M.ring_show = m_lerp(M.ring_from, (float)M.ring_to, bezier_ease(&EASE_STANDARD, q((nos_t - M.t_ring) / 0.2f, 16)));
+    fmt_times(M.last_e, M.last_r, sizeof M.last_e);
 
     /* the svc volume wins once the phone reports one */
     int sv = svc_music()->volume;
@@ -266,13 +354,13 @@ static void music_tick(float dt)
 static float head_k(float t0) { return q((nos_t - t0 - UI_ENTRY_S + 0.05f) / 0.1f, 3); }
 
 static void draw_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float dcur,
-                      int pos, float build, int have, float head)
+                      float pos, float build, int have, float head)
 {
-    float lit = (float)pos * build;
+    float lit = pos * build;
     if (!have) { dot_ring(fb, cx, cy, r, n, d, 0, 0, 0, C_LINE); return; }
     dot_ring(fb, cx, cy, r, n, d, 0, lit, C_PRI, C_LINE2);
     if (head > 0) {
-        float a = 6.2831853f * (float)pos / (float)n;
+        float a = 6.2831853f * pos / (float)n;
         dot_disc(fb, cx + r * gfx_fast_sin(a), cy - r * gfx_fast_cos(a), dcur, ui_mix(C_LINE2, C_WHITE, head));
     }
 }
@@ -344,16 +432,32 @@ static void draw_empty(gfx_fb *fb, float build, int connected)
 
 static int shown_pressed(int b) { return M.pressed == b || (M.held == b && nos_t - M.t_down < HOLD_S); }
 
+static void draw_times(gfx_fb *fb, const char *e, const char *r, float k)
+{
+    if (k <= 0) return;
+    ui_text(fb, UI_F_LABEL, UI_CX - 14, TIME_Y, e, ui_dim(C_WHITE, k), UI_RIGHT, 1);
+    dot_disc(fb, UI_CX, TIME_Y - 6, 4, ui_dim(C_DIS, k));
+    ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, r, ui_dim(C_DIS, k), UI_LEFT, 1);
+}
+
+static void draw_player(gfx_fb *fb);
+
 static void music_draw(gfx_fb *fb)
 {
     ui_title(fb, "MUSIC", 0);
+    int d0 = ps_dim(fb, &M.sw);
+    if (M.sw.shown) {
+        /* the empty ring arrives with the absent page's text */
+        dot_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 0, 0, 0, ui_dim(C_LINE, q(M.build * 2.0f, 4)));
+        draw_empty(fb, M.build, M.sw.shown == 1);
+    } else draw_player(fb);
+    fb->dim = d0;
+}
+
+static void draw_player(gfx_fb *fb)
+{
     float b = bezier_ease(&EASE_STANDARD, M.build);
-    if (!P.have) {
-        dot_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 0, 0, 0, C_LINE);
-        draw_empty(fb, M.build, P.connected);
-        return;
-    }
-    draw_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 11.0f, M.ring_pos, b, P.have, head_k(M.t_enter));
+    draw_ring(fb, UI_CX, UI_CY, RING_R, RING_N, 4.5f, 11.0f, M.ring_show, b, 1, head_k(M.t_enter));
     if (nos_t < M.t_enter && !M.from_wg) return;          /* the iris shows black until 40% */
 
     /* equaliser: columns rise row by row with the build */
@@ -398,14 +502,10 @@ static void music_draw(gfx_fb *fb)
 
     float vk = q(mtw_value(&M.vol_w), 32);
     if (vk > 0.01f) { draw_volume(fb, vk); return; }
-    char e[16], r[16];
-    fmt_ms(e, sizeof e, P.pos_ms, 0);
-    ui_text(fb, UI_F_LABEL, UI_CX - 14, TIME_Y, e, ui_dim(C_WHITE, M.ink), UI_RIGHT, 1);
-    dot_disc(fb, UI_CX, TIME_Y - 6, 4, ui_dim(C_DIS, M.ink));
-    if (P.dur_ms) {
-        fmt_ms(r, sizeof r, P.dur_ms - P.pos_ms, 1);
-        ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, r, ui_dim(C_DIS, M.ink), UI_LEFT, 1);
-    } else ui_text(fb, UI_F_LABEL, UI_CX + 14, TIME_Y, UI_NONE ":" UI_NONE, ui_dim(C_DIS, M.ink), UI_LEFT, 1);
+    /* the times change with the title: the old pair steps down with the old words,
+     * the new pair steps up with the new ones */
+    if (M.txt_old > 0) draw_times(fb, M.old_e, M.old_r, M.ink * M.txt_old);
+    else draw_times(fb, M.last_e, M.last_r, M.ink * M.txt);
 }
 
 /* --------------------------------------------------------------- input */
@@ -527,9 +627,10 @@ static int wg_pressed(void)
 
 static void wg_tick(float dt, int visible)
 {
-    /* off-glass the ring empties, so it fills dot by dot once the page settles */
-    if (!visible) { G.t_shown = 1e9f; return; }
+    /* the player state is read off-glass too: the page slides in with the right glyph
+     * (no play -> empty -> pause swap); the ring empties, to fill once the page settles */
     player_poll();
+    if (!visible) { G.t_shown = 1e9f; G.icon_playing = P.playing; G.t_icon = -10; return; }
     G.build = nos_t < G.t_shown ? 0 : q((nos_t - G.t_shown) / UI_ENTRY_S, 32);
     G.pos = P.dur_ms ? (int)((uint64_t)P.pos_ms * WG_RING_N / P.dur_ms) : 0;
     if (G.pos >= WG_RING_N) G.pos = WG_RING_N - 1;

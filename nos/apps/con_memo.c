@@ -36,6 +36,42 @@
 
 static float q(float x, float n) { return floorf(m_clamp(x, 0, 1) * n + 0.5f) / n; }
 
+/* ------------------------------------------- content <-> absent swap */
+/* Losing (or getting back) the phone or a module: the page on the glass leaves over 2
+ * ink steps at 30 fps (2/3, 1/3), then the other page builds from its start: ui_absent's
+ * icon from the centre and its text ladder, or the content's own entry build. Same
+ * timings as the outdoor apps. */
+#define PS_OUT_F 2
+typedef struct { int shown, want; float t_out, t_in; } pswap;
+static void ps_init(pswap *s, int v) { s->shown = s->want = v; s->t_out = s->t_in = -10; }
+static int ps_frames(const pswap *s) { return (int)lroundf((nos_t - s->t_out) * NOS_FPS); }
+/* per tick with the live state; 1 on the frame the other page takes over (its build
+ * clock t_in starts a frame back, so that first frame already shows the build) */
+static int ps_tick(pswap *s, int v)
+{
+    if (v != s->want) { s->want = v; s->t_out = nos_t; }
+    if (s->want != s->shown && ps_frames(s) >= PS_OUT_F) { s->shown = s->want; s->t_in = nos_t - 1.0f / NOS_FPS; return 1; }
+    return 0;
+}
+/* ink of the page on the glass: 1 at rest, 2/3 then 1/3 while it leaves */
+static float ps_ink(const pswap *s)
+{
+    if (s->want == s->shown) return 1.0f;
+    return 1.0f - (float)(ps_frames(s) + 1) / (PS_OUT_F + 1);
+}
+/* dims what is drawn next while the page leaves (restore fb->dim with the return value).
+ * The dim is in no primitive's hash, so the page is recorded once with the step. */
+static int ps_dim(gfx_fb *fb, const pswap *s)
+{
+    int d0 = fb->dim;
+    float k = ps_ink(s);
+    if (k < 1) {
+        if (fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(0x5A11u, k));
+        nos_ink_dim(fb, k);
+    }
+    return d0;
+}
+
 static void body_line(gfx_fb *fb, int y, const char *s, uint16_t c)
 {
     int x0, x1;
@@ -43,9 +79,12 @@ static void body_line(gfx_fb *fb, int y, const char *s, uint16_t c)
     ui_text_fit(fb, UI_F_BODY, UI_CX, y, s, c, UI_CENTER, x1 - x0);
 }
 
+static int s_keep_title;          /* a mic page fading out: its title stays at full ink */
+static void page_title(gfx_fb *fb, const char *s) { if (!s_keep_title) ui_title(fb, s, 0); }
+
 static void absent(gfx_fb *fb, const char *title, const char *what, float build)
 {
-    ui_title(fb, title, 0);
+    page_title(fb, title);
     ui_absent(fb, DOT_ICON_MIC, "Not connected", what, "MIC MODULE", build);
 }
 
@@ -133,6 +172,7 @@ static struct {
     uint8_t wave[WAVE_COLS];     /* 0..WAVE_HALF per column */
     int   wave_frame;
     float db, db_shown;          /* smoothed level, the number on screen */
+    float db_raw;                /* the level the meter is heading to */
     char  dbs[8], dbs_prev[8];
     float t_db, db_morph;
     int   band, band_prev;       /* QUIET .. HEARING RISK of the shown number; -1 none */
@@ -160,6 +200,10 @@ static struct {
     int   rec_lock;              /* a sideways drag while recording: rubber band only */
     int   row_held;              /* memo row whose fill holds after a quick tap */
     float row_t;
+    /* the mic pages (Recorder, Noise): their own build clock, restarted when the mic
+     * module goes or comes back (pswap: 1 = content, 0 = absent page) */
+    pswap msw;
+    float m0, mb, mt;
 } R = { .playing = -1, .row_held = -1 };
 
 static int on_page(int p) { return fabsf(R.px.x - p * PAGE_W) < PAGE_W; }
@@ -323,13 +367,18 @@ static void memo_enter(void)
     R.t_rec = -10;
     R.t_saved = -10;
     R.rec_failed = 0;
-    R.ts[0] = R.ts_prev[0] = 0;
-    R.dbs[0] = R.dbs_prev[0] = 0;
-    R.band = R.band_prev = -1;
-    R.t_band = -10;
-    R.db = R.db_shown = 0;
-    R.meter = 0;
-    memset(R.wave, 0, sizeof R.wave);
+    if (!back) {
+        R.ts[0] = R.ts_prev[0] = 0;
+        R.dbs[0] = R.dbs_prev[0] = 0;
+        R.band = R.band_prev = -1;
+        R.t_band = -10;
+        R.db = R.db_shown = R.db_raw = 0;
+        R.meter = 0;
+        memset(R.wave, 0, sizeof R.wave);
+    }
+    R.mic = (hal_ext_present() & EXT_MIC) != 0;
+    ps_init(&R.msw, R.mic);
+    R.m0 = R.t_enter;
     memo_load();
     if (!R.list_inited) { ui_list_init(&R.list, s_nmemo, UI_ROW_H, 104, memo_row, memo_tap); R.list_inited = 1; }
     else ui_list_set_n(&R.list, s_nmemo);
@@ -376,9 +425,11 @@ static void rec_start(void)
 
 static void memo_leave(void)
 {
-    /* a recording keeps going in the background (the REC chip shows it); say so once */
-    if (R.rec && svc_memo_active()) nos_toast("RECORDING");
-    R.rec = 0;
+    /* A recording keeps going in the background and R.rec stays as it is: the page
+     * still on the glass during the transition reads RECORDING. Covered (a call, Find
+     * watch, an alarm) it says nothing: the REC chip already shows it, and the toast
+     * would sit on the caller's name. Leaving for good says it once. */
+    if (!nos_leaving_covered() && R.rec && svc_memo_active()) nos_toast("RECORDING");
     play_stop();
 }
 
@@ -400,6 +451,10 @@ static void memo_tick(float dt)
     R.spk = (pres & EXT_SPEAKER) != 0;
     R.build = q((nos_t - R.t_enter) / UI_ENTRY_S, 32);
     R.txt = nos_t >= R.t_enter ? 1.0f : 0.0f;
+    ps_tick(&R.msw, R.mic);                      /* mic gone or back: the pages swap */
+    R.m0 = R.msw.t_in > R.t_enter ? R.msw.t_in : R.t_enter;
+    R.mb = q((nos_t - R.m0) / UI_ENTRY_S, 32);
+    R.mt = nos_t >= R.m0 ? 1.0f : 0.0f;
 
     /* pager */
     if (!R.dragging && msp_step(&R.px, dt)) {}
@@ -411,7 +466,7 @@ static void memo_tick(float dt)
     /* mic: only while a mic page is on the glass or a recording runs (it costs power) */
     if (R.mic && (R.rec || on_page(0) || on_page(2))) {
         float db = hal_mic_db();
-        if (db >= 0) R.db += (db - R.db) * m_clamp(dt * 8.0f, 0, 1);
+        if (db >= 0) { R.db_raw = db; R.db += (db - R.db) * m_clamp(dt * 8.0f, 0, 1); }
         R.wave_frame += frames;
         if (R.wave_frame >= 3) {                 /* 10 Hz: one column per step */
             R.wave_frame = 0;
@@ -426,11 +481,15 @@ static void memo_tick(float dt)
         }
         R.meter_frame += frames;
         if (R.meter_frame >= 3) { R.meter_frame = 0; R.meter = R.db; }
-        /* the number: 1 Hz with a digit morph, but at once when the meter crosses into
-         * another band, so the hero, the label and the red dots always agree */
+        /* the number: 1 Hz with a digit morph, but at once when the meter settles in
+         * another band, so the hero, the label and the red dots always agree. A band the
+         * meter only passes through (49 -> 92 crosses LOUD) is never named: the number
+         * waits until the meter is in the band it is heading to. */
         int bm = band_of(R.meter), bs = band_of(R.db_shown);
-        int cross = R.dbs[0] && bm != bs && ((bm == 3) != (bs == 3) || nos_t - R.t_db >= 0.1f);   /* red: at once */
-        if (nos_t - R.t_db >= 1.0f || !R.dbs[0] || cross) {
+        int settled = bm == band_of(R.db_raw);
+        int cross = R.dbs[0] && bm != bs && settled;
+        int due = nos_t - R.t_db >= 1.0f && (settled || bm == bs || nos_t - R.t_db >= 2.0f);
+        if (due || !R.dbs[0] || cross) {
             char b[8];
             int v = (int)floorf(R.meter);           /* floored like the meter's dots */
             if (v < 0) v = 0;
@@ -526,8 +585,8 @@ static void hint_draw(gfx_fb *fb, int h, float k)
     switch (h) {
     case H_NOSD:  ui_state(fb, UI_CX, 298, "NO SD CARD", ui_dim(C_PRI, k)); break;
     case H_SAVED: ui_state(fb, UI_CX, 298, "SAVED", ui_dim(C_PRI, k)); break;
-    case H_STOP:  ui_label(fb, UI_CX, 298, "TAP TO STOP", ui_dim(C_SEC, k * R.txt), UI_CENTER); break;
-    default:      ui_label(fb, UI_CX, 298, "TAP TO RECORD", ui_dim(C_SEC, k * R.txt), UI_CENTER); break;
+    case H_STOP:  ui_label(fb, UI_CX, 298, "TAP TO STOP", ui_dim(C_SEC, k * R.mt), UI_CENTER); break;
+    default:      ui_label(fb, UI_CX, 298, "TAP TO RECORD", ui_dim(C_SEC, k * R.mt), UI_CENTER); break;
     }
 }
 static void hint_swap(gfx_fb *fb, int a, int b, float x)
@@ -539,16 +598,17 @@ static void hint_swap(gfx_fb *fb, int a, int b, float x)
 
 static void draw_recorder(gfx_fb *fb)
 {
-    if (!R.mic) { absent(fb, "RECORDER", "Add the mic strap to record voice memos", R.build); return; }
-    if (nos_t < R.t_enter) { ui_title(fb, "RECORDER", 0); return; }
+    if (!R.msw.shown) { absent(fb, "RECORDER", "Add the mic strap to record voice memos", R.mb); return; }
+    if (nos_t < R.m0) { page_title(fb, "RECORDER"); return; }
     float x = rec_x(), rl = rec_look();
     const char *t_new = R.rec ? "RECORDING" : "RECORDER", *t_old = R.rec ? "RECORDER" : "RECORDING";
-    if (x >= 1) ui_title(fb, t_new, 0);
+    if (s_keep_title) {}
+    else if (x >= 1) ui_title(fb, t_new, 0);
     else {
         if (swap_out(x) > 0) ui_label(fb, UI_CX, UI_TITLE_Y, t_old, ui_dim(C_SEC, swap_out(x)), UI_CENTER);
         if (swap_in(x) > 0) ui_label(fb, UI_CX, UI_TITLE_Y, t_new, ui_dim(C_SEC, swap_in(x)), UI_CENTER);
     }
-    wave_draw(fb, UI_CX - WAVE_COLS * WAVE_PITCH * 0.5f, WAVE_CY, ui_mix(C_DIS, C_WHITE, rl), C_LINE2, R.build);
+    wave_draw(fb, UI_CX - WAVE_COLS * WAVE_PITCH * 0.5f, WAVE_CY, ui_mix(C_DIS, C_WHITE, rl), C_LINE2, R.mb);
 
     /* the idle state line: SAVED (or NO SD CARD) for a moment, then the hint */
     float since = nos_t - R.t_saved;
@@ -563,7 +623,7 @@ static void draw_recorder(gfx_fb *fb)
     float sk = R.rec_failed ? 0.0f : 1.0f - q((since - 1.6f) / SWAP_S, 4);
     dot_style st = { DOT_FONT_TALL, 6.0f, 4.8f, ui_mix(ui_mix(C_DIS, C_PRI, sk), C_WHITE, rl), 0, 1, 1 };
     if (R.ts_prev[0] && R.ts_morph < 1) dot_text_morph(fb, &st, UI_CX, TIME_Y, R.ts_prev, R.ts, 1, R.ts_morph);
-    else dot_text_anim(fb, &st, UI_CX, TIME_Y, R.ts, 1, q((nos_t - R.t_enter - 0.05f) / 0.3f, 32), DOT_REVEAL_RANDOM, 7);
+    else dot_text_anim(fb, &st, UI_CX, TIME_Y, R.ts, 1, q((nos_t - R.m0 - 0.05f) / 0.3f, 32), DOT_REVEAL_RANDOM, 7);
 
     /* state line */
     if (x < 1) {
@@ -604,28 +664,28 @@ static void band_words(gfx_fb *fb, int band, float k)
     static const char *const lab[4] = { "QUIET", "MODERATE", "LOUD", "HEARING RISK" };
     static const char *const line[4] = { "Like a library", "Normal conversation", "Busy street traffic", "Limit your exposure" };
     if (k <= 0 || band < 0 || band > 3) return;
-    uint16_t c1 = ui_dim(C_PRI, R.txt * k);
+    uint16_t c1 = ui_dim(C_PRI, R.mt * k);
     if (band == 3) ui_state(fb, UI_CX, 318, lab[band], c1);      /* red stays on the meter */
     else ui_label(fb, UI_CX, 318, lab[band], c1, UI_CENTER);
-    body_line(fb, 356, line[band], ui_dim(C_SEC, R.txt * k));
+    body_line(fb, 356, line[band], ui_dim(C_SEC, R.mt * k));
 }
 
 static void draw_noise(gfx_fb *fb)
 {
-    if (!R.mic) { absent(fb, "NOISE", "Add the mic strap to measure noise levels", R.build); return; }
-    ui_title(fb, "NOISE", 0);
+    if (!R.msw.shown) { absent(fb, "NOISE", "Add the mic strap to measure noise levels", R.mb); return; }
+    page_title(fb, "NOISE");
     dot_style st = { DOT_FONT_TALL, 11.0f, 8.8f, C_WHITE, 0, 1, 1 };
     const char *s = R.dbs[0] ? R.dbs : "--";
     if (R.dbs_prev[0] && R.db_morph < 1) dot_text_morph(fb, &st, UI_CX, 104, R.dbs_prev, s, 1, R.db_morph);
     else dot_text(fb, &st, UI_CX - dot_text_width(&st, s) * 0.5f, 104, s);
-    ui_text(fb, UI_F_LABEL, UI_CX, 236, "dB", ui_dim(C_SEC, R.txt), UI_CENTER, 2);
+    ui_text(fb, UI_F_LABEL, UI_CX, 236, "dB", ui_dim(C_SEC, R.mt), UI_CENTER, 2);
 
     /* meter: 24 dots x 5 dB; white to 85, red beyond (over-limit: the screen's one red) */
     const int n = 24, nsafe = 17;
     const float pitch = 12.0f, d = 8.0f;
     float x0 = UI_CX - pitch * (n - 1) * 0.5f;
     /* dot i lights at 5 i dB, so the first red dot and HEARING RISK both start at 85 */
-    float lit = (R.meter > 0 ? floorf(m_clamp(R.meter, 0, 119) / 5.0f) + 1.0f : 0.0f) * q(R.build, 16);
+    float lit = (R.meter > 0 ? floorf(m_clamp(R.meter, 0, 119) / 5.0f) + 1.0f : 0.0f) * q(R.mb, 16);
     dot_bar(fb, x0, 272, nsafe, pitch, d, lit < nsafe ? lit : nsafe, C_PRI, C_LINE2);
     /* the red dots belong to HEARING RISK: they light with the hero's band and take the
      * label's 2-step ramp, so the number, the words and the red never disagree */
@@ -652,9 +712,15 @@ static void memo_draw(gfx_fb *fb)
         gfx_fb sub;
         int x0 = ox < 0 ? 0 : ox, x1 = ox + (int)PAGE_W > GFX_W ? GFX_W : ox + (int)PAGE_W;
         if (x1 <= x0 || !nos_subview(fb, &sub, x0, 0, x1, GFX_H, ox, 0)) continue;
+        if (pg == 1) { draw_memos(&sub); continue; }
+        /* a mic page leaving (module out or back): dimmed under a steady title */
+        s_keep_title = ps_ink(&R.msw) < 1;
+        if (s_keep_title) ui_title(&sub, pg == 0 ? "RECORDER" : "NOISE", 0);
+        int d0 = ps_dim(&sub, &R.msw);
         if (pg == 0) draw_recorder(&sub);
-        else if (pg == 1) draw_memos(&sub);
         else draw_noise(&sub);
+        sub.dim = d0;
+        s_keep_title = 0;
     }
     ui_page_dots_a(fb, UI_CX, UI_DOTS_Y, NPAGES, R.px.x / PAGE_W, 1.0f - rec_look());   /* gone while recording */
 }
@@ -672,7 +738,7 @@ static int memo_input(const nos_input *in)
     switch (in->type) {
     case IN_DOWN:
         if (R.px.moving) { R.px.v = 0; R.px.target = R.px.x; }     /* catch the pager */
-        R.pressed = settled && R.page == 0 && R.mic && in_rec_button(in->x, in->y);
+        R.pressed = settled && R.page == 0 && R.mic && R.msw.shown && in_rec_button(in->x, in->y);
         if (R.pressed) R.t_down = nos_t;
         if (settled && R.page == 1 && s_nmemo) ui_list_input(&R.list, in);
         return 1;
