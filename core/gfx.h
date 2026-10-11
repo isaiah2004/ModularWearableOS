@@ -67,8 +67,16 @@ static inline uint16_t *gfx_row(const gfx_fb *fb, int r)
 static inline uint16_t gfx_ink(const gfx_fb *fb, uint16_t c)
 {
     if (!fb->dim) return c;
+    uint32_t k = 32u - (uint32_t)fb->dim;
+    uint32_t r5 = c >> 11, g6 = (c >> 5) & 63u, b5 = c & 31u;
+    if (r5 == b5 && (g6 >> 1) == r5) {
+        /* once per primitive, so a branch is free: a neutral grey dims to the nearest
+         * neutral grey (green 2x below level 16, 2x + 1 from 16), never a tint */
+        uint32_t l = (r5 * k + 16u) >> 5;
+        return (uint16_t)(l << 11 | (l * 2u + (l >= 16u)) << 5 | l);
+    }
     uint32_t d = (c | ((uint32_t)c << 16)) & 0x07E0F81Fu;
-    d = ((d * (uint32_t)(32 - fb->dim) + 0x02008010u) >> 5) & 0x07E0F81Fu;   /* rounded: greys stay neutral */
+    d = ((d * k + 0x02008010u) >> 5) & 0x07E0F81Fu;
     return (uint16_t)(d | (d >> 16));
 }
 
