@@ -95,6 +95,7 @@ void nos_push(const nos_screen *s, int tx);
 void nos_pop(void);                         /* reverses the transition the top was pushed with */
 void nos_pop_with(int tx);                  /* pop with a different transition (boot -> home) */
 void nos_replace(const nos_screen *s, int tx);   /* swap the top screen */
+int  nos_retarget(const nos_screen *s);           /* a push still opening shows s instead (1 = done) */
 void nos_home(void);                        /* pop to the root with one transition */
 void nos_home_now(void);                    /* collapse to the root instantly (entering AOD) */
 /* Inside enter(): 1 when the screen is being pulled in by a finger (nos_pull): skip

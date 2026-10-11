@@ -379,13 +379,10 @@ static int l_input(const nos_input *in)
     case IN_BTN_DOUBLE: {                  /* button twice from the face: the last app */
         const nos_screen *last = sys_launcher_last();
         if (!last) return 0;
-        /* the first press began opening this list: close it back into the button from
-         * where its iris is, then the app irises from home (no list it never meant to see,
-         * and no cut) */
-        if (nos_depth() == 2 && nos_transitioning()) {
-            sys_home_open_after(last);
-            nos_home();
-        } else {
+        /* the first press began opening this list: its iris keeps growing with the app
+         * inside instead (no list it never meant to see, no reversal) */
+        if (nos_retarget(last)) nos_feedback(FB_OPEN);
+        else {
             nos_iris_x = GFX_W; nos_iris_y = UI_CY;
             nos_feedback(FB_OPEN);
             nos_replace(last, TX_IRIS);

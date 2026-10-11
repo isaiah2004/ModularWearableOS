@@ -163,6 +163,27 @@ void nos_replace(const nos_screen *s, int tx)
     tx_begin(tx == TX_PUSH ? TX_DISSOLVE : tx, old, s, 0.0f, 1.0f);
 }
 
+/* A push still opening shows `s` instead (a double press caught the launcher's iris on
+ * its way in): the geometry keeps going, only the screen inside changes. */
+int nos_retarget(const nos_screen *s)
+{
+    if (s_depth <= 1 || T.state != TXS_AUTO || T.popping || T.over != top_screen() || !s) return 0;
+    const nos_screen *old = top_screen();
+    if (old == s) return 1;
+    call_leave(old);
+    s_stack[s_depth - 1].s = s;
+    /* its build starts where a fresh iris would reach IRIS_BUILD, or now if past it */
+    if (T.type == TX_IRIS && T.use_tween) {
+        float d = T.tw.t0 + iris_build_delay() + nos_dt - nos_t;
+        s_enter_delay = d > 0 ? d : 0;
+    }
+    call_enter(s);
+    s_enter_delay = 0;
+    T.over = s;
+    nos_iris_seed = 0;
+    return 1;
+}
+
 void nos_pop(void)
 {
     if (s_depth <= 1) return;
@@ -604,15 +625,20 @@ static void dispatch_btn(nos_in_type t)
 static void process_button(void)
 {
     uint32_t now = hal_millis();
-    if (s_btn_raw && !s_btn_down) { s_btn_down = 1; s_btn_t0 = now; s_btn_long_sent = 0; }
+    if (s_btn_raw && !s_btn_down) {
+        s_btn_down = 1; s_btn_t0 = now; s_btn_long_sent = 0;
+        /* a quick second press acts on its down (the launcher opens the last app): its
+         * release is then spent */
+        if (s_btn_pending && now - s_btn_last_up < DOUBLE_MS) {
+            s_btn_pending = 0; s_btn_long_sent = 1;
+            dispatch_btn(IN_BTN_DOUBLE);
+        }
+    }
     else if (!s_btn_raw && s_btn_down) {
         s_btn_down = 0;
-        if (!s_btn_long_sent) {
-            /* act at once on every press; a quick second press adds IN_BTN_DOUBLE to
-             * whatever is on top by then (the launcher opens the last app) */
-            if (s_btn_pending && now - s_btn_last_up < DOUBLE_MS) { s_btn_pending = 0; dispatch_btn(IN_BTN_DOUBLE); }
-            else { s_btn_pending = 1; s_btn_last_up = now; dispatch_btn(IN_BTN); }
-        }
+        /* act at once on every press; a second press within DOUBLE_MS adds IN_BTN_DOUBLE
+         * to whatever is on top by then */
+        if (!s_btn_long_sent) { s_btn_pending = 1; s_btn_last_up = now; dispatch_btn(IN_BTN); }
     }
     if (s_btn_down && !s_btn_long_sent && now - s_btn_t0 >= BTN_LONG_MS) {
         s_btn_long_sent = 1; s_btn_pending = 0;
