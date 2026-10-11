@@ -1,0 +1,6 @@
+# Exercise --damagecheck: run with --selftest. Frames match until the bug is enabled.
+wait 500
+drag 150 233 320 233 400
+wait 300
+set selftest_bug 1
+wait 500

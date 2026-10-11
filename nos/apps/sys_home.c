@@ -1,0 +1,404 @@
+/* sys_home.c — the root screen: the watch face plus a horizontal pager of widgets.
+ *
+ *   page 0      the current face (nos_faces[nos_prefs.face]); the faces team draws it
+ *   pages 1..5  wg_activity, wg_heart, wg_weather, wg_music, wg_timer
+ *
+ * Paging feel (the iOS pager): the content follows the finger 1:1 (the touch slop is
+ * absorbed so nothing jumps when the drag locks), rubber-bands past both ends, and on
+ * release the finger's velocity picks the page (a flick moves one page, a slow drag
+ * goes to the nearest) and hands over to a critically damped spring launched with that
+ * velocity, clamped so it can never overshoot. Touching a moving pager stops it dead.
+ * A haptic tick marks every page crossing.
+ *
+ * The button from a widget page returns to the face as ONE page of motion: the current
+ * widget is drawn in slot 1 for the trip ("alias"), so the user sees it slide away and
+ * the face slide in rather than five pages whipping past.
+ *
+ * Only the pages intersecting the glass are drawn, through nos_subview() with the
+ * page's x offset; the recorder lands their damage where they are drawn. */
+#include "nos.h"
+#include "ui.h"
+#include "dot.h"
+#include "motion.h"
+#include "svc.h"
+#include "hal_ext.h"
+#include "prefs.h"
+#include "apps/nos_apps.h"
+#include "faces/face.h"
+#include <math.h>
+#include <string.h>
+
+void sys_launcher_prewarm(void);              /* sys_launcher.c: bake one row sprite */
+const nos_screen *sys_launcher_last(void);    /* sys_launcher.c: last app opened, or 0 */
+
+#define PAGE_W   466.0f
+#define NWG      5
+#define NPAGE    (NWG + 1)
+#define FLICK_V  350.0f      /* px/s: faster releases always change page */
+#define ENTER_S  0.40f       /* face build-in duration */
+#define DOTS_Y   440
+
+/* Dim a neutral grey without the RGB565 rounding casts (keeps G = 2R, B = R). */
+static uint16_t gdim(uint16_t c, float k)
+{
+    if (k >= 1.0f) return c;
+    if (k <= 0.0f) return 0;
+    int r = c >> 11, g = (c >> 5) & 63, b = c & 31;
+    if (b != r || (g >> 1) != r) return ui_dim(c, k);       /* not a grey */
+    int v = (int)(r * k + 0.5f);
+    return (uint16_t)(v << 11 | (v * 2) << 5 | v);
+}
+
+static const nos_widget *const k_wg[NWG] = { &wg_activity, &wg_heart, &wg_weather, &wg_music, &wg_timer };
+
+static struct {
+    float x;                 /* pager offset in slot space, px (0 = face) */
+    mspring sp;
+    int settling;
+    int dragging, grabbed;
+    float grab_x, grab_dx;   /* pager x and finger dx when the drag locked */
+    int grab_page;           /* page under the finger when it went down */
+    int was_moving;          /* the press stopped a moving pager: no tap */
+    int alias;               /* >0: widget page drawn in slot 1 (return-to-face trip) */
+    int page;                /* nearest real page (haptic detents) */
+    int shown_page;          /* page whose shown() ran last */
+    float dots_a;            /* page-dot opacity, quantised */
+    face_ctx c;
+    float enter_t0;
+    int face_idx;
+    int last_aod;
+    uint32_t last_tick_ms;
+    int prev_awake_ms;
+    int covered;             /* another screen is on top */
+    int inited;
+} H;
+
+static const nos_face *cur_face(void)
+{
+    int i = nos_prefs.face;
+    if (i < 0 || i >= nos_face_count) i = 0;
+    return nos_faces[i];
+}
+
+void sys_home_build_in(void)
+{
+    H.enter_t0 = nos_t;
+    H.c.enter = 0;
+    const nos_face *f = cur_face();
+    if (f && f->enter) f->enter();
+}
+
+/* ---- pager geometry --------------------------------------------------------------- */
+static float pager_max(void) { return H.alias ? PAGE_W : PAGE_W * NWG; }
+/* page shown in slot s */
+static int slot_page(int s) { return (H.alias && s == 1) ? H.alias : s; }
+/* fractional real page position (for dots) */
+static float real_pos(void)
+{
+    float s = floorf(H.x + 0.5f) / PAGE_W;      /* drawn position: no repaint on sub-px tails */
+    return H.alias ? s * (float)H.alias : s;
+}
+static int nearest_page(void) { return slot_page((int)floorf(H.x / PAGE_W + 0.5f)); }
+static int at_face(void) { return !H.dragging && !H.settling && H.x == 0.0f; }
+
+static void settle_to(float target, float v)
+{
+    if (fabsf(target - H.x) < 0.01f && fabsf(v) < 1.0f) { H.x = target; H.settling = 0; return; }
+    msp_init(&H.sp, H.x, SPRING_PAGE);
+    /* a critically damped spring overshoots only if launched towards its target faster
+     * than w0 * distance: cap the handed-over velocity there (exactly no overshoot) */
+    float dist = target - H.x, w0 = 6.2831853f / H.sp.response;
+    if (v * dist > 0 && fabsf(v) > w0 * fabsf(dist)) v = (dist > 0 ? 1.0f : -1.0f) * w0 * fabsf(dist);
+    H.sp.v = v;
+    msp_to(&H.sp, target);
+    H.settling = 1;
+}
+
+static void pager_release(float v)
+{
+    H.dragging = 0;
+    H.grabbed = 0;
+    float pos = H.x / PAGE_W;
+    int n = H.alias ? 1 : NWG;
+    int tgt;
+    if (v > FLICK_V) tgt = (int)floorf(pos) + 1;
+    else if (v < -FLICK_V) tgt = (int)ceilf(pos) - 1;
+    else tgt = (int)floorf(pos + 0.5f);
+    int from = H.grab_page;
+    if (tgt > from + 1) tgt = from + 1;
+    if (tgt < from - 1) tgt = from - 1;
+    if (tgt < 0) tgt = 0;
+    if (tgt > n) tgt = n;
+    settle_to(tgt * PAGE_W, v);
+}
+
+static void go_face(void)
+{
+    if (H.x <= 0.0f && !H.dragging) return;
+    int p = nearest_page();
+    if (!H.alias && p >= 2) {               /* one page of motion, whatever the distance */
+        H.alias = p;
+        H.x -= (float)(p - 1) * PAGE_W;
+    }
+    H.dragging = H.grabbed = 0;
+    settle_to(0, H.settling ? H.sp.v : 0);
+}
+
+static void go_page(int p)                 /* air gestures */
+{
+    if (H.alias) return;
+    if (p < 0 || p > NWG) { nos_feedback(FB_LIMIT); return; }
+    settle_to(p * PAGE_W, 0);
+}
+
+/* ---- lifecycle ---------------------------------------------------------------------- */
+static void home_enter(void)
+{
+    if (!H.inited) {
+        memset(&H, 0, sizeof H);
+        H.inited = 1;
+        H.face_idx = nos_prefs.face;
+        H.shown_page = 0;
+        H.last_tick_ms = hal_millis();
+        sys_home_build_in();
+    }
+    H.covered = 0;
+}
+
+static void home_leave(void)
+{
+    H.covered = 1;
+    if (H.dragging || H.grabbed) pager_release(0);
+}
+
+static void build_ctx(float dt)
+{
+    face_ctx *c = &H.c;
+    hal_get_datetime(&c->dt);
+    const svc_activity_t *a = svc_activity();
+    const svc_sys_t *sy = svc_sys();
+    c->steps = a->steps > 0 ? a->steps : sy->steps_today;
+    c->step_goal = a->goal > 0 ? a->goal : nos_prefs.step_goal_100 * 100;
+    c->bpm = svc_heart()->bpm_last;
+    c->battery = sy->battery_pct > 0 ? sy->battery_pct : hal_battery_percent();
+    c->charging = sy->charging;
+    c->unread = svc_notif_unread();
+    const svc_weather_t *w = svc_weather();
+    c->weather_valid = w->valid;
+    c->temp_c = w->temp_c;
+    c->wx_cond = w->cond;
+    int ah, am, ain;
+    c->next_alarm_min = svc_alarm_next(&ah, &am, &ain) ? ain : -1;
+    c->t = nos_t;
+    c->aod = nos_aod;
+    c->enter = m_clamp((nos_t - H.enter_t0) / ENTER_S, 0, 1);
+    (void)dt;
+}
+
+/* A fresh context for screens that draw faces themselves (the face picker). */
+const face_ctx *sys_home_ctx(void)
+{
+    build_ctx(0);
+    return &H.c;
+}
+
+static void home_tick(float dt)
+{
+    uint32_t now = hal_millis();
+    int awake = nos_awake_ms();
+    /* waking: the frame loop paused, AOD ended, or the screen-off timeout had passed */
+    int woke = (!H.covered && now - H.last_tick_ms > 1500u) ||
+               (H.last_aod && !nos_aod) ||
+               (H.prev_awake_ms > nos_prefs.sleep_s * 1000 + 500 && awake < 500);
+    if (nos_aod && !H.last_aod) {              /* AOD shows the face only */
+        H.alias = 0; H.x = 0; H.settling = H.dragging = H.grabbed = 0;
+        H.shown_page = 0; H.page = 0;
+    }
+    if (woke) sys_home_build_in();
+    H.last_aod = nos_aod;
+    H.last_tick_ms = now;
+    H.prev_awake_ms = awake;
+    if (nos_prefs.face != H.face_idx) { H.face_idx = nos_prefs.face; sys_home_build_in(); }
+
+    /* pager */
+    if (H.settling) {
+        int m = msp_step(&H.sp, dt);
+        H.x = H.sp.x;
+        if (!m) {
+            H.settling = 0;
+            H.x = H.sp.target;
+            if (H.alias && H.x <= 0.0f) H.alias = 0;
+            else if (H.alias && H.x >= PAGE_W) { H.x = H.alias * PAGE_W; H.alias = 0; }
+            int p = nearest_page();
+            if (p != H.shown_page) {
+                H.shown_page = p;
+                if (p >= 1 && k_wg[p - 1]->shown) k_wg[p - 1]->shown();
+            }
+        }
+    }
+    int p = nearest_page();
+    if (p != H.page) { H.page = p; nos_feedback(FB_TICK); }
+
+    /* page dots: on widget pages and while the pager moves */
+    float tgt = (!nos_aod && (H.dragging || H.settling || H.x > 0.5f)) ? 1.0f : 0.0f;
+    float k = dt * (tgt > H.dots_a ? 9.0f : 4.0f);
+    H.dots_a += (tgt - H.dots_a) * (k > 1 ? 1 : k);
+    if (fabsf(tgt - H.dots_a) < 0.07f) H.dots_a = tgt;
+    H.dots_a = floorf(H.dots_a * 8.0f + 0.5f) / 8.0f;
+
+    /* face + widgets */
+    build_ctx(dt);
+    const nos_face *f = cur_face();
+    if (f && f->tick) f->tick(&H.c, dt);
+    float rx = real_pos() * PAGE_W;
+    for (int i = 0; i < NWG; i++) {
+        if (!k_wg[i]->tick) continue;
+        int slot_vis = 0;
+        if (nos_aod) slot_vis = 0;
+        else if (H.alias) slot_vis = (i + 1 == H.alias) && H.x > 0.0f;
+        else slot_vis = fabsf((i + 1) * PAGE_W - rx) < PAGE_W;
+        k_wg[i]->tick(dt, slot_vis);
+    }
+
+    if (!H.dragging && !H.settling && !nos_transitioning()) sys_launcher_prewarm();
+}
+
+/* ---- draw --------------------------------------------------------------------------- */
+static void draw_dots(gfx_fb *fb)
+{
+    if (H.dots_a <= 0.0f) return;
+    const float pitch = 14.0f, d = 7.0f;
+    float pos = real_pos();
+    float x0 = UI_CX - (NPAGE - 1) * pitch * 0.5f;
+    /* a black capsule keeps the dots legible over widget art (bezel rings) */
+    ui_rrect(fb, x0 - 13, DOTS_Y - 12, (NPAGE - 1) * pitch + 26, 24, 12, C_BG);
+    for (int i = 0; i < NPAGE; i++) {
+        float near = 1.0f - m_clamp(fabsf(pos - i), 0, 1);
+        near = floorf(near * 8.0f + 0.5f) / 8.0f;
+        uint16_t col = gdim(ui_mix(C_LINE2, C_WHITE, near), H.dots_a);
+        dot_disc(fb, x0 + i * pitch, (float)DOTS_Y, d + near * 2.0f, col);
+    }
+}
+
+static void draw_page(gfx_fb *fb, int page, int ox)
+{
+    gfx_fb sub;
+    int x0 = ox < 0 ? 0 : ox, x1 = ox + (int)PAGE_W > GFX_W ? GFX_W : ox + (int)PAGE_W;
+    if (x1 <= x0 || !nos_subview(fb, &sub, x0, 0, x1, GFX_H, ox, 0)) return;
+    if (page == 0) {
+        const nos_face *f = cur_face();
+        if (f && f->draw) f->draw(&sub, &H.c);
+    } else if (k_wg[page - 1]->draw) k_wg[page - 1]->draw(&sub);
+}
+
+static void home_draw(gfx_fb *fb)
+{
+    if (nos_aod) {
+        const nos_face *f = cur_face();
+        if (f && f->draw) f->draw(fb, &H.c);
+        return;
+    }
+    int xi = (int)lroundf(H.x);
+    int s0 = (int)floorf(H.x / PAGE_W);
+    for (int s = s0; s <= s0 + 1; s++) {
+        if (s < 0 || s > (H.alias ? 1 : NWG)) continue;
+        int ox = s * (int)PAGE_W - xi;
+        if (ox <= -(int)PAGE_W || ox >= GFX_W) continue;
+        draw_page(fb, slot_page(s), ox);
+    }
+    draw_dots(fb);
+    /* the unread dot: the face draws its own (face_ctx.unread); widget pages get this one */
+    if (H.c.unread > 0 && real_pos() > 0.5f) {
+        dot_disc(fb, UI_CX, 24, 20, C_BG);
+        dot_disc(fb, UI_CX, 24, 9, C_RED);
+    }
+}
+
+/* ---- input -------------------------------------------------------------------------- */
+static int home_input(const nos_input *in)
+{
+    if (nos_aod) return 0;
+    switch (in->type) {
+    case IN_DOWN:
+        H.was_moving = H.settling && fabsf(H.sp.v) > 60.0f;
+        if (H.settling) { H.settling = 0; H.sp.v = 0; }   /* catch the page mid-flight */
+        H.grabbed = 1;
+        H.grab_x = H.x;
+        H.grab_page = (int)floorf(H.x / PAGE_W + 0.5f);
+        return 1;
+    case IN_DRAG_START:
+        if (in->axis == AXIS_X) {
+            H.dragging = 1;
+            H.grab_x = H.x;
+            H.grab_dx = in->dx;
+            return 1;
+        }
+        /* vertical: the sheets, from the face only */
+        if (nearest_page() == 0 && H.x < 40.0f) {
+            H.x = 0; H.settling = 0; H.grabbed = 0; H.alias = 0;
+            if (in->dy > 0) nos_pull(&scr_control, TX_DROP, in);
+            else nos_pull(&scr_notifs, TX_RISE, in);
+            return 1;
+        }
+        if (H.grabbed) pager_release(0);
+        return 0;
+    case IN_DRAG: {
+        if (!H.dragging) return 0;
+        float raw = H.grab_x - (in->dx - H.grab_dx), mx = pager_max();
+        if (raw < 0) raw = rubber_band(raw, PAGE_W);
+        else if (raw > mx) raw = mx + rubber_band(raw - mx, PAGE_W);
+        H.x = raw;
+        return 1;
+    }
+    case IN_DRAG_END:
+        if (!H.dragging) return 0;
+        pager_release(-in->vx);
+        return 1;
+    case IN_TAP: {
+        int was = H.was_moving;
+        if (H.grabbed) pager_release(0);
+        if (was || H.x != (float)((int)floorf(H.x / PAGE_W + 0.5f)) * PAGE_W) return 1;
+        int p = nearest_page();
+        if (p == 0) {
+            const nos_face *f = cur_face();
+            const nos_screen *s = f && f->tap ? f->tap(in->x, in->y) : 0;
+            if (s) nos_open(s, in->x, in->y);
+        } else if (k_wg[p - 1]->tap) {
+            k_wg[p - 1]->tap(in->x, in->y);         /* widgets open with nos_open (FB_OPEN) */
+        }
+        return 1;
+    }
+    case IN_LONG:
+        if (nearest_page() == 0 && H.x < 1.0f && !H.was_moving) {
+            H.grabbed = 0;
+            nos_push(&scr_faces, TX_DISSOLVE);
+            return 1;
+        }
+        return 0;
+    case IN_UP:
+        if (H.grabbed && !H.dragging) pager_release(0);
+        H.grabbed = 0;
+        return 1;
+    case IN_BTN:
+        if (at_face()) nos_open(&scr_launcher, GFX_W, UI_CY);
+        else { nos_feedback(FB_BACK); go_face(); }
+        return 1;
+    case IN_BTN_LONG:
+        nos_push(&scr_power, TX_RISE);
+        return 1;
+    case IN_BTN_DOUBLE: {
+        const nos_screen *s = sys_launcher_last();
+        if (s) { nos_open(s, GFX_W, UI_CY); return 1; }
+        return 0;
+    }
+    case IN_AIR:
+        if (in->x == GEST_LEFT) { go_page(nearest_page() + 1); return 1; }
+        if (in->x == GEST_RIGHT) { go_page(nearest_page() - 1); return 1; }
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+const nos_screen scr_home = { "HOME", home_enter, home_leave, home_tick, home_draw, home_input,
+                              SCR_NOBACK | SCR_HDRAG };

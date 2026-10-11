@@ -1,0 +1,9 @@
+# hal_ext_sim_present must reach nos_ext_sim.c (regression: weak duplicate symbol)
+expect present 0x1FF
+present 0
+wait 100
+expect present 0
+present 0x108
+expect present 0x108
+set present 0x1FF
+expect present 0x1FF

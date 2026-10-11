@@ -41,6 +41,11 @@
 #include "board.h"
 #include "board_protocol.h"
 #include "ota.h"
+#include "svc.h"      /* hal_phone_* contract (nos/svc.h) */
+
+/* Advertised + GAP name. Gadgetbridge auto-detects a Bangle.js by a name matching
+ * "Bangle\.js.*" (BangleJSCoordinator) and scan-filters on the NUS service UUID. */
+#define BLE_NAME "Bangle.js NOS"
 
 void display_set_brightness(uint8_t level); /* main.c, DCS 0x51 */
 
@@ -481,6 +486,9 @@ static void apply_tz(int off_min)
     setenv("TZ", tz, 1);
     tzset();
 }
+/* NOS services (Gadgetbridge E.setTimeZone): display timezone, minutes east of UTC. */
+void hal_set_tz_min(int tz_min);
+void hal_set_tz_min(int tz_min) { apply_tz(tz_min); }
 
 /* TIME char write: [epoch:4 LE UTC][tz_min:2 LE east], optionally + [lat:4 f][lon:4 f]"city".
  * The companion pushes UTC time + the IP-derived timezone and location. */
@@ -714,6 +722,137 @@ void hal_time_resync(void)
     wlog("resync req: ble=%s wifi=%s", g_med_conn != BLE_HS_CONN_HANDLE_NONE ? "up" : "DOWN",
          g_wifi_up ? "up" : "down");
 }
+/* ---- Nordic UART Service: the Gadgetbridge "Bangle.js" link --------------------------------------
+ * 6e400001-b5a3-f393-e0a9-e50e24dcca9e; RX ...0002 (phone writes), TX ...0003 (watch notifies).
+ * The NimBLE host task only splits received bytes into lines and queues them in a PSRAM ring;
+ * the UI task pops them with hal_phone_read_line() (zero-timeout lock: never blocks a frame) and
+ * nos/svc.c parses them. Appended AFTER the watch service in the GATT table so the companion's
+ * cached handles stay where they were. */
+static const ble_uuid128_t NUS_SVC = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e);
+static const ble_uuid128_t NUS_RX_CHR = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0x40, 0x6e);
+static const ble_uuid128_t NUS_TX_CHR = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00, 0x40, 0x6e);
+#define NUS_LINE_MAX 2048          /* = GB_LINE_MAX (nos/gb.h); longer lines are dropped */
+#define NUS_RING     8192          /* queued complete lines, [len:2][bytes] records */
+static uint16_t g_nus_tx_h;
+static volatile int g_nus_sub;     /* the central enabled TX notifications */
+static volatile uint16_t g_nus_mtu = 23;
+static char    *s_nus_asm;         /* line being assembled (host task only) */
+static int      s_nus_asm_n, s_nus_asm_drop;
+static uint8_t *s_nus_ring;        /* guarded by s_nus_mtx */
+static int      s_nus_head, s_nus_used;
+static SemaphoreHandle_t s_nus_mtx;
+static volatile uint32_t s_nus_lines, s_nus_dropped;
+
+static void nus_alloc(void)
+{
+    if (!s_nus_mtx) s_nus_mtx = xSemaphoreCreateMutex();
+    if (!s_nus_asm) s_nus_asm = heap_caps_malloc(NUS_LINE_MAX, MALLOC_CAP_SPIRAM);
+    if (!s_nus_ring) s_nus_ring = heap_caps_malloc(NUS_RING, MALLOC_CAP_SPIRAM);
+    if (!s_nus_asm || !s_nus_ring || !s_nus_mtx) ESP_LOGE("watch", "NUS: no PSRAM for line buffers");
+}
+static void nus_push_line(const char *s, int n)
+{
+    if (!s_nus_ring || !s_nus_mtx || n <= 0) return;
+    xSemaphoreTake(s_nus_mtx, portMAX_DELAY);          /* the UI side holds it for a memcpy only */
+    if (s_nus_used + n + 2 <= NUS_RING) {
+        int w = (s_nus_head + s_nus_used) % NUS_RING;
+        uint8_t hdr[2] = { (uint8_t)(n & 0xFF), (uint8_t)(n >> 8) };
+        for (int i = 0; i < 2; i++) { s_nus_ring[w] = hdr[i]; w = (w + 1) % NUS_RING; }
+        int first = NUS_RING - w < n ? NUS_RING - w : n;
+        memcpy(s_nus_ring + w, s, (size_t)first);
+        if (first < n) memcpy(s_nus_ring, s + first, (size_t)(n - first));
+        s_nus_used += n + 2;
+        s_nus_lines++;
+    } else s_nus_dropped++;
+    xSemaphoreGive(s_nus_mtx);
+}
+static void nus_rx_bytes(const uint8_t *b, int n)
+{
+    if (!s_nus_asm) return;
+    for (int i = 0; i < n; i++) {
+        uint8_t c = b[i];
+        if (c == '\n') {
+            if (!s_nus_asm_drop && s_nus_asm_n) nus_push_line(s_nus_asm, s_nus_asm_n);
+            else if (s_nus_asm_drop) s_nus_dropped++;
+            s_nus_asm_n = 0; s_nus_asm_drop = 0;
+        } else if (c == '\r') {
+            continue;
+        } else if (s_nus_asm_n < NUS_LINE_MAX - 1) {
+            s_nus_asm[s_nus_asm_n++] = (char)c;
+        } else s_nus_asm_drop = 1;
+    }
+}
+static int nus_rx_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn; (void)attr; (void)arg;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return BLE_ATT_ERR_UNLIKELY;
+    uint8_t buf[128];
+    int len = OS_MBUF_PKTLEN(ctxt->om);
+    for (int off = 0; off < len; off += (int)sizeof buf) {
+        int k = len - off < (int)sizeof buf ? len - off : (int)sizeof buf;
+        if (os_mbuf_copydata(ctxt->om, off, k, buf) != 0) break;
+        nus_rx_bytes(buf, k);
+    }
+    return 0;
+}
+static int nus_tx_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn; (void)attr; (void)ctxt; (void)arg;
+    return BLE_ATT_ERR_READ_NOT_PERMITTED;              /* notify only */
+}
+static const struct ble_gatt_chr_def NUS_CHRS[] = {
+    { .uuid = &NUS_RX_CHR.u, .access_cb = nus_rx_access,
+      .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP },
+    { .uuid = &NUS_TX_CHR.u, .access_cb = nus_tx_access,
+      .flags = BLE_GATT_CHR_F_NOTIFY, .val_handle = &g_nus_tx_h },
+    { 0 },
+};
+
+int hal_phone_connected(void)
+{
+    return g_nus_sub && g_med_conn != BLE_HS_CONN_HANDLE_NONE;
+}
+int hal_phone_read_line(char *buf, int n)
+{
+    if (!buf || n <= 0 || !s_nus_ring || !s_nus_mtx) return 0;
+    if (xSemaphoreTake(s_nus_mtx, 0) != pdTRUE) return 0;   /* busy: try next frame */
+    int k = 0;
+    if (s_nus_used >= 2) {
+        int len = s_nus_ring[s_nus_head] | (s_nus_ring[(s_nus_head + 1) % NUS_RING] << 8);
+        int r = (s_nus_head + 2) % NUS_RING;
+        k = len < n - 1 ? len : n - 1;
+        int first = NUS_RING - r < k ? NUS_RING - r : k;
+        memcpy(buf, s_nus_ring + r, (size_t)first);
+        if (first < k) memcpy(buf + first, s_nus_ring, (size_t)(k - first));
+        s_nus_head = (s_nus_head + 2 + len) % NUS_RING;
+        s_nus_used -= len + 2;
+    }
+    xSemaphoreGive(s_nus_mtx);
+    buf[k] = 0;
+    return k;
+}
+void hal_phone_write_line(const char *line)
+{
+    if (!line || !hal_phone_connected() || !g_nus_tx_h) return;
+    uint16_t conn = g_med_conn;
+    int len = (int)strlen(line), total = len + 1;       /* + '\n' */
+    int chunk = g_nus_mtu > 23 ? g_nus_mtu - 3 : 20;
+    if (chunk > 180) chunk = 180;
+    uint8_t buf[180];
+    for (int off = 0; off < total; off += chunk) {
+        int k = total - off < chunk ? total - off : chunk;
+        for (int i = 0; i < k; i++) buf[i] = off + i < len ? (uint8_t)line[off + i] : '\n';
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, (uint16_t)k);
+        if (!om || ble_gatts_notify_custom(conn, g_nus_tx_h, om) != 0) {
+            s_nus_dropped++;
+            break;                                       /* out of mbufs: drop the rest */
+        }
+    }
+}
+
 /* ---- battery history logger (dumped over BLE for offline analysis) ---------------------------
  * A ~24h ring of battery mV (one sample/min). On the companion's subscribe we push it, delta-
  * compressed, on the SAME MEDIA_CMD notify char (prefix 0xB1/0xB2/0xB3 — distinct from the 0-6
@@ -772,7 +911,8 @@ void hal_batt_log_tick(void)
         if (s_batt_cnt < BATT_N) s_batt_cnt++;
     }
     /* push the log on request (subscribe/manual) or every 2 min while a companion is connected */
-    int connected = (g_med_conn != BLE_HS_CONN_HANDLE_NONE && g_med_cmd_h);
+    /* (not while Gadgetbridge holds the link: it would get unknown-handle notifies) */
+    int connected = (g_med_conn != BLE_HS_CONN_HANDLE_NONE && g_med_cmd_h && !g_nus_sub);
     if (s_batt_dump_req || (connected && (s_batt_dump_ms == 0 || now - s_batt_dump_ms >= 120000u))) {
         s_batt_dump_req = 0; s_batt_dump_ms = now;
         batt_log_dump();
@@ -782,6 +922,7 @@ void hal_batt_dump_now(void) { s_batt_dump_req = 1; }
 
 static const struct ble_gatt_svc_def WATCH_GATT[] = {
     { .type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &WATCH_SVC.u, .characteristics = WATCH_CHRS },
+    { .type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &NUS_SVC.u, .characteristics = NUS_CHRS },
     { 0 },
 };
 
@@ -798,8 +939,12 @@ static void adv_start(void)
 {
     struct ble_hs_adv_fields f = { 0 };
     f.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    f.name = (uint8_t *)"Watch"; f.name_len = 5; f.name_is_complete = 1;
+    f.name = (uint8_t *)BLE_NAME; f.name_len = sizeof BLE_NAME - 1; f.name_is_complete = 1;
     ble_gap_adv_set_fields(&f);
+    /* scan response: the NUS UUID, which Gadgetbridge's Bangle.js scan filter looks for */
+    struct ble_hs_adv_fields r = { 0 };
+    r.uuids128 = &NUS_SVC; r.num_uuids128 = 1; r.uuids128_is_complete = 1;
+    ble_gap_adv_rsp_set_fields(&r);
     struct ble_gap_adv_params ap = { 0 };
     ap.conn_mode = BLE_GAP_CONN_MODE_UND;
     ap.disc_mode = BLE_GAP_DISC_MODE_GEN;
@@ -839,6 +984,8 @@ static int peri_gap_event(struct ble_gap_event *ev, void *arg)
         g_ble_disc = ev->disconnect.reason;
         g_med_conn = BLE_HS_CONN_HANDLE_NONE;
         g_med_have = 0;                          /* now-playing is stale once the bridge drops */
+        g_nus_sub = 0; g_nus_mtu = 23;           /* Gadgetbridge link gone */
+        s_nus_asm_n = 0; s_nus_asm_drop = 0;
         adv_start();
         break;
     case BLE_GAP_EVENT_ENC_CHANGE:
@@ -865,11 +1012,16 @@ static int peri_gap_event(struct ble_gap_event *ev, void *arg)
         break;
     case BLE_GAP_EVENT_MTU:
         printf("BLE: MTU=%d\n", ev->mtu.value);
+        g_nus_mtu = ev->mtu.value;
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
         printf("BLE: SUBSCRIBE handle=%d\n", ev->subscribe.attr_handle);
         if (ev->subscribe.attr_handle == g_med_cmd_h && ev->subscribe.cur_notify)
             s_batt_dump_req = 1;     /* companion is listening -> push the battery history */
+        if (ev->subscribe.attr_handle == g_nus_tx_h) {
+            g_nus_sub = ev->subscribe.cur_notify;
+            wlog("NUS %s (Gadgetbridge)", g_nus_sub ? "subscribed" : "unsubscribed");
+        }
         break;
     case BLE_GAP_EVENT_ADV_COMPLETE:
         adv_start();
@@ -897,8 +1049,8 @@ static void ble_on_sync(void)
     }
     uint8_t a[6] = { 0 };
     ble_hs_id_copy_addr(s_ble_addr_type, a, NULL);
-    printf("BLE: addr %02X:%02X:%02X:%02X:%02X:%02X type=%d name=\"Watch\"\n",
-           a[5], a[4], a[3], a[2], a[1], a[0], s_ble_addr_type);
+    printf("BLE: addr %02X:%02X:%02X:%02X:%02X:%02X type=%d name=\"%s\"\n",
+           a[5], a[4], a[3], a[2], a[1], a[0], s_ble_addr_type, BLE_NAME);
     ble_start_scan();
     adv_start();
 }
@@ -918,12 +1070,13 @@ static void ble_init(void)
         ESP_LOGE("watch", "nimble_port_init failed: %d", (int)e);
         return;
     }
+    nus_alloc();
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_gatts_count_cfg(WATCH_GATT);
     ble_gatts_add_svcs(WATCH_GATT);
     printf("BLE: GATT registered (media_cmd handle=%d)\n", g_med_cmd_h);
-    ble_svc_gap_device_name_set("Watch");
+    ble_svc_gap_device_name_set(BLE_NAME);
     extern void ble_store_config_init(void);
     ble_store_config_init();
     /* NO bonding: the media chars are unencrypted, so the host never persists this device
@@ -953,9 +1106,7 @@ int hal_step_count(void)
     return a.steps>(uint32_t)INT_MAX ? INT_MAX : (int)a.steps;
 }
 
-/* TODO: drive a vibration motor if fitted; the 1.43 has no motor. */
-/* No vibration motor on this board — a short chiptune tick is the "haptic" feedback. */
-void hal_haptic(int ms) { (void)ms; hal_play(SND_TICK); }
+/* hal_haptic(int pattern) lives in firmware/main/ext/ext_haptic.c (nos/hal_ext.h). */
 
 /* Large buffers go to external PSRAM (the S3R8 has 8MB) so the layer caches
  * don't exhaust the ~320KB of internal SRAM. */

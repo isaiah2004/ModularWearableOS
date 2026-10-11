@@ -413,6 +413,7 @@ void board_init(void)
     BaseType_t ok = xTaskCreate(board_task, "board", 4096, NULL, 2, NULL);
     assert(ok == pdPASS);
 }
+i2c_master_bus_handle_t board_i2c_bus(void) { return s_bus; }
 void board_print_info(void)
 {
     hal_storage sd; hal_storage_get(&sd);

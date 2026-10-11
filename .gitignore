@@ -14,3 +14,7 @@ __pycache__/
 /diag_*.bmp
 /store_*.dat
 /build-*.log
+firmware/build_ext/
+firmware/build_svc/
+firmware/build_*/
+.env

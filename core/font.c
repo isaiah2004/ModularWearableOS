@@ -1,4 +1,5 @@
 #include "font.h"
+#include "gfx_cost.h"
 
 static const font_glyph *find_glyph(const font_t *f, unsigned code)
 {
@@ -32,6 +33,7 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
     if (cc1 <= cc0) { cc0 = 0; cc1 = GFX_W; }
     if (cc0 < 0) cc0 = 0;
     if (cc1 > GFX_W) cc1 = GFX_W;
+    unsigned n = 0;   /* pixels written (cost model only) */
     for (const unsigned char *c = (const unsigned char *)text; *c; c++) {
         const font_glyph *g = find_glyph(f, *c);
         if (!g) { x += f->line_height / 3; continue; }
@@ -54,10 +56,13 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
                 unsigned bx = (unsigned)(gx + col);
                 if (bx >= GFX_W) continue;
                 dst[bx] = a >= 255 ? color : gfx_blend565(dst[bx], color, a);
+                n++;
             }
         }
         x += g->xadv;
     }
+    /* big display digits measured 146 ns/px, small/medium text 260-320 */
+    GFX_COST(f->line_height >= 96 ? GFX_COST_GLYPH : GFX_COST_TEXT, n);
     return x;
 }
 

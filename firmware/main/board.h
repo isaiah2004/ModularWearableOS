@@ -3,6 +3,7 @@
 #include <time.h>
 #include "esp_err.h"
 #include "hal.h"
+#include "driver/i2c_master.h"
 void board_init(void);
 void board_restore_clock(void); /* after NVS settings load; before radio time sync */
 void board_apply_timezone(void);
@@ -17,4 +18,7 @@ esp_err_t board_sd_mount(void);
 esp_err_t board_sd_unmount(void);
 esp_err_t board_sd_test(void);
 void board_prepare_sleep(void);
+/* Shared I2C master bus (SDA47/SCL48) for the strap sensors (ext/). The IDF
+ * driver serialises transactions per bus, so no extra mutex is needed. */
+i2c_master_bus_handle_t board_i2c_bus(void);
 #endif
