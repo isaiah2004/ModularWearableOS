@@ -456,7 +456,9 @@ void app_main(void)
         }
 
         if (s_pwr == PWR_OFF) { vTaskDelay(pdMS_TO_TICKS(50)); next = esp_timer_get_time(); last_run = next; continue; }
-        if (s_pwr == PWR_AOD) {
+        /* AOD entry: 30 Hz frames while the face dims out and the AOD face comes up
+         * (sys_home's ramp), then the 1 Hz loop */
+        if (s_pwr == PWR_AOD && !sys_home_aod_entering()) {
             static int64_t last_aod;
             if (now - last_aod >= 1000000) {
                 last_aod = now;
@@ -497,7 +499,10 @@ void app_main(void)
                    (unsigned)nos_dbg_us[0], (unsigned)nos_dbg_us[1], (unsigned)nos_dbg_us[2], (unsigned)nos_dbg_us[3]);
         }
         /* brightness after the frame is on the panel: never show a stale frame */
-        set_level(nos_bright_override >= 0 ? nos_bright_override : user_level());
+        /* AOD entry: the user's level while the face dims out, the AOD level once the
+         * AOD face is coming up (one dim step under the nearly black frame) */
+        if (s_pwr == PWR_AOD) set_level(sys_home_aod_dimming() ? user_level() : 10);
+        else set_level(nos_bright_override >= 0 ? nos_bright_override : user_level());
         if (++frames_ok == 90) ota_mark_valid();
 
         pf_frames++; pf_work += work; pf_px += px;

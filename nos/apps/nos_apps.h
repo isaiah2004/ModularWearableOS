@@ -15,6 +15,14 @@ extern const nos_screen scr_faces;       /* face picker */
 extern const nos_screen scr_power;       /* power sheet: sleep / restart / power off */
 void sys_notif_open(int i);              /* push the detail view for notification i */
 void sys_home_build_in(void);            /* restart the face build-in (boot, wake, new face) */
+void sys_home_open_after(const nos_screen *s);  /* open s once home is back on top */
+int sys_home_aod_entering(void);         /* AOD entry ramp running: host keeps 30 Hz frames */
+int sys_home_aod_dimming(void);          /* ...and in its first half (the face dimming out) */
+/* REC chip (home + control centre): kind 0 none, 1 track, 2 memo; label "REC 12:34" */
+int sys_rec_state(char *label, int n);
+const nos_screen *sys_rec_screen(int kind);
+int sys_rec_width(const char *label);
+void sys_rec_draw(gfx_fb *fb, int x0, int y, const char *label, uint16_t dot, uint16_t ink);
 const struct nos_screen *sys_launcher_last(void);   /* last app opened from the launcher, or 0 */
 void sys_launcher_prewarm(void);         /* bake one launcher row sprite (idle frames) */
 

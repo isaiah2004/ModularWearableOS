@@ -221,6 +221,7 @@ static float aod_ramp_k(void)
     }
     return n < AOD_IN_N ? (float)(n + 1) / (AOD_IN_N + 1) : 1.0f;
 }
+int sys_home_aod_dimming(void) { return aod_dimming_out(); }
 int sys_home_aod_entering(void)
 {
     return nos_aod && aod_frame() < (H.aod_out ? AOD_OUT_N : 0) + AOD_IN_N;

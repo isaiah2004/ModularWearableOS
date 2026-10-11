@@ -499,6 +499,7 @@ static int run_script(const char *path, int depth)
         }
         else if (!strcmp(cmd, "face")) { nos_prefs.face = (uint8_t)atoi(a); nos_invalidate(); }
         else if (!strcmp(cmd, "skipboot")) skip_boot();
+        else if (!strcmp(cmd, "home_now")) nos_home_now();          /* the host entering AOD */
         else if (!strcmp(cmd, "notify")) {
             /* notify APP|TITLE|BODY : a local notification plus its banner */
             char tb[256]; snprintf(tb, sizeof tb, "%s", rest_after(p, 1));

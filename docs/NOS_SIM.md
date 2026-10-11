@@ -103,6 +103,7 @@ One per line; `#` starts a comment. Coordinates are panel pixels (0-465), centre
 | `root NAME` | replace the whole stack with that screen |
 | `home` / `pop` | `nos_home()` / `nos_pop()` |
 | `skipboot` | pop the boot screen if it is on top |
+| `home_now` | collapse to home instantly, as the host does entering AOD (`nos_home_now()`) |
 | `face N` | `nos_prefs.face = N` |
 | `notify APP\|TITLE\|BODY` | `svc_notif_add_local()` + `nos_banner()` |
 | `companion APP TITLE...` | a notification through the HAL queue (`hal_notification_poll`) |
