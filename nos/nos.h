@@ -122,6 +122,9 @@ int  nos_revealed(void);
 /* Inside leave(): 1 when the screen is being covered by a push (it stays on the stack
  * and will be revealed later: keep sensors and state), 0 when it is going away. */
 int  nos_leaving_covered(void);
+/* The finger's travel from its touch-down point in px (max of |dx|, |dy|; 0 when up).
+ * Under the 12 px drag slop no IN_DRAG arrives: use this to drop a pressed state early. */
+int  nos_touch_travel(void);
 /* Inside enter(): when the screen's entry build should start. Equals nos_t, except for
  * an iris push, where it is the frame the circle passes 40 % (~2 frames in: big enough
  * to show the build; the icon seed covers the start). Use it for build clocks with no

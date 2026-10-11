@@ -351,6 +351,14 @@ static struct {
 } P;
 
 static int s_raw_x, s_raw_y, s_raw_down, s_raw_dirty;
+/* how far the finger has moved since it went down (0 when up): lets a screen drop a
+ * pressed state before the drag slop turns the touch into a drag */
+int nos_touch_travel(void)
+{
+    if (!P.down) return 0;
+    int dx = abs(P.x - P.x0), dy = abs(P.y - P.y0);
+    return dx > dy ? dx : dy;
+}
 void nos_touch(int x, int y, int down)
 {
     s_raw_x = x; s_raw_y = y; s_raw_down = down; s_raw_dirty = 1;
