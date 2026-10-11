@@ -215,9 +215,11 @@ void nos_home(void)
 
 void nos_home_now(void)
 {
+    /* home already alone on the glass: nothing was revealed (it keeps its own state) */
+    int collapsed = s_depth > 1 || T.state != TXS_IDLE;
     T.state = TXS_IDLE; T.popping = 0;
     while (s_depth > 1) { call_leave(s_stack[s_depth - 1].s); s_depth--; }
-    call_reveal(top_screen());
+    if (collapsed) call_reveal(top_screen());
     s_force_full = 1;
 }
 

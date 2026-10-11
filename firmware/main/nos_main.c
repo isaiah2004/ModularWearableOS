@@ -209,6 +209,7 @@ static int s_swallow;                 /* the waking touch never reaches the UI *
 static int s_cur_level = -1;          /* last panel brightness sent */
 static float s_auto_k = 1.0f;         /* ambient multiplier, smoothed */
 static int s_no_sleep;
+static int s_aod_lead;                /* AOD just began: its first frame runs at 30 Hz */
 
 static int user_level(void)
 {
@@ -246,7 +247,7 @@ static void go_state(int st)
     if (st == s_pwr) return;
     s_pwr = st;
     if (st == PWR_ON) { nos_aod = 0; nos_invalidate(); nos_keep_awake(); }
-    else if (st == PWR_AOD) { nos_aod = 1; nos_home_now(); nos_invalidate(); }
+    else if (st == PWR_AOD) { nos_aod = 1; nos_home_now(); nos_invalidate(); s_aod_lead = 1; }
     else set_level(0);
 }
 
@@ -458,7 +459,7 @@ void app_main(void)
         if (s_pwr == PWR_OFF) { vTaskDelay(pdMS_TO_TICKS(50)); next = esp_timer_get_time(); last_run = next; continue; }
         /* AOD entry: 30 Hz frames while the face dims out and the AOD face comes up
          * (sys_home's ramp), then the 1 Hz loop */
-        if (s_pwr == PWR_AOD && !sys_home_aod_entering()) {
+        if (s_pwr == PWR_AOD && !s_aod_lead && !sys_home_aod_entering()) {
             static int64_t last_aod;
             if (now - last_aod >= 1000000) {
                 last_aod = now;
@@ -486,6 +487,7 @@ void app_main(void)
         s_rot_us = 0; s_wait_us = 0; memset(nos_dbg_us, 0, sizeof nos_dbg_us);
         uint32_t px = nos_frame_run(el_ms);
         last_run = a;
+        s_aod_lead = 0;
         int64_t ad = esp_timer_get_time();
         frame_drain();
         int64_t work = esp_timer_get_time() - a;
