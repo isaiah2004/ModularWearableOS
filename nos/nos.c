@@ -15,6 +15,8 @@ float    nos_t;
 float    nos_dt = 1.0f / NOS_FPS;
 nos_stats nos_last;
 int nos_iris_x = GFX_W / 2, nos_iris_y = GFX_H / 2;
+int nos_iris_seed;
+float nos_iris_seed_r = 40.0f;
 int nos_debug_force_full;
 void (*nos_bg_tick)(float dt);
 int nos_aod;
@@ -60,6 +62,27 @@ int nos_transitioning(void) { return T.state != TXS_IDLE; }
 
 static int s_revealing;
 int nos_revealed(void) { return s_revealing; }
+#define IRIS_S 0.34f
+#define IRIS_BUILD 0.40f                     /* iris entries start their build here (§8) */
+static float s_enter_delay;                  /* set around enter() of an iris push */
+float nos_enter_t(void) { return nos_t + s_enter_delay; }
+/* When the eased iris reaches IRIS_BUILD, in seconds from its first frame. */
+static float iris_build_delay(void)
+{
+    static float d = -1.0f;
+    if (d < 0) {
+        float lo = 0, hi = 1;
+        for (int i = 0; i < 20; i++) {
+            float m = 0.5f * (lo + hi);
+            if (bezier_ease(&EASE_STANDARD, m) < IRIS_BUILD) lo = m; else hi = m;
+        }
+        d = hi * IRIS_S - nos_dt;                /* the first frame is already one step in */
+        if (d < 0) d = 0;
+    }
+    return d;
+}
+static void banner_yield(int type);
+static void tx_complete(void);
 static void call_enter(const nos_screen *s) { if (s && s->enter) s->enter(); }
 static void call_reveal(const nos_screen *s) { s_revealing = 1; call_enter(s); s_revealing = 0; }
 static void call_leave(const nos_screen *s) { if (s && s->leave) s->leave(); }
@@ -78,8 +101,9 @@ static void tx_begin(int type, const nos_screen *under, const nos_screen *over, 
     T.p = p_from;
     T.use_tween = (type == TX_IRIS || type == TX_DISSOLVE);
     if (T.use_tween) {
-        float dur = type == TX_IRIS ? 0.34f : 0.30f;
+        float dur = type == TX_IRIS ? IRIS_S : 0.30f;
         mtw_start(&T.tw, p_from, p_to, dur, type == TX_IRIS ? &EASE_STANDARD : &EASE_INOUT);
+        T.tw.t0 -= nos_dt;            /* input -> the next frame already moves (springs step too) */
     } else {
         msp_init(&T.sp, p_from * T.span, SPRING_PAGE);
         msp_to(&T.sp, p_to * T.span);
@@ -90,6 +114,7 @@ static void tx_begin(int type, const nos_screen *under, const nos_screen *over, 
     T.lin_v = 0;
     T.state = TXS_AUTO;
     s_force_full = 1;
+    if (p_to > p_from) banner_yield(type);
 }
 
 void nos_set_root(const nos_screen *s)
@@ -111,7 +136,9 @@ void nos_push(const nos_screen *s, int tx)
     const nos_screen *under = top_screen();
     call_leave(under);
     s_stack[s_depth].s = s; s_stack[s_depth].tx = tx; s_depth++;
+    if (tx == TX_IRIS) s_enter_delay = iris_build_delay();
     call_enter(s);
+    s_enter_delay = 0;
     T.popping = 0; T.replacing = 0; T.cancel_pops = 0;
     if (tx == TX_NONE) { s_force_full = 1; return; }
     tx_begin(tx, under, s, 0.0f, 1.0f);
@@ -125,7 +152,9 @@ void nos_replace(const nos_screen *s, int tx)
     call_leave(old);
     s_stack[s_depth - 1].s = s;
     s_stack[s_depth - 1].tx = tx;
+    if (tx == TX_IRIS) s_enter_delay = iris_build_delay();
     call_enter(s);
+    s_enter_delay = 0;
     T.popping = 0; T.replacing = 0; T.cancel_pops = 0;
     if (tx == TX_NONE) { s_force_full = 1; return; }
     tx_begin(tx == TX_PUSH ? TX_DISSOLVE : tx, old, s, 0.0f, 1.0f);
@@ -152,18 +181,32 @@ void nos_pop_with(int tx)
     nos_pop();
 }
 
+/* A button close: moves on the first frame (slope 1.4), leaves faster than it starts
+ * (slope 2). Its end is off the glass, so it needs no settle. */
+static const bezier EASE_BTN_EXIT = { 0.25f, 0.35f, 0.8f, 0.6f };
 void nos_home(void)
 {
     if (s_depth <= 1) return;
-    /* Collapse the middle of the stack silently, then animate the top away. */
+    /* Collapse the middle of the stack silently, then animate the top away: from where
+     * it is if it is moving (a finger dragging a sheet), along the geometry it is
+     * moving with, and accelerating over 0.22 s. A button has no finger speed to keep,
+     * and a spring's settle would be ~13 frames of full repaints. The top's leave()
+     * runs when it is gone (tx_complete). */
     const nos_screen *top = top_screen();
     int tx = s_stack[s_depth - 1].tx;
+    int moving = T.state != TXS_IDLE && T.over == top;
+    float from = moving ? T.p : 1.0f;
+    int geo = moving ? T.type : (tx == TX_NONE ? TX_DISSOLVE : tx);
     T.state = TXS_IDLE;
-    call_leave(top);
     while (s_depth > 1) s_depth--;
     s_stack[1].s = top; s_stack[1].tx = tx == TX_NONE ? TX_DISSOLVE : tx; s_depth = 2;
-    if (tx == TX_IRIS) { nos_iris_x = GFX_W; nos_iris_y = GFX_H / 2; }   /* close toward the button */
-    nos_pop();
+    if (geo == TX_IRIS) { nos_iris_x = GFX_W; nos_iris_y = GFX_H / 2; }   /* close toward the button */
+    if (from <= 0.001f) { T.popping = 1; T.p = 0; tx_complete(); return; }
+    T.popping = 1; T.replacing = 0; T.cancel_pops = 0;
+    tx_begin(geo, s_stack[0].s, top, from, 0.0f);
+    T.use_tween = 1;
+    mtw_start(&T.tw, from, 0.0f, 0.22f * (from > 0.4f ? from : 0.4f), &EASE_BTN_EXIT);
+    T.tw.t0 -= nos_dt;
 }
 
 void nos_home_now(void)
@@ -191,6 +234,7 @@ static void finger_begin(int type, const nos_screen *under, const nos_screen *ov
     T.state = TXS_FINGER;
     P_rebase();                     /* measure from here: the slop must not jump the screen */
     s_force_full = 1;
+    if (!popping) banner_yield(type);
 }
 
 void nos_pull(const nos_screen *s, int tx, const nos_input *start)
@@ -232,6 +276,12 @@ void nos_banner(const char *title, const char *body, int icon, void (*on_tap)(vo
     B.shown_t = nos_t;
     if (!nos_prefs.dnd) nos_feedback(FB_NOTIFY);
     nos_keep_awake();
+}
+
+/* A system sheet (notifications, control centre) coming in pushes the banner away. */
+static void banner_yield(int type)
+{
+    if ((type == TX_RISE || type == TX_DROP) && B.active && !B.dragging) msp_to(&B.y, 0);
 }
 
 static struct { char text[40]; float t0; int active; } TO;
@@ -425,6 +475,7 @@ static void drag_decide(void)
     /* system back gesture: rightward drag on any pushed screen */
     int top_tx = s_depth > 1 ? s_stack[s_depth - 1].tx : TX_NONE;
     int sheet = top_tx == TX_RISE || top_tx == TX_DROP;   /* sheets close along their own axis */
+    if (top_tx == TX_DISSOLVE) sheet = 1;     /* in-place screens (face picker) don't slide away */
     if (P.axis == AXIS_X && P.x > P.x0 && s_depth > 1 && !(fl & SCR_NOBACK) && !sheet &&
         (!(fl & SCR_HDRAG) || near_left_edge(P.x0, P.y0))) {
         finger_begin(TX_PUSH, s_stack[s_depth - 2].s, s, 1.0f, 1, AXIS_X, -1);
@@ -719,19 +770,34 @@ static void dissolve_draw(const gfx_fb *fb, const nos_screen *under, const nos_s
     nos_dbg_us[2] += hal_micros() - q3;
 }
 
-/* Dot-matrix iris. The new screen shows through a circle growing from the tapped
- * icon; its edge is a 34 px ring where an ordered dither turns it into dots. Inside
- * the ring only `over` can be seen and outside it only `under`, so each screen is
- * drawn just where it is visible (over straight into the stripe), and only the ring
- * pays for two layers. The dither test compares squared distance against one
- * threshold per Bayer level: no square root per pixel. */
+/* Iris. The new screen shows through a circle growing from the tapped icon, its edge
+ * the same 2 px hairline that leads a sheet: flat, no dither (§1.4). Inside the circle
+ * only `over` can be seen and outside only `under`, so each screen is drawn just where
+ * it is visible, over straight into the stripe. Only the columns the edge crosses in
+ * this stripe draw over a second time, into the scratch rows, and copy their runs in. */
 #define IRIS_ROWS 16
+#define IRIS_RIM GFX_RGB(51, 51, 51)
+/* The tapped icon over the opening circle, fading out by 40 % (nos_iris_seed). */
+static void iris_seed(const gfx_fb *fb, float p)
+{
+    if (!nos_iris_seed || T.popping || p >= IRIS_BUILD) return;
+    gfx_fb e = *fb;
+    nos_ink_dim(&e, 1.0f - p / IRIS_BUILD);
+    float r = nos_iris_seed_r, cx = (float)nos_iris_x, cy = (float)nos_iris_y;
+    ui_circle(&e, cx, cy, r, C_SURF2);
+    dot_icon(&e, nos_iris_seed, cx, cy, r * 0.118f, r * 0.094f, C_WHITE);
+}
 static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_screen *over,
                       float p, int dimk)
 {
+    float fx = (float)nos_iris_x, fy = (float)nos_iris_y;
+    /* the glass is a circle: the farthest visible pixel is centre distance + radius */
+    float far = gfx_fast_sqrt((fx - GFX_CX) * (fx - GFX_CX) + (fy - GFX_CY) * (fy - GFX_CY)) + GFX_W * 0.5f + 2.0f;
+    const float R0 = 36.0f;                          /* the tapped icon is the seed, not a hole */
+    float R = R0 + p * (far - R0), R2 = R * R;
     if (fb->rec) {
         draw_screen(fb, under, 0, 0, GFX_W, GFX_H, 0, 0, dimk);
-        if (over && over->draw) { gfx_fb f = *fb; over->draw(&f); }
+        if (over && over->draw) { gfx_fb f = *fb; over->draw(&f); gfx_ring(&f, fx, fy, R, 2.0f, IRIS_RIM); }
         return;
     }
     if (fb->h > IRIS_ROWS) {                         /* sim full frames: 16-row bands */
@@ -745,36 +811,24 @@ static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_scree
     }
     int c0 = fb->cx0, c1 = fb->cx1;
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
-    float fx = (float)nos_iris_x, fy = (float)nos_iris_y;
-    /* the glass is a circle: the farthest visible pixel is centre distance + radius */
-    float far = gfx_fast_sqrt((fx - GFX_CX) * (fx - GFX_CX) + (fy - GFX_CY) * (fy - GFX_CY)) + GFX_W * 0.5f;
-    const float band = 34.0f, R0 = 36.0f;      /* the tapped icon is the seed, not a hole */
-    float R = R0 + p * (far + band - R0) - band * 0.5f;
-    float rin = R - band * 0.5f, rout = R + band * 0.5f;
-    float rin2 = rin > 0 ? rin * rin : 0, rout2 = rout > 0 ? rout * rout : 0;
 
-    /* per-row spans: [a0, a1) inside the outer edge, [i0, i1) solidly inside */
-    int16_t a0[IRIS_ROWS], a1[IRIS_ROWS], i0[IRIS_ROWS], i1[IRIS_ROWS];
-    int A0 = c1, A1 = c0, I0 = c0, I1 = c1;          /* union of spans, common interior */
+    /* per-row spans [a0, a1) inside the circle; their union and common interior */
+    int16_t a0[IRIS_ROWS], a1[IRIS_ROWS];
+    int A0 = c1, A1 = c0, I0 = c0, I1 = c1;
     for (int r = 0; r < fb->h; r++) {
         float dy = (fb->y_base + r + 0.5f) - fy, dy2 = dy * dy;
-        if (rout <= 0 || dy2 >= rout2) { a0[r] = a1[r] = i0[r] = i1[r] = 0; I1 = I0; continue; }
-        float hw_out = gfx_fast_sqrt(rout2 - dy2);   /* libm sqrtf is ~1000 cycles here */
-        int x0 = (int)(fx - hw_out), x1 = (int)(fx + hw_out) + 1;
-        if (x0 < c0) x0 = c0;
-        if (x1 > c1) x1 = c1;
-        int n0 = x1, n1 = x1;
-        if (rin > 0 && rin2 > dy2) {
-            float hw_in = gfx_fast_sqrt(rin2 - dy2);
-            n0 = (int)(fx - hw_in) + 1; n1 = (int)(fx + hw_in);
+        int x0 = c1, x1 = c1;
+        if (over && dy2 < R2) {
+            float hw = gfx_fast_sqrt(R2 - dy2);      /* libm sqrtf is ~1000 cycles here */
+            x0 = (int)(fx - hw + 0.5f); x1 = (int)(fx + hw + 0.5f);
+            if (x0 < c0) x0 = c0;
+            if (x1 > c1) x1 = c1;
+            if (x1 < x0) x1 = x0;
         }
-        if (n0 < x0) n0 = x0;
-        if (n1 > x1) n1 = x1;
-        if (n1 < n0) n1 = n0;
-        a0[r] = (int16_t)x0; a1[r] = (int16_t)x1; i0[r] = (int16_t)n0; i1[r] = (int16_t)n1;
+        a0[r] = (int16_t)x0; a1[r] = (int16_t)x1;
         if (x1 > x0) { if (x0 < A0) A0 = x0; if (x1 > A1) A1 = x1; }
-        if (n0 > I0) I0 = n0;
-        if (n1 < I1) I1 = n1;
+        if (x0 > I0) I0 = x0;
+        if (x1 < I1) I1 = x1;
     }
     if (I1 <= I0) I0 = I1 = c0;                      /* no column is inside on every row */
 
@@ -785,19 +839,13 @@ static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_scree
     } else draw_screen(fb, under, c0, 0, c1, GFX_H, 0, 0, dimk);
     uint32_t q1 = hal_micros();
     nos_dbg_us[0] += q1 - q;
-    if (!over || A1 <= A0) return;
+    if (!over) return;
     if (I1 > I0) draw_screen(fb, over, I0, 0, I1, GFX_H, 0, 0, 32);
     nos_dbg_us[1] += hal_micros() - q1;
-    if (!s_scratch) return;
 
-    /* the ring: over into the scratch rows, then dither it in */
-    float thr2[64];
-    for (int b = 0; b < 64; b++) {
-        float t = rout - (float)b * band * (1.0f / 64.0f);   /* take if distance < t */
-        thr2[b] = t > 0 ? t * t : -1.0f;
-    }
+    /* the columns the edge crosses: over into the scratch rows, copy each row's run */
     int span[2][2] = { { A0, I1 > I0 ? I0 : A1 }, { I1 > I0 ? I1 : A1, A1 } };
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; s_scratch && k < 2; k++) {
         int x0 = span[k][0], x1 = span[k][1];
         if (x1 <= x0) continue;
         gfx_fb o;
@@ -810,32 +858,21 @@ static void iris_draw(const gfx_fb *fb, const nos_screen *under, const nos_scree
         for (int r = 0; r < fb->h; r++) {
             int lo = a0[r] > x0 ? a0[r] : x0, hi = a1[r] < x1 ? a1[r] : x1;
             if (hi <= lo) continue;
-            int y = fb->y_base + r;
-            float dy = (y + 0.5f) - fy, dy2 = dy * dy;
-            uint16_t *d = gfx_row(fb, r), *src = o.px + (size_t)r * GFX_W;
-            const uint8_t *b = BAYER8[y & 7];
-            int n0 = i0[r], n1 = i1[r];
+            memcpy(gfx_row(fb, r) + lo, o.px + (size_t)r * GFX_W + lo, (size_t)(hi - lo) * 2);
             sel += (unsigned)(hi - lo);
-            for (int x = lo; x < hi; x++) {
-                if (x >= n0 && x < n1) {             /* solid on this row: copy the run */
-                    int e = n1 < hi ? n1 : hi;
-                    memcpy(d + x, src + x, (size_t)(e - x) * 2);
-                    x = e - 1;
-                    continue;
-                }
-                float dx = (x + 0.5f) - fx;
-                if (dx * dx + dy2 < thr2[b[x & 7]]) d[x] = src[x];
-            }
         }
         GFX_COST_PX(GFX_COST_SELECT, sel);
         nos_dbg_us[2] += hal_micros() - q3;
     }
+    gfx_fb e = *fb;                                  /* the rim hides the stair-step */
+    gfx_ring(&e, fx, fy, R, 2.0f, IRIS_RIM);
+    iris_seed(fb, p);
 }
 
 static void draw_overlays(gfx_fb *fb)
 {
     if (B.active && B.y.x > 0.5f) ui_draw_banner(fb, B.title, B.body, B.icon, B.y.x - BANNER_H);
-    if (TO.active) ui_draw_toast(fb, TO.text, (nos_t - TO.t0) / TOAST_S);
+    if (TO.active && !B.active) ui_draw_toast(fb, TO.text, (nos_t - TO.t0) / TOAST_S);
 }
 
 static void scene_draw(gfx_fb *fb)
@@ -1053,6 +1090,7 @@ static void tx_complete(void)
     }
     T.state = TXS_IDLE;
     T.popping = 0; T.cancel_pops = 0; T.lin_v = 0;
+    nos_iris_seed = 0;
     s_force_full = 1;
 }
 
@@ -1100,6 +1138,7 @@ static void tick_overlays(float dt)
             B.y.x = BANNER_H + (d < 0 ? d : rubber_band(d, 200.0f));
         } else if (!msp_step(&B.y, dt) && B.y.target <= 0) B.active = 0;
     }
+    if (TO.active && B.active) TO.t0 = nos_t;       /* queued: shown once the banner leaves */
     if (TO.active && nos_t - TO.t0 > TOAST_S) TO.active = 0;
 }
 

@@ -49,6 +49,9 @@ extern const nos_app nos_app_list[];
 extern const int nos_app_count;
 /* Open an app from a launcher/complication/widget point with the iris transition. */
 void nos_open(const nos_screen *s, int from_x, int from_y);
+/* nos_open from a tapped icon (DOT_ICON_* on a C_SURF2 disc of radius r): the iris
+ * grows out of it (see nos_iris_seed) */
+void nos_open_icon(const nos_screen *s, int from_x, int from_y, int icon, float r);
 
 /* Boot: services, prefs, root screen. Called once by the host after nos_init(). */
 void nos_apps_boot(void);

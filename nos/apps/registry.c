@@ -29,8 +29,16 @@ void nos_open(const nos_screen *s, int from_x, int from_y)
 {
     nos_iris_x = from_x;
     nos_iris_y = from_y;
+    nos_iris_seed = 0;
     nos_feedback(FB_OPEN);
     nos_push(s, TX_IRIS);
+}
+
+void nos_open_icon(const nos_screen *s, int from_x, int from_y, int icon, float r)
+{
+    nos_open(s, from_x, from_y);
+    nos_iris_seed = icon;
+    nos_iris_seed_r = r;
 }
 
 void nos_apps_boot(void)

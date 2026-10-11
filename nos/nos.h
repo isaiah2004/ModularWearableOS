@@ -79,11 +79,17 @@ enum {
     TX_PUSH,     /* new screen slides in from the right; the old one parallaxes left and dims */
     TX_RISE,     /* new screen rises from the bottom over the dimmed old one (notifications) */
     TX_DROP,     /* new screen drops from the top (control centre) */
-    TX_IRIS,     /* dot-matrix iris: the new screen appears through a dithered circle that
-                    grows from nos_iris_x/y (an app opening from its icon) */
+    TX_IRIS,     /* iris: the new screen appears through a hard-edged, hairline-rimmed
+                    circle that grows from nos_iris_x/y (an app opening from its icon) */
     TX_DISSOLVE, /* ordered-dither dissolve in place (face changes, mode switches) */
 };
 extern int nos_iris_x, nos_iris_y;   /* centre for TX_IRIS; set before pushing */
+/* Optional seed for an opening TX_IRIS: the icon the user tapped (DOT_ICON_*, on a
+ * C_SURF2 disc of radius nos_iris_seed_r), drawn over the circle and fading out over
+ * the first 40 %, so the app grows out of the icon instead of deleting it. 0 = none;
+ * nos_open() clears it, nos_open_icon() sets it. */
+extern int nos_iris_seed;
+extern float nos_iris_seed_r;
 
 void nos_push(const nos_screen *s, int tx);
 void nos_pop(void);                         /* reverses the transition the top was pushed with */
@@ -113,6 +119,11 @@ int  nos_transitioning(void);
 /* Inside enter(): 1 when the screen is being revealed by a pop (back), 0 when it was
  * just pushed. Use it to keep scroll state and skip build-ins on return. */
 int  nos_revealed(void);
+/* Inside enter(): when the screen's entry build should start. Equals nos_t, except for
+ * an iris push, where it is the frame the circle passes 40 % (~2 frames in: big enough
+ * to show the build; the icon seed covers the start). Use it for build clocks with no
+ * extra delay of your own: `S.t_enter = nos_enter_t();`, clamping elapsed at 0. */
+float nos_enter_t(void);
 
 /* Interactive transitions: call from a screen's input handler on IN_DRAG_START to let
  * the finger pull another screen in (e.g. the face pulling notifications up). The

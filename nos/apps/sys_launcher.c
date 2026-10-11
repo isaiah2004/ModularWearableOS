@@ -348,7 +348,9 @@ static int l_input(const nos_input *in)
         float xr = floorf(S.x + 0.5f);
         int ix = L && geo(i, xr, &g) ? g.ix : ICON_X, iy = (int)lroundf(UI_CY + i * ROW_P - xr);
         s_last = nos_app_list[i].scr;
-        nos_open(nos_app_list[i].scr, ix, iy);
+        if (L && geo(i, xr, &g))
+            nos_open_icon(nos_app_list[i].scr, ix, iy, nos_app_list[i].icon, k_var_r[g.var]);
+        else nos_open(nos_app_list[i].scr, ix, iy);
         return 1;
     }
     case IN_UP:

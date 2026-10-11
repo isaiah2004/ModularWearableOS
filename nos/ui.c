@@ -714,8 +714,16 @@ void ui_draw_toast(gfx_fb *fb, const char *text, float t)
     b[o++] = ' '; b[o++] = ']'; b[o] = 0;
     int tw = ui_text_width(UI_F_LABEL, b, LABEL_TRACK);
     float w = tw + 40.0f, h = 42;
-    if (w > 290) w = 290;                     /* the chord at the top of the glass */
-    float y = 30 - (1 - k) * 8;               /* the top: never over the thumb-zone actions */
+    /* the top of the glass, never over the thumb-zone actions: as high as the pill's
+     * end caps clear the bezel by 12 px, lower for long copy (y 30 fits ~229 px) */
+    float y0 = 30;
+    for (; y0 < 72; y0 += 2) {
+        float dx = w * 0.5f - h * 0.5f, dy = UI_CY - (y0 + h * 0.5f);
+        if (gfx_fast_sqrt(dx * dx + dy * dy) + h * 0.5f + 12.0f <= UI_R) break;
+    }
+    float wmax = 2.0f * (ui_half_width(y0 + h * 0.5f) - 12.0f - h * 0.5f) + h;
+    if (w > wmax) w = wmax;
+    float y = y0 - (1 - k) * 8;
     ui_rrect(fb, UI_CX - w / 2, y, w, h, h / 2, ui_dim(C_WHITE, k));
     ui_text(fb, UI_F_LABEL, UI_CX, (int)(y + h / 2 + UI_F_LABEL->ascent * 0.5f - 2), b, C_BG, UI_CENTER, LABEL_TRACK);
 }
