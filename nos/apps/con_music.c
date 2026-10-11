@@ -73,6 +73,7 @@ static unsigned str_hash(const char *s)
 /* ------------------------------------------------- shared player state */
 static struct {
     int   have, playing, connected;
+    int   waiting;           /* a fresh link: musicinfo / musicstate not settled yet */
     char  track[64], artist[48];
     uint32_t pos_ms, dur_ms;
     int   want;              /* optimistic play state after a tap, -1 none */
@@ -83,9 +84,21 @@ static void player_poll(void)
 {
     const svc_music_t *m = svc_music();
     P.connected = svc_sys()->phone_connected || hal_phone_connected();
+    /* A fresh link sends musicinfo, then musicstate a moment later. For its first second
+     * nothing is decided: the page on the glass holds (no "Nothing playing" flash), and a
+     * title that arrives must stand 0.2 s so its play state is in before the first frame
+     * that shows it (no play -> empty -> pause swap). */
+    static int s_seen, s_was_conn, s_was_title;
+    static float s_t_link = -10, s_t_title = -10;
+    int title = m->have && m->track[0];
+    if (s_seen && P.connected && !s_was_conn) s_t_link = nos_t;
+    if (title && !s_was_title) s_t_title = nos_t;
+    s_seen = 1; s_was_conn = P.connected; s_was_title = title;
+    int fresh = nos_t - s_t_link < 1.0f;
+    P.waiting = P.connected && fresh && (!title || nos_t - s_t_title < 0.2f);
     /* the player waits for a title (never "Unknown track 0:00"); without one the last
      * words stay as they were, for the page that is fading out */
-    P.have = P.connected && m->have && m->track[0];
+    P.have = P.connected && title && !P.waiting;
     if (P.have) {
         snprintf(P.track, sizeof P.track, "%s", m->track);
         snprintf(P.artist, sizeof P.artist, "%s", m->artist);
@@ -188,7 +201,9 @@ static struct {
 
 static int s_from_widget;          /* opened by a widget tap: the play disc travels from it */
 
-static int music_kind(void) { return P.have ? 0 : P.connected ? 1 : 2; }
+/* 0 player, 1 nothing playing, 2 phone not connected; a fresh link keeps `held` */
+static int kind_of(int held) { return P.have ? 0 : P.waiting ? held : P.connected ? 1 : 2; }
+static int music_kind(void) { return kind_of(M.sw.want); }
 static int ring_target(void)
 {
     int p = P.dur_ms ? (int)((uint64_t)P.pos_ms * RING_N / P.dur_ms) : 0;
@@ -231,6 +246,7 @@ static void music_enter(void)
     M.pressed = M.held = B_NONE;
     M.t_down = -10;
     player_reset();
+    M.sw.want = 2;                     /* opened on a fresh link: hold "not connected" */
     ps_init(&M.sw, music_kind());
     memset(M.eq, 0, sizeof M.eq);
     M.eq_step = 0; M.eq_frame = 0;
@@ -603,6 +619,8 @@ static struct {
     float t_open;            /* opened the app (its disc and words move with it) */
     int   icon_playing;
     float t_icon;
+    pswap sw;                /* the app's page swap, on the widget too (kinds as music_kind) */
+    int   sw_inited;
 } G = { .t_shown = -10, .t_down = -10, .t_tap = -10, .t_open = -10, .t_icon = -10 };
 
 /* 0 at rest; 0..1 while the app opens from this widget (the app's clock for the move) */
@@ -630,7 +648,17 @@ static void wg_tick(float dt, int visible)
     /* the player state is read off-glass too: the page slides in with the right glyph
      * (no play -> empty -> pause swap); the ring empties, to fill once the page settles */
     player_poll();
-    if (!visible) { G.t_shown = 1e9f; G.icon_playing = P.playing; G.t_icon = -10; return; }
+    if (!G.sw_inited) { ps_init(&G.sw, kind_of(2)); G.sw_inited = 1; }
+    if (!visible) {
+        ps_init(&G.sw, kind_of(G.sw.want));         /* off-glass: no swap to watch */
+        G.t_shown = 1e9f; G.icon_playing = P.playing; G.t_icon = -10;
+        return;
+    }
+    /* phone or player gone (or back): the page leaves, then the other one builds */
+    if (ps_tick(&G.sw, kind_of(G.sw.want))) {
+        G.t_shown = G.sw.t_in;
+        G.icon_playing = P.playing; G.t_icon = -10;  /* the glyph builds with the page */
+    }
     G.build = nos_t < G.t_shown ? 0 : q((nos_t - G.t_shown) / UI_ENTRY_S, 32);
     G.pos = P.dur_ms ? (int)((uint64_t)P.pos_ms * WG_RING_N / P.dur_ms) : 0;
     if (G.pos >= WG_RING_N) G.pos = WG_RING_N - 1;
@@ -639,14 +667,22 @@ static void wg_tick(float dt, int visible)
 
 static void wg_shown(void) { G.t_shown = nos_t; G.t_open = -10; }
 
+static void wg_player(gfx_fb *fb);
 static void wg_draw(gfx_fb *fb)
 {
     ui_title(fb, "MUSIC", 0);
+    int d0 = ps_dim(fb, &G.sw);
+    if (G.sw.shown) {
+        /* at rest the page is simply there; after a swap it builds */
+        float p = G.sw.t_in > -5 && nos_t - G.sw.t_in < UI_ENTRY_S ? q((nos_t - G.sw.t_in) / UI_ENTRY_S, 32) : 1.0f;
+        draw_empty(fb, p, G.sw.shown == 1);
+    } else wg_player(fb);
+    fb->dim = d0;
+}
+
+static void wg_player(gfx_fb *fb)
+{
     float b = bezier_ease(&EASE_STANDARD, G.build);
-    if (!P.have) {
-        draw_empty(fb, 1.0f, P.connected);
-        return;
-    }
     dot_ring(fb, UI_CX, WG_CY, WG_RING_R, WG_RING_N, 4.0f, 0, (float)G.pos * b, C_SEC, C_LINE2);
     float hk = head_k(G.t_shown);
     if (hk > 0) {
