@@ -35,11 +35,12 @@ enum { T_WIFI = 0, T_BT, T_DND, T_TORCH, T_AOD, T_SOUND, T_HAPTIC, T_LTE, T_GPS,
 #define TILE_R   40.0f
 #define PITCH    96.0f
 #define HEAD_Y   56
-#define SL_Y     372.0f          /* segment bar top */
-#define SL_H     40.0f
-#define SL_X     138.0f          /* icon + bar centred as one group */
-#define SL_W     224.0f
-#define SL_ICON_X 114.0f
+/* brightness: the system pill slider (ui_slider, 235 x 50, as Settings), centred on 392 */
+#define SL_W     235.0f
+#define SL_H     50.0f
+#define SL_X     (UI_CX - SL_W * 0.5f)
+#define SL_Y     367.0f          /* pill top */
+#define SL_RUN   (SL_W - SL_H)   /* the fill end's travel: a drag moves it 1:1 */
 #define LV_OFF   26              /* C_SURF2 */
 #define LV_PRESS 153             /* C_SEC: the house pressed fill, with dark ink */
 
@@ -350,6 +351,16 @@ static void draw_header(gfx_fb *fb)
     ui_label(fb, x0 + wt + 24, HEAD_Y, b, gdim(C.charging ? C_PRI : C_SEC, kc), UI_LEFT);
 }
 
+/* ui_slider's pill (same geometry and inks), with the track one step up while pressed */
+static void draw_slider(gfx_fb *fb, float y, float v, int pressed)
+{
+    if (!pressed) { ui_slider(fb, SL_X, y, SL_W, SL_H, v, DOT_ICON_BRIGHT); return; }
+    float r = SL_H * 0.5f, ip = SL_H * 0.065f + 1.0f;
+    gfx_fill_pill(fb, SL_X + r, y + r, SL_X + SL_W - r, r, C_LINE2);
+    gfx_fill_pill(fb, SL_X + r, y + r, SL_X + SL_H + SL_RUN * m_clamp(v, 0, 1) - r, r, C_WHITE);
+    dot_icon(fb, DOT_ICON_BRIGHT, SL_X + r, y + r, ip, ip * 0.8f, C_BG);
+}
+
 static void c_draw(gfx_fb *fb)
 {
     draw_header(fb);
@@ -359,8 +370,11 @@ static void c_draw(gfx_fb *fb)
         float v = floorf(C.sl_val * 100.0f + 0.5f) / 100.0f;
         float y = SL_Y + floorf((1 - e) * 8 + 0.5f);
         int press = press_on(NT) || C.sl_drag;
-        dot_icon(fb, DOT_ICON_BRIGHT, SL_ICON_X, y + SL_H * 0.5f, 2.4f, 1.9f, gdim(press ? C_PRI : C_SEC, e));
-        ui_segments(fb, SL_X, y, SL_W, SL_H, 10, v * 10.0f, gdim(C_WHITE, e), gdim(press ? C_LINE2 : C_SURF2, e));
+        gfx_fb sub;                            /* the build fades it in by ink dim */
+        if (e < 1.0f && nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, 0)) {
+            nos_ink_dim(&sub, e);
+            draw_slider(&sub, y, v, press);
+        } else draw_slider(fb, y, v, press);
     }
 }
 
@@ -374,7 +388,7 @@ static int tile_at(int x, int y)
         float dx = x - tx, dy = y - ty;
         if (dx * dx + dy * dy <= 48.0f * 48.0f) return i;   /* the 96 px cell */
     }
-    if (y >= SL_Y - 16 && y <= SL_Y + SL_H + 16 && x >= SL_ICON_X - 20 && x <= SL_X + SL_W + 12) return NT;
+    if (y >= SL_Y - 19 && y <= SL_Y + SL_H + 19 && x >= SL_X - 12 && x <= SL_X + SL_W + 12) return NT;   /* 88 px */
     return -1;
 }
 
@@ -420,7 +434,7 @@ static int c_input(const nos_input *in)
     case IN_DRAG:
         if (!C.sl_drag) return 0;
         {
-            float v = m_clamp(C.sl_v0 + (in->dx - C.sl_dx0) / SL_W, 0.05f, 1.0f);
+            float v = m_clamp(C.sl_v0 + (in->dx - C.sl_dx0) / SL_RUN, 0.05f, 1.0f);
             int step = (int)floorf(v * 10.0f + 0.5f);
             if (step != C.sl_step) { C.sl_step = step; nos_feedback(v <= 0.05f || v >= 1.0f ? FB_LIMIT : FB_TICK); }
             C.sl_val = v;
@@ -454,8 +468,9 @@ static int c_input(const nos_input *in)
         }
         if (i == NT) {            /* tap on the bar: jump there */
             press_up();
-            float v = m_clamp((in->x - SL_X) / SL_W, 0.05f, 1.0f);
-            v = ceilf(v * 10.0f - 0.001f) / 10.0f;   /* to the tapped segment's end */
+            /* the fill's end goes to the finger, to the percent */
+            float v = m_clamp((in->x - SL_X - SL_H * 0.5f) / SL_RUN, 0.05f, 1.0f);
+            v = floorf(v * 100.0f + 0.5f) / 100.0f;
             C.sl_val = v;
             apply_brightness(v);
             prefs_save();
