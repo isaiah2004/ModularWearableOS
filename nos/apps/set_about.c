@@ -1,10 +1,12 @@
 /* set_about.c — About: the NOS dot logo, version, board, memory, uptime, battery rail,
  * and the open-font credits.
  *
- * A ui_list (26 px units) scrolls the page: the logo block, then two-line info rows
- * (caps label over a value). Static values are grotesk; the two live numbers (uptime,
- * battery rail) are dot-matrix text that morphs when it changes. The logo is drawn dot by dot from a local 5x7 bitmap:
- * it sparkles in on entry and a slow glint sweeps across it every few seconds. */
+ * A ui_list (26 px units) scrolls the page under the ABOUT title: the logo block, then
+ * two-line info rows (caps label over a value). Static values are grotesk; the two live
+ * numbers (uptime, battery rail) are dot-matrix text that morphs when it changes, and the
+ * rail's unit is a caps label beside its digits. The logo is drawn dot by dot from a local
+ * bitmap: it sparkles in on entry, the tagline arrives with the first info row, and every
+ * few seconds a glint swells a diagonal band of dots by 15 %. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -36,8 +38,9 @@ static const char *const k_logo[7] = {
 /* ---- rows ------------------------------------------------------------------ */
 enum { R_LOGO = 0, R_VERSION, R_BOARD, R_DISPLAY, R_PSRAM, R_SRAM, R_UPTIME, R_RAIL, R_FONTS, R_COUNT };
 #define AU 26
-#define ATOP 70
-static const uint8_t k_units[R_COUNT] = { 8, 3, 4, 3, 3, 3, 3, 3, 4 };
+#define ATOP 96                 /* under the ABOUT title */
+#define LOGO_Y 24               /* logo top inside its row */
+static const uint8_t k_units[R_COUNT] = { 7, 3, 4, 3, 3, 3, 3, 3, 4 };
 
 typedef struct { char from[24], to[24]; float t0; } amt;
 static struct {
@@ -81,7 +84,7 @@ static void about_values(int init)
     hal_power pw;
     hal_power_get(&pw);
     int mv = pw.rail_mv > 0 ? pw.rail_mv : hal_battery_mv();
-    if (mv > 0) snprintf(b, sizeof b, "%.2f V", mv / 1000.0f);   /* volts: caps would turn mV into MV */
+    if (mv > 0) snprintf(b, sizeof b, "%.2f", mv / 1000.0f);     /* the V is a label beside it */
     else snprintf(b, sizeof b, UI_NONE);
     amt_set(&A.live[R_RAIL], b, init);
 }
@@ -96,7 +99,7 @@ static void about_enter(void)
         A.L.bottom_pad = GFX_H / 2 - 60;
         ui_list_set_n(&A.L, u);
         A.L.bar_t = -10.0f;
-        A.t0 = nos_t;
+        A.t0 = nos_enter_t();
         A.inited = 1;
     }
     snprintf(A.version, sizeof A.version, "%s  (%s)", ABOUT_VERSION, __DATE__);
@@ -119,9 +122,9 @@ static float afade(float yc)
 
 static void draw_logo(gfx_fb *fb, float cx, float top, float k)
 {
-    float t = nos_t - A.t0;
+    float t = fmaxf(nos_t - A.t0, 0);
     float x0 = cx - (LOGO_COLS * LOGO_PITCH) * 0.5f + LOGO_PITCH * 0.5f;
-    /* glint: a diagonal band crossing the logo every 5 s after the build-in */
+    /* glint: a diagonal band of dots swelling 15 % as it crosses, every 5 s after the build-in */
     float g = -10.0f;
     if (t > 1.0f) {
         float ph = fmodf(t - 1.0f, 5.0f);
@@ -137,8 +140,8 @@ static void draw_logo(gfx_fb *fb, float cx, float top, float k)
             float gd = fabsf((c + r * 0.6f) - g);
             float glow = gd < 2.5f ? 1.0f - gd / 2.5f : 0.0f;
             glow = floorf(glow * 4.0f + 0.5f) / 4.0f;
-            float d = LOGO_DOT * p * (1.0f - 0.28f * glow);
-            uint16_t col = ui_dim(ui_mix(C_WHITE, C_SEC, glow), k);
+            float d = LOGO_DOT * p * (1.0f + 0.15f * glow);
+            uint16_t col = ui_dim(C_WHITE, k);
             dot_disc(fb, x0 + c * LOGO_PITCH, top + (r + 0.5f) * LOGO_PITCH, d, col);
         }
 }
@@ -158,25 +161,32 @@ static const char *row_label(int r)
     }
 }
 
+static float row_bk(int r)
+{
+    /* the logo leads; rows follow 34 ms apart and are all in by ~0.37 s */
+    float bt = nos_t - A.t0 - (r > 0 ? 0.20f + (r < 5 ? r : 5) * 0.034f : 0);
+    float bk = m_clamp(bt / 0.2f, 0, 1);
+    return floorf(bezier_ease(&EASE_STANDARD, bk) * 8.0f + 0.5f) / 8.0f;
+}
+
 static void about_draw(gfx_fb *fb)
 {
     float off = floorf(ui_list_offset(&A.L) + 0.5f);
+    ui_title(fb, "ABOUT", off);
     for (int r = 0; r < R_COUNT; r++) {
         float h = (float)(k_units[r] * AU);
         float y = ATOP + A.start[r] * AU - off;
         if (y + h < 0) continue;
         if (y > GFX_H) break;
-        /* the logo leads; rows follow 34 ms apart and are all in by ~0.37 s */
-        float bt = nos_t - A.t0 - (r > 0 ? 0.20f + (r < 5 ? r : 5) * 0.034f : 0);
-        float bk = m_clamp(bt / 0.2f, 0, 1);
-        bk = floorf(bezier_ease(&EASE_STANDARD, bk) * 8.0f + 0.5f) / 8.0f;
+        float bk = row_bk(r);
         if (bk <= 0) continue;
         float yy = y + floorf((1.0f - bk) * 12.0f + 0.5f);
         float k = afade(yy + h * 0.5f) * (r == R_LOGO ? 1.0f : bk);
         if (r == R_LOGO) {
-            draw_logo(fb, UI_CX, yy + 34, afade(yy + 76));
-            ui_label(fb, UI_CX, (int)(yy + 34 + 7 * LOGO_PITCH + 40), "NOTHING-INSPIRED WATCH OS",
-                     ui_dim(C_DIS, k), UI_CENTER);
+            draw_logo(fb, UI_CX, yy + LOGO_Y, afade(yy + LOGO_Y + 42));
+            float tb = yy + LOGO_Y + 7 * LOGO_PITCH + 38;          /* the tagline comes in with row 1 */
+            float tk = afade(tb) * row_bk(R_VERSION);
+            if (tk > 0) ui_label(fb, UI_CX, (int)tb, "NOTHING-INSPIRED WATCH OS", ui_dim(C_DIS, tk), UI_CENTER);
             continue;
         }
         ui_label(fb, UI_CX, (int)(yy + 22), row_label(r), ui_dim(C_DIS, k), UI_CENTER);
@@ -199,8 +209,16 @@ static void about_draw(gfx_fb *fb)
             dot_style st = { DOT_FONT_5X7, UI_SUB_PITCH, UI_SUB_PITCH * 0.8f, ui_dim(C_PRI, k), 0, 1, 1 };
             float p = (nos_t - m->t0) / 0.28f;
             float ty = yy + 34;
-            if (p >= 1) dot_text_a(fb, &st, UI_CX, ty, m->to, 1);
-            else dot_text_morph(fb, &st, UI_CX, ty, m->from, m->to, 1, p);
+            float cx = UI_CX;
+            int unit = r == R_RAIL && strcmp(m->to, UI_NONE);
+            if (unit) {                  /* digits in dots, the unit as a caps label beside them */
+                int wd = dot_text_width(&st, m->to), wu = ui_label_width("V");
+                float x0 = UI_CX - (wd + 8 + wu) * 0.5f;
+                cx = floorf(x0 + wd * 0.5f + 0.5f);
+                ui_label(fb, (int)(x0 + wd + 8), (int)(ty + dot_text_height(&st)), "V", ui_dim(C_SEC, k), UI_LEFT);
+            }
+            if (p >= 1) dot_text_a(fb, &st, cx, ty, m->to, 1);
+            else dot_text_morph(fb, &st, cx, ty, m->from, m->to, 1, p);
         }
         }
     }

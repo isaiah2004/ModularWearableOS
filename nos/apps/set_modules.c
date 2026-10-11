@@ -10,16 +10,20 @@
  *   haptic: play each pattern  speaker: play each SFX   mic: live dB + envelope
  *   GPS: satellites + SNR      LTE: power on/off   env: T/RH/P   light: lux, prox, gestures
  *   compass: dial + calibrate  HR: live PPG trace
- * Every page has the standard "not connected" state (ui_absent) plus the exact wiring it
- * expects, because this page is the bring-up tool.
+ * Every page has the standard "not connected" state (ui_absent, the same words as the
+ * module's app) plus the part and the exact wiring it expects, because this page is the
+ * bring-up tool.
  *
- * Shared with Settings: set_modules_online() is the one module count in the OS, and
- * Settings > Storage / Cellular open the SD card / Cellular pages here. */
+ * Shared with Settings: set_modules_online() is the one module count in the OS;
+ * Settings > Storage / Cellular open the SD card / Cellular pages here (as user pages:
+ * titled STORAGE, no wiring), and Wi-Fi / Bluetooth here open the Settings radio pages
+ * with the bus line added. One word per radio state everywhere. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
 #include "motion.h"
 #include "svc.h"
+#include "svc_track.h"
 #include "hal_ext.h"
 #include "prefs.h"
 #include "apps/nos_apps.h"
@@ -27,10 +31,14 @@
 #include <stdio.h>
 #include <string.h>
 
+void set_settings_open_radio(int bt, int from_modules);   /* set_settings.c */
+
 enum { M_TOUCH = 0, M_IMU, M_RTC, M_SD, M_BATT, M_WIFI, M_BLE,
        M_HAPTIC, M_MIC, M_SPK, M_GPS, M_LTE, M_ENV, M_LIGHT, M_MAG, M_HR, M_COUNT };
 #define M_BOARD_N 7
 #define PRESS_FLASH 0.10f        /* a quick tap still shows its pressed state 3 frames */
+#define PRESS_HOLD  0.20f        /* a held finger shows it only once it is clearly not a scroll */
+#define ROW_GAP     24           /* least gap between a row's name and its value */
 #define LIVE_S 1.0f              /* live text readings refresh at 1 Hz */
 #define MORPH_S 0.28f
 
@@ -38,41 +46,37 @@ typedef struct {
     const char *name, *bus, *title;
     int icon;
     uint32_t ext;          /* EXT_* bit for strap modules, 0 = on the board */
-    const char *adds;      /* what it adds (absent state) */
-    const char *part;      /* absent footer: "<PART> MODULE" */
-    const char *wire;      /* where it is expected (absent state, bring-up) */
+    const char *body;      /* absent state: what it adds (the module's app says the same) */
+    const char *foot;      /* absent footer: the module's user name */
+    const char *wire;      /* bring-up: the part and exactly where it is expected */
 } mod_info;
 
 static const mod_info MI[M_COUNT] = {
     { "Touch", "I2C 0x38  FT3168", "TOUCH", DOT_ICON_HAND, 0, "", "", "" },
-    { "Motion", "I2C 0x6B  QMI8658", "MOTION", DOT_ICON_LEVEL, 0, "Raise to wake, steps and tilt", "QMI8658",
-      "I2C 0x6B  SDA 47  SCL 48" },
-    { "Clock", "I2C 0x51  PCF85063", "CLOCK", DOT_ICON_TIMER, 0, "Keeps time while the watch sleeps", "PCF85063",
-      "I2C 0x51  SDA 47  SCL 48" },
-    { "SD card", "SDMMC 1-BIT", "SD CARD", DOT_ICON_SD, 0, "Insert a microSD card for voice memos and logs", "SDMMC 1-BIT",
-      "CLK 41  CMD 39  D0 40" },
-    { "Battery", "ADC GPIO4  3:1", "BATTERY", DOT_ICON_BATTERY, 0, "Charge estimate from the rail", "RAIL ADC",
-      "GPIO4  ADC1 CH3" },
+    { "Motion", "I2C 0x6B  QMI8658", "MOTION", DOT_ICON_LEVEL, 0, "", "", "" },
+    { "Clock", "I2C 0x51  PCF85063", "CLOCK", DOT_ICON_TIMER, 0, "", "", "" },
+    { "SD card", "SDMMC 1-BIT", "SD CARD", DOT_ICON_SD, 0, "Insert a microSD card for voice memos and logs", "", "" },
+    { "Battery", "ADC GPIO4  3:1", "BATTERY", DOT_ICON_BATTERY, 0, "", "", "" },
     { "Wi-Fi", "ESP32-S3  2.4 GHZ", "WI-FI", DOT_ICON_WIFI, 0, "", "", "" },
     { "Bluetooth", "ESP32-S3  NUS", "BLUETOOTH", DOT_ICON_BT, 0, "", "", "" },
-    { "Haptics", "GPIO16  PWM", "HAPTICS", DOT_ICON_BELL, EXT_HAPTIC, "A click on every detent", "HAPTIC",
-      "MOTOR DRIVER ON GPIO16" },
-    { "Microphone", "I2S IN  INMP441", "MICROPHONE", DOT_ICON_MIC, EXT_MIC, "Voice memos and the sound meter", "INMP441",
-      "I2S BCLK 1  WS 2  SD 3" },
-    { "Speaker", "I2S OUT  MAX98357A", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, "UI sounds, alarms and memo playback", "MAX98357A",
-      "I2S BCLK 1  LRC 2  DIN 5  SD 6" },
-    { "GPS", "UART1  M10", "GPS", DOT_ICON_SAT, EXT_GPS, "Position for navigation and routes", "M10 GPS",
-      "UART1  RX 7  TX 17" },
-    { "Cellular", "UART0  EG800AK", "CELLULAR", DOT_ICON_SIGNAL, EXT_LTE, "Calls and SMS without the phone", "EG800AK",
-      "UART0  RX 44  TX 43  PWRKEY 18" },
-    { "Environment", "I2C 0x76  BME280", "ENVIRONMENT", DOT_ICON_THERMO, EXT_ENV, "Temperature, humidity and altitude", "BME280",
-      "I2C 0x76/0x77  SDA 47  SCL 48" },
-    { "Light", "I2C 0x39  APDS-9960", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, "Auto brightness and air gestures", "APDS-9960",
-      "I2C 0x39  SDA 47  SCL 48" },
-    { "Compass", "I2C 0x0D  QMC5883L", "COMPASS", DOT_ICON_COMPASS, EXT_MAG, "Heading for the compass and maps", "QMC5883L",
-      "I2C 0x0D/0x1E  SDA 47  SCL 48" },
-    { "Heart rate", "I2C 0x57  MAX30102", "HEART RATE", DOT_ICON_HEART, EXT_HR, "Heart rate and blood oxygen", "MAX30102",
-      "I2C 0x57  SDA 47  SCL 48" },
+    { "Haptics", "GPIO16  PWM", "HAPTICS", DOT_ICON_BELL, EXT_HAPTIC, "Add the motor to feel every tap",
+      "HAPTIC MODULE", "PWM DRIVER  GPIO16" },
+    { "Microphone", "I2S IN  INMP441", "MICROPHONE", DOT_ICON_MIC, EXT_MIC, "Add the mic strap to record voice memos",
+      "MIC MODULE", "INMP441  BCLK 1 WS 2 SD 3" },
+    { "Speaker", "I2S OUT  MAX98357A", "SPEAKER", DOT_ICON_SPEAKER, EXT_SPEAKER, "Add the speaker for sounds and alarms",
+      "SPEAKER MODULE", "MAX98357A  BCLK1 LRC2 DIN5 SD6" },
+    { "GPS", "UART1  M10", "GPS", DOT_ICON_SAT, EXT_GPS, "Add the GPS for speed and tracks",
+      "GPS MODULE", "M10  UART1  RX 7 TX 17" },
+    { "Cellular", "UART0  EG800AK", "CELLULAR", DOT_ICON_SIGNAL, EXT_LTE, "Add the LTE strap to text without your phone",
+      "LTE MODULE", "EG800AK  RX 44 TX 43 PWRKEY 18" },
+    { "Environment", "I2C 0x76  BME280", "ENVIRONMENT", DOT_ICON_THERMO, EXT_ENV, "Add the climate sensor for pressure",
+      "CLIMATE MODULE", "BME280  0x76/77  SDA 47 SCL 48" },
+    { "Light", "I2C 0x39  APDS-9960", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, "Add the light sensor for auto brightness",
+      "LIGHT MODULE", "APDS-9960  0x39  SDA 47 SCL 48" },
+    { "Compass", "I2C 0x0D  QMC5883L", "COMPASS", DOT_ICON_COMPASS, EXT_MAG, "Add the compass to see your heading",
+      "COMPASS MODULE", "QMC5883L  0x0D  SDA 47 SCL 48" },
+    { "Heart rate", "I2C 0x57  MAX30102", "HEART RATE", DOT_ICON_HEART, EXT_HR, "Add the strap to measure BPM and SpO2",
+      "HR MODULE", "MAX30102  0x57  SDA 47 SCL 48" },
 };
 
 static const char *const k_hap_names[] = { "Tick", "Click", "Double", "Heavy", "Buzz", "Alarm", "Heartbeat" };
@@ -237,17 +241,17 @@ static void list_values(void)
         snprintf(b, sizeof b, "%.2f", g); setv(M_IMU, b, "g");
     } else setv(M_IMU, "No reply", 0);
     ui_fmt_time(b, sizeof b, V.dt.hour, V.dt.minute); setv(M_RTC, b, 0);
-    if (V.sd.mounted) { fmt_gb(gib(V.sd.free_bytes), b, sizeof b); strcat(b, " GB FREE"); setv(M_SD, b, 0); }
+    if (V.sd.mounted) { fmt_gb(gib(V.sd.free_bytes), b, sizeof b); setv(M_SD, b, "GB"); }
     else setv(M_SD, "No card", 0);
     int mv = rail_mv(&V.pw);
     if (mv > 0) { snprintf(b, sizeof b, "%.2f", mv / 1000.0f); setv(M_BATT, b, "V"); }
     else setv(M_BATT, UI_NONE, 0);
+    /* one word per radio state, the same as Settings */
     hal_conn w = hal_status(HAL_FEAT_WIFI);
-    setv(M_WIFI, w == HAL_CONN_UP ? "Online" : w == HAL_CONN_TRYING ? "Joining" :
-         w == HAL_CONN_DOWN ? "No network" : "Off", 0);
+    setv(M_WIFI, !nos_prefs.wifi ? "Off" : w == HAL_CONN_UP ? "Connected" : w == HAL_CONN_TRYING ? "Joining" :
+         "Not connected", 0);
     int phone = hal_phone_connected() || svc_sys()->phone_connected;
-    hal_conn bl = hal_status(HAL_FEAT_BLE);
-    setv(M_BLE, phone ? "Phone linked" : bl == HAL_CONN_OFF ? "Off" : "Advertising", 0);
+    setv(M_BLE, phone ? "Connected" : "Not connected", 0);
     if (V.ok[M_HAPTIC]) {
         if (nos_prefs.haptics) { snprintf(b, sizeof b, "%d%%", nos_prefs.haptic_strength); setv(M_HAPTIC, b, 0); }
         else setv(M_HAPTIC, "Muted", 0);
@@ -270,11 +274,14 @@ static void list_values(void)
         } else setv(M_LTE, "Searching", 0);
     }
     if (V.ok[M_ENV]) {
-        if (V.env_ok) { snprintf(b, sizeof b, "%.1f\xB0" "C  %.0f%%", V.env.temp_c, V.env.humidity); setv(M_ENV, b, 0); }
+        if (V.env_ok) {
+            float t = nos_prefs.units_metric ? V.env.temp_c : V.env.temp_c * 1.8f + 32.0f;
+            snprintf(b, sizeof b, "%.0f", t); setv(M_ENV, b, nos_prefs.units_metric ? "\xB0" "C" : "\xB0" "F");
+        }
         else setv(M_ENV, "Warming up", 0);
     }
     if (V.ok[M_LIGHT]) {
-        if (V.light_ok) { snprintf(b, sizeof b, "%.0f lux", V.light.lux); setv(M_LIGHT, b, 0); }
+        if (V.light_ok) { snprintf(b, sizeof b, "%.0f", V.light.lux); setv(M_LIGHT, b, "LUX"); }
         else setv(M_LIGHT, "Ready", 0);
     }
     if (V.ok[M_MAG]) {
@@ -338,10 +345,10 @@ static void modules_enter(void)
         ML.L.bottom_pad = 120;
         ui_list_set_n(&ML.L, u);
         ML.L.bar_t = -10.0f;
-        ML.t0 = nos_t;
+        ML.t0 = nos_enter_t();
         ML.inited = 1;
     }
-    hal_gps_enable(1);              /* satellites in the list; auto-stops when we leave */
+    hal_gps_enable(1);              /* satellites in the list, also under its own detail pages */
     V.sd_t = 0;
     sample(0, 1);
     list_values();
@@ -351,7 +358,11 @@ static void modules_enter(void)
     ML.next = nos_t + LIVE_S;
     ML.flash_e = -1;
 }
-static void modules_leave(void) { hal_gps_enable(0); }
+/* covered by a detail page (or anything else): the GPS keeps its fix */
+static void modules_leave(void)
+{
+    if (!nos_leaving_covered() && !svc_track_active()) hal_gps_enable(0);
+}
 
 static void modules_tick(float dt)
 {
@@ -418,19 +429,27 @@ static void draw_lrow(gfx_fb *fb, int e, float y, float h, int pressed)
     const int vx = rx - (UI_ROW_X1 - UI_VALUE_X);
     int vw = lab_u_w(V.val[m], V.vu[m]);
     int nw = ui_text_width(UI_F_BODY, MI[m].name, 0);
+    /* a value that can't keep ROW_GAP to the name in the standard column takes the
+     * sub-line (the bus is on the detail page), so names never move in the middle band */
+    int under = UI_ROW_X0 + 24 + nw + ROW_GAP + vw > UI_VALUE_X;
+    int cl = under ? vx : vx - vw;
     int tx = lx + 24;
-    if (tx + nw + 14 > vx - vw) {                         /* the name gives way at the bezel */
+    if (tx + nw + ROW_GAP > cl) {                         /* the name gives way at the bezel */
         int g0, g1;
         ui_row_span(cy - 11, 2, &g0, &g1);
-        tx = vx - vw - 14 - nw;
+        tx = cl - ROW_GAP - nw;
         if (tx < g0 + 20) tx = g0 + 20;
     }
-    int over = tx + nw + 14 - (vx - vw);
-    float vk = k * (over > 0 ? floorf(m_clamp(1.0f - over / 28.0f, 0, 1) * 8.0f + 0.5f) / 8.0f : 1.0f);
+    int gap = cl - (tx + nw);                              /* fades out before 8 px */
+    float vk = k * (gap >= ROW_GAP ? 1.0f : floorf(m_clamp((gap - 8) / (float)(ROW_GAP - 8), 0, 1) * 8.0f + 0.5f) / 8.0f);
     dot_disc(fb, tx - 19, cy - 11, 10, ui_dim(ok ? C_WHITE : C_DIS, k));
     ui_text(fb, UI_F_BODY, tx, cap_base(UI_F_BODY, cy - 11), MI[m].name, ui_dim(ok ? C_PRI : C_SEC, k), UI_LEFT, 0);
-    ident(fb, tx, cap_base(UI_F_SMALL, cy + 17), MI[m].bus, ui_dim(C_DIS, k), UI_LEFT);
-    if (vk > 0) lab_u(fb, vx, cap_base(UI_F_LABEL, cy - 11), V.val[m], V.vu[m], ui_dim(ok ? C_SEC : C_DIS, vk), UI_RIGHT);
+    uint16_t vc = ok ? C_SEC : C_DIS;
+    if (under) lab_u(fb, tx, cap_base(UI_F_LABEL, cy + 17), V.val[m], V.vu[m], ui_dim(vc, k), UI_LEFT);
+    else {
+        ident(fb, tx, cap_base(UI_F_SMALL, cy + 17), MI[m].bus, ui_dim(C_DIS, k), UI_LEFT);
+        if (vk > 0) lab_u(fb, vx, cap_base(UI_F_LABEL, cy - 11), V.val[m], V.vu[m], ui_dim(vc, vk), UI_RIGHT);
+    }
     chevron(fb, rx, cy - 11, ui_dim(C_DIS, k));
 }
 
@@ -440,7 +459,7 @@ static void modules_draw(gfx_fb *fb)
     ui_title(fb, "MODULES", off);
     int pe = -1;
     if (ML.flash_e >= 0 && nos_t - ML.flash_t < PRESS_FLASH) pe = ML.flash_e;
-    else if (ML.L.pressed >= 0 && ML.L.pressed < ML.nunits && nos_t - ML.L.press_t > 0.05f) pe = ML.unit_e[ML.L.pressed];
+    else if (ML.L.pressed >= 0 && ML.L.pressed < ML.nunits && nos_t - ML.L.press_t > PRESS_HOLD) pe = ML.unit_e[ML.L.pressed];
     for (int e = 0; e < NLE; e++) {
         float h = (float)(lunits(LE[e].kind) * MU);
         float y = MTOP + ML.start[e] * MU - off;
@@ -453,9 +472,10 @@ static void modules_draw(gfx_fb *fb)
 }
 
 static const nos_screen scr_mod_detail, scr_mod_touch;
-static void open_detail(int m);
-void set_modules_open_sd(void) { open_detail(M_SD); }
-void set_modules_open_lte(void) { open_detail(M_LTE); }
+static void open_detail(int m, int from_settings);
+/* Settings' Storage and Cellular rows: the same pages, as user pages */
+void set_modules_open_sd(void) { open_detail(M_SD, 1); }
+void set_modules_open_lte(void) { open_detail(M_LTE, 1); }
 
 static int modules_input(const nos_input *in)
 {
@@ -472,7 +492,7 @@ static int modules_input(const nos_input *in)
             if (u >= 0 && u < ML.nunits && LE[ML.unit_e[u]].kind == LK_ROW) {
                 ML.flash_e = ML.unit_e[u]; ML.flash_t = nos_t;
                 nos_feedback(FB_TAP);
-                open_detail(LE[ML.unit_e[u]].mod);
+                open_detail(LE[ML.unit_e[u]].mod, 0);
             }
         }
         return 1;
@@ -490,6 +510,7 @@ static struct {
     int pressed; float flash_t;  /* action button */
     mmt hero;
     char unit[32], unit_u[12];   /* label under the hero, + case-kept unit */
+    int ustate;                  /* the label is a state: "[ OFF ]" */
     char line[3][44], lu[3][12]; /* info lines + case-kept units */
     /* haptic / speaker play lists */
     ui_list L;
@@ -509,13 +530,21 @@ static struct {
     /* mic */
     float peak;
     uint8_t wave[32];
+    /* haptic: the Alarm pattern repeats until stopped */
+    int alarm_on;
+    /* opened from Settings: a user page (row title, no bus or wiring lines) */
+    int from_set;
 } D;
 
-static void open_detail(int m)
+static void open_detail(int m, int from_settings)
 {
+    /* the radios have one page each in the OS, in Settings; Modules adds its bus line */
+    if (m == M_WIFI || m == M_BLE) { set_settings_open_radio(m == M_BLE, 1); return; }
     D.m = m;
+    D.from_set = from_settings;
     nos_push(m == M_TOUCH ? &scr_mod_touch : &scr_mod_detail, TX_PUSH);
 }
+static const char *detail_title(void) { return D.m == M_SD && D.from_set ? "STORAGE" : MI[D.m].title; }
 
 static int detail_has_button(void)
 {
@@ -545,7 +574,7 @@ static void detail_values(int init)
 {
     char h[24], b[44];
     h[0] = 0;
-    D.unit[0] = 0; D.unit_u[0] = 0;
+    D.unit[0] = 0; D.unit_u[0] = 0; D.ustate = 0;
     for (int i = 0; i < 3; i++) { D.line[i][0] = 0; D.lu[i][0] = 0; }
     switch (D.m) {
     case M_IMU: {
@@ -571,7 +600,9 @@ static void detail_values(int init)
             int pct = V.sd.total_bytes ? (int)((1.0 - (double)V.sd.free_bytes / (double)V.sd.total_bytes) * 100 + 0.5) : 0;
             snprintf(b, sizeof b, "%d%% USED", pct); dline(0, b, 0);
         }
-        snprintf(b, sizeof b, "%.40s", V.sd.message[0] ? V.sd.message : "SDMMC 1-BIT, 20 MHZ"); dline(1, b, 0);
+        if (!D.from_set) {                    /* bring-up detail, not for the Storage page */
+            snprintf(b, sizeof b, "%.40s", V.sd.message[0] ? V.sd.message : "SDMMC 1-BIT, 20 MHZ"); dline(1, b, 0);
+        }
         break;
     case M_BATT: {
         int mv = rail_mv(&V.pw);
@@ -581,22 +612,6 @@ static void detail_values(int init)
         if (V.pw.external_power == 1) dline(0, "USB POWER", 0);
         else { snprintf(b, sizeof b, "%d%% ESTIMATE", pct); dline(0, b, 0); }
         dline(1, "GPIO4  ADC1 CH3  3:1", 0);
-        break;
-    }
-    case M_WIFI: {
-        hal_conn w = hal_status(HAL_FEAT_WIFI);
-        snprintf(D.unit, sizeof D.unit, "%s", w == HAL_CONN_UP ? "ONLINE" : w == HAL_CONN_TRYING ? "JOINING" :
-                 w == HAL_CONN_DOWN ? "NO NETWORK" : "OFF");
-        dline(0, "2.4 GHZ  STATION", 0);
-        dline(1, nos_prefs.wifi ? "ENABLED IN SETTINGS" : "DISABLED IN SETTINGS", 0);
-        break;
-    }
-    case M_BLE: {
-        int phone = hal_phone_connected() || svc_sys()->phone_connected;
-        snprintf(D.unit, sizeof D.unit, "%s", phone ? "PHONE LINKED" : "ADVERTISING AS NOS");
-        char st[40]; hal_ble_status(st, sizeof st);
-        snprintf(b, sizeof b, "%.40s", st); dline(0, b, 0);
-        dline(1, "NORDIC UART  GADGETBRIDGE", 0);
         break;
     }
     case M_MIC:
@@ -622,9 +637,10 @@ static void detail_values(int init)
         } else if (V.lte_ok && V.lte.powered) {
             snprintf(h, sizeof h, UI_NONE);
             snprintf(D.unit, sizeof D.unit, "%s", !V.lte.sim ? "NO SIM" : V.lte.sim == 2 ? "SIM LOCKED" : "SEARCHING");
-        } else {
-            snprintf(h, sizeof h, "OFF");
-            snprintf(D.unit, sizeof D.unit, "%s", D.lte_req ? "STARTING" : "MODEM POWERED DOWN");
+        } else {                              /* words are never dot-matrix heroes */
+            snprintf(h, sizeof h, UI_NONE);
+            snprintf(D.unit, sizeof D.unit, "%s", D.lte_req > 0 ? "STARTING" : "OFF");
+            D.ustate = 1;
         }
         if (V.lte_ok && V.lte.powered) {
             snprintf(b, sizeof b, "SIM %s", V.lte.sim == 1 ? "READY" : V.lte.sim == 2 ? "PIN LOCKED" : "MISSING");
@@ -634,7 +650,7 @@ static void detail_values(int init)
             if (V.lte.op[0]) snprintf(b, sizeof b, "%s  %.18s", r, V.lte.op);
             else snprintf(b, sizeof b, "%s", r);
             if (strcmp(b, D.unit)) dline(1, b, 0);        /* never repeat the state above */
-        } else dline(0, "PWRKEY ON IO18", 0);
+        } else if (!D.from_set) dline(0, "PWRKEY ON IO18", 0);   /* bring-up only */
         break;
     }
     case M_ENV:
@@ -676,9 +692,16 @@ static void detail_values(int init)
     mmt_set(&D.hero, h, init);
 }
 
+static void detail_sensors(int on)
+{
+    if (D.m == M_HR) hal_hr_enable(on);
+    if (D.m == M_GPS && on) hal_gps_enable(1);   /* off belongs to the Modules list under it */
+    if (D.m == M_LIGHT) hal_light_gesture_enable(on);
+}
 static void detail_enter(void)
 {
-    D.t0 = nos_t;
+    if (nos_revealed()) { detail_sensors(1); return; }   /* back from a cover: keep everything */
+    D.t0 = nos_enter_t();
     D.pressed = 0; D.flash_t = -100;
     D.calibrating = 0;
     D.lte_req = 0;
@@ -687,10 +710,9 @@ static void detail_enter(void)
     D.last_play = -1; D.play_t = -100;
     D.flash_row = -1; D.flash_rt = -100;
     memset(D.tgt_hit, 0, sizeof D.tgt_hit); D.tgt_done = 0; D.fdown = 0;
+    D.alarm_on = 0;
     if (D.m == M_TOUCH) V.touched = 0;           /* the tap that opened the page is not data */
-    if (D.m == M_HR) hal_hr_enable(1);
-    if (D.m == M_GPS) hal_gps_enable(1);
-    if (D.m == M_LIGHT) hal_light_gesture_enable(1);
+    detail_sensors(1);
     int n = D.m == M_HAPTIC ? N_HAP : SFX_COUNT;
     ui_list_init(&D.L, n, PLAY_ROW, PLAY_TOP, 0, 0);
     D.L.bottom_pad = GFX_H / 2 - PLAY_ROW / 2;
@@ -704,10 +726,10 @@ static void detail_enter(void)
 }
 static void detail_leave(void)
 {
-    if (D.m == M_HR) hal_hr_enable(0);
-    if (D.m == M_GPS) hal_gps_enable(0);
-    if (D.m == M_LIGHT) hal_light_gesture_enable(0);
+    if (nos_leaving_covered()) return;           /* covered: sensors and tests keep running */
+    detail_sensors(0);
     if (D.m == M_MAG && D.calibrating) { hal_mag_calibrate(0); D.calibrating = 0; }
+    if (D.m == M_HAPTIC && D.alarm_on) { hal_haptic_stop(); D.alarm_on = 0; }
 }
 
 static void detail_tick(float dt)
@@ -727,7 +749,7 @@ static void detail_tick(float dt)
         hal_mag_calibrate(0);
         D.calibrating = 0;
         nos_feedback(FB_SUCCESS);
-        nos_toast("Compass calibrated");
+        nos_toast("CALIBRATED");
         detail_values(0);
     }
     if (D.m == M_LTE && D.lte_req && ((V.lte_ok && V.lte.powered) == (D.lte_req > 0) || nos_t - D.lte_req_t > 20.0f))
@@ -744,12 +766,10 @@ static void absent_page(gfx_fb *fb)
 {
     const mod_info *mi = &MI[D.m];
     float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
-    char foot[32];
-    snprintf(foot, sizeof foot, "%s MODULE", mi->part);
-    ui_absent(fb, mi->icon, "Not connected", mi->adds, foot, bp);
-    /* bring-up: exactly where the part is expected (between the body and the footer) */
+    /* the same body and footer as the module's own app; Modules adds the part and its pins */
+    ui_absent(fb, mi->icon, "Not connected", mi->body, mi->foot, bp);
     float k = floorf(m_clamp((bp - 0.3f) / 0.7f, 0, 1) * 8.0f + 0.5f) / 8.0f;
-    if (k > 0 && mi->wire[0]) ident(fb, UI_CX, 372, mi->wire, ui_dim(C_SEC, k), UI_CENTER);
+    if (k > 0 && mi->wire[0] && !D.from_set) ident(fb, UI_CX, 372, mi->wire, ui_dim(C_SEC, k), UI_CENTER);
 }
 
 static void hero(gfx_fb *fb, float y)
@@ -763,7 +783,8 @@ static void hero(gfx_fb *fb, float y)
 }
 static void unit_line(gfx_fb *fb, int y)
 {
-    if (D.unit_u[0]) lab_u(fb, UI_CX, y, D.unit, D.unit_u, C_SEC, UI_CENTER);
+    if (D.ustate) ui_state(fb, UI_CX, y, D.unit, C_SEC);
+    else if (D.unit_u[0]) lab_u(fb, UI_CX, y, D.unit, D.unit_u, C_SEC, UI_CENTER);
     else if (D.unit[0]) ui_label(fb, UI_CX, y, D.unit, C_SEC, UI_CENTER);
 }
 static void lines(gfx_fb *fb, float y)
@@ -783,10 +804,14 @@ static void play_row(gfx_fb *fb, int i, float y, int pressed)
     const char *name = D.m == M_HAPTIC ? k_hap_names[i] : k_sfx_names[i];
     ui_text(fb, UI_F_BODY, lx, cap_base(UI_F_BODY, cy), name, ui_dim(C_PRI, k), UI_LEFT, 0);
     float since = nos_t - D.play_t;
-    int playing = i == D.last_play && since < 0.6f;
+    int looping = D.m == M_HAPTIC && D.alarm_on && i == HAPTIC_ALARM;
+    int playing = looping || (i == D.last_play && since < 0.6f);
     float r = 22;
     gfx_fill_circle(fb, rx - r, cy, r, ui_dim(playing ? C_WHITE : C_SURF2, k));
-    dot_icon(fb, DOT_ICON_PLAY, rx - r + 1, cy, 2.2f, 1.8f, ui_dim(playing ? C_BG : C_PRI, k));
+    if (looping) {                               /* stop: a 3 x 3 dot square */
+        for (int yy = -1; yy <= 1; yy++)
+            for (int xx = -1; xx <= 1; xx++) dot_disc(fb, rx - r + xx * 4.4f, cy + yy * 4.4f, 3.6f, ui_dim(C_BG, k));
+    } else dot_icon(fb, DOT_ICON_PLAY, rx - r + 1, cy, 2.2f, 1.8f, ui_dim(playing ? C_BG : C_PRI, k));
 }
 
 static void draw_bubble(gfx_fb *fb, float cx, float cy)
@@ -810,7 +835,7 @@ static void detail_draw(gfx_fb *fb)
         ui_title(fb, mi->title, off);
         int n = D.L.n;
         int pr = D.flash_row >= 0 && nos_t - D.flash_rt < PRESS_FLASH ? D.flash_row :
-                 (D.L.pressed >= 0 && nos_t - D.L.press_t > 0.05f ? D.L.pressed : -1);
+                 (D.L.pressed >= 0 && nos_t - D.L.press_t > PRESS_HOLD ? D.L.pressed : -1);
         for (int i = 0; i < n; i++) {
             float y = PLAY_TOP + i * PLAY_ROW - off;
             if (y + PLAY_ROW < 0) continue;
@@ -820,48 +845,44 @@ static void detail_draw(gfx_fb *fb)
         ui_scrollbar(fb, D.L.sc.x, (float)(PLAY_TOP + n * PLAY_ROW + D.L.bottom_pad), GFX_H, D.L.bar_alpha);
         return;
     }
-    ui_title(fb, mi->title, 0);
+    ui_title(fb, detail_title(), 0);
     float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
     if (!mod_present(D.m)) { absent_page(fb); return; }
     if (D.m == M_SD && !V.sd.mounted) {
-        ui_absent(fb, DOT_ICON_SD, "No card", mi->adds, "SDMMC 1-BIT", bp);
-        if (V.sd.message[0]) {
+        ui_absent(fb, DOT_ICON_SD, "No card", mi->body, D.from_set ? NULL : "SDMMC 1-BIT", bp);
+        if (V.sd.message[0] && !D.from_set) {
             char b[44]; snprintf(b, sizeof b, "%.40s", V.sd.message);
             ident(fb, UI_CX, 372, b, C_SEC, UI_CENTER);
         }
         return;
     }
     switch (D.m) {
-    case M_WIFI: case M_BLE:
-        dot_icon_anim(fb, mi->icon, UI_CX, 180, 5.0f, 4.0f, C_WHITE, bp, DOT_REVEAL_CENTER);
-        ui_state(fb, UI_CX, 290, D.unit, C_PRI);
-        lines(fb, 334);
-        break;
+    /* every hero puts its label baseline 100 px under the hero top: caps 20 px clear */
     case M_IMU:
         hero(fb, 100);
-        unit_line(fb, 190);
-        draw_bubble(fb, UI_CX, 266);
-        lines(fb, 346);
+        unit_line(fb, 200);
+        draw_bubble(fb, UI_CX, 274);
+        lines(fb, 352);
         break;
     case M_RTC:
         hero(fb, 112);
-        unit_line(fb, 214);
-        lines(fb, 254);
+        unit_line(fb, 212);
+        lines(fb, 252);
         break;
     case M_SD: {
         hero(fb, 112);
-        unit_line(fb, 218);
+        unit_line(fb, 212);
         float used = V.sd.total_bytes ? (float)(1.0 - (double)V.sd.free_bytes / (double)V.sd.total_bytes) : 0;
-        ui_segments(fb, 93, 248, 280, 26, 20, used * 20.0f * bp, C_WHITE, C_LINE);
-        lines(fb, 318);
+        ui_segments(fb, 93, 242, 280, 26, 20, used * 20.0f * bp, C_WHITE, C_LINE);
+        lines(fb, 312);
         break;
     }
     case M_BATT: {
         hero(fb, 112);
-        unit_line(fb, 218);
+        unit_line(fb, 212);
         int pct = V.pw.battery_percent ? V.pw.battery_percent : hal_battery_percent();
-        ui_segments(fb, 113, 248, 240, 26, 10, pct / 10.0f * bp, C_WHITE, C_LINE);
-        lines(fb, 318);
+        ui_segments(fb, 113, 242, 240, 26, 10, pct / 10.0f * bp, C_WHITE, C_LINE);
+        lines(fb, 312);
         break;
     }
     case M_MIC:
@@ -884,7 +905,7 @@ static void detail_draw(gfx_fb *fb)
         hero(fb, 100);
         unit_line(fb, 200);
         int reg = V.lte_ok && V.lte.powered && (V.lte.registered == 1 || V.lte.registered == 2) && V.lte.rssi_dbm;
-        if (reg) dot_bar(fb, UI_CX - 36, 226, 4, 24, 12, (float)V.lte.bars, C_WHITE, C_LINE2);
+        dot_bar(fb, UI_CX - 36, 226, 4, 24, 12, reg ? (float)V.lte.bars : 0.0f, C_WHITE, C_LINE2);
         lines(fb, 262);
         break;
     }
@@ -955,7 +976,7 @@ static void play_tap(int i)
     D.last_play = i; D.play_t = nos_t;
     if (D.m == M_HAPTIC) hal_haptic(i);
     else hal_sfx(i);
-    if (D.m == M_HAPTIC && i == HAPTIC_ALARM) nos_toast("Tap again to stop");
+    if (D.m == M_HAPTIC) D.alarm_on = i == HAPTIC_ALARM;   /* its row shows stop until tapped */
 }
 
 static int detail_input(const nos_input *in)
@@ -970,8 +991,9 @@ static int detail_input(const nos_input *in)
                 int i = fy >= 0 ? (int)(fy / PLAY_ROW) : -1;
                 if (i >= 0 && i < D.L.n) {
                     D.flash_row = i; D.flash_rt = nos_t;
-                    if (D.m == M_HAPTIC && D.last_play == HAPTIC_ALARM && nos_t - D.play_t < 30.0f) {
+                    if (D.m == M_HAPTIC && D.alarm_on) {   /* any tap stops the alarm train */
                         hal_haptic_stop();
+                        D.alarm_on = 0;
                         D.last_play = -1;
                     } else play_tap(i);
                 }
@@ -988,7 +1010,7 @@ static int detail_input(const nos_input *in)
             D.pressed = 0;
             D.flash_t = nos_t;
             nos_feedback(FB_TAP);
-            if (D.m == M_RTC) { hal_time_resync(); nos_toast("Resync requested"); }
+            if (D.m == M_RTC) { hal_time_resync(); nos_toast("RESYNCING"); }
             else if (D.m == M_LTE) {
                 int on = !(V.lte_ok && V.lte.powered);
                 hal_lte_enable(on);
