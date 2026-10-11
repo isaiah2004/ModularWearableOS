@@ -23,6 +23,8 @@
 #include "hal_ext.h"
 #include "prefs.h"
 #include "apps/nos_apps.h"
+
+void sys_home_open_after(const struct nos_screen *s);   /* sys_home.c (asked for in nos_apps.h) */
 #include "sprite.h"
 #include <math.h>
 #include <string.h>
@@ -36,6 +38,7 @@
 #define NLEV      16        /* dim levels */
 #define MAXAPP    32
 #define TAU_S     0.4995f   /* decay time constant of 0.998/ms */
+#define CATCH_V   250.0f    /* px/s: a touch on a list moving faster only stops it */
 
 static const float k_var_r[NVAR] = { 29.0f, 32.0f, 35.0f };
 
@@ -49,7 +52,7 @@ typedef struct {
 static struct {
     row_spr rows[MAXAPP];
     uint16_t lut[NLEV + 1][256];      /* grey index -> RGB565 at level/NLEV brightness */
-    uint16_t lut_press[256];          /* pressed: the disc lifts to C_SEC */
+    uint16_t lut_press[256];          /* pressed: the disc lifts to C_LINE2 */
     uint16_t scratch[320 * 64];       /* RGB565 canvas sprites are drawn on */
     int16_t  curve[GFX_H + 2 * (int)ROW_P];   /* x shift by |row centre - CY| */
 } *L;
@@ -61,12 +64,30 @@ static struct {
     int mode;                 /* 0 idle, 1 drag, 2 decay to target, 3 spring */
     mspring sp;
     float grab_x, grab_dy;
-    int pressed, was_moving;
+    int was_moving;
     int focus;
     float t_enter;
     int inited;
 } S;
 enum { M_IDLE = 0, M_DRAG, M_DECAY, M_SPRING };
+
+/* §8 pressed state: hidden for the first 100 ms (a scroll's slop passes first and cancels
+ * it silently), then on until release; a quick tap still shows it for 3 frames. */
+static struct { int id, down; float t0, until; } P = { -1, 0, 0, 0 };
+static void press_down(int id) { P.id = id; P.down = id >= 0; P.t0 = nos_t; P.until = 0; }
+static void press_cancel(void) { P.id = -1; P.down = 0; P.until = 0; }
+static void press_up(void)
+{
+    if (!P.down) return;
+    P.down = 0;
+    float vis = P.t0 + 0.09f;                    /* when it became visible */
+    P.until = nos_t < vis ? nos_t + 0.09f : vis + 0.10f;
+}
+static int press_on(int id)
+{
+    if (id < 0 || P.id != id) return 0;
+    return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
+}
 
 static const nos_screen *s_last;
 const nos_screen *sys_launcher_last(void) { return s_last; }
@@ -93,10 +114,10 @@ static int ensure_tables(void)
     memset(L, 0, sizeof *L);
     for (int l = 0; l <= NLEV; l++)
         for (int i = 0; i < 256; i++) L->lut[l][i] = grey565((i * l + NLEV / 2) / NLEV);
-    /* disc fill grey (C_SURF2 = 26) -> C_SEC (153), the house pressed fill; the white
-     * ink above it scales into the rest and stays white */
+    /* disc fill grey (C_SURF2 = 26) -> C_LINE2 (51), one step up, so the white ink keeps
+     * its contrast; the ink above it scales into the rest and stays white */
     for (int i = 0; i < 256; i++)
-        L->lut_press[i] = grey565(i <= 26 ? i * 153 / 26 : 153 + (i - 26) * (255 - 153) / (255 - 26));
+        L->lut_press[i] = grey565(i <= 26 ? i * 51 / 26 : 51 + (i - 26) * (255 - 51) / (255 - 26));
     for (int y = 0; y < (int)(sizeof L->curve / sizeof L->curve[0]); y++) {
         float d = (float)y, r = (float)UI_R;
         L->curve[y] = (int16_t)(CURVE_K * (d < r ? r - sqrtf(r * r - d * d) : r) + 0.5f);
@@ -223,11 +244,12 @@ static void l_enter(void)
     S.x = snap_row(S.x);                       /* remembered between openings */
     S.mode = M_IDLE; S.v = 0;
     S.focus = (int)(S.x / ROW_P + 0.5f);
-    S.pressed = -1;
-    S.t_enter = nos_t;
+    /* back from an app the list slid in fully drawn under it: no rebuild (§8) */
+    S.t_enter = nos_revealed() ? nos_t - 2.0f : nos_enter_t();
+    press_cancel();
 }
 
-static void l_leave(void) { S.pressed = -1; if (S.mode == M_DRAG) release(0); }
+static void l_leave(void) { if (P.down) press_up(); if (S.mode == M_DRAG) release(0); }
 
 static void l_tick(float dt) { scroll_tick(dt); }
 
@@ -270,14 +292,8 @@ static void l_draw(gfx_fb *fb)
     if (!L) return;
     float xr = floorf(S.x + 0.5f);
     int n = napps(), c = (int)floorf(xr / ROW_P + 0.5f);
-    /* header one row above the first app, scrolling with the list */
-    float hy = UI_CY - ROW_P - xr;
-    if (hy > -20) {
-        float e = m_clamp((nos_t - S.t_enter) / 0.2f, 0, 1);
-        float k = m_smoothstep(30.0f, 110.0f, hy) * e;
-        k = floorf(k * 8.0f + 0.5f) / 8.0f;
-        if (k > 0) ui_label(fb, UI_CX, (int)hy + 10, "APPS", ui_dim(C_SEC, k), UI_CENTER);
-    }
+    /* the standard title, lifting away as the list scrolls (§8); it arrives with the build */
+    if (nos_t >= S.t_enter) ui_title(fb, "APPS", xr < 0 ? 0 : xr);
     for (int i = c - 3; i <= c + 3; i++) {
         if (i < 0 || i >= n) continue;
         row_geo g;
@@ -292,7 +308,7 @@ static void l_draw(gfx_fb *fb)
                     grey565(255 * g.lev / NLEV), UI_LEFT, 0);
             continue;
         }
-        int pressed = i == S.pressed;
+        int pressed = press_on(i);
         const uint16_t *lut = pressed ? L->lut_press : L->lut[g.lev];
         unsigned key = (unsigned)(i * 64 + g.var * 20 + g.lev) | (pressed ? 0x8000u : 0u);
         sprite8_blit(fb, &R->icon[g.var], g.ix - ISPR / 2, g.cy - ISPR / 2, lut, key);
@@ -315,14 +331,16 @@ static int l_input(const nos_input *in)
 {
     switch (in->type) {
     case IN_DOWN:
-        S.was_moving = S.mode != M_IDLE && fabsf(S.v) > 60.0f;
+        /* a touch catches a gliding list; in the glide's last row or so (slower than
+         * CATCH_V; a long fling takes ~3 s to rest) it is a tap on the row under it */
+        S.was_moving = S.mode != M_IDLE && fabsf(S.v) > CATCH_V;
         S.mode = M_DRAG;                       /* the finger holds the list */
         S.grab_x = S.x;
         S.grab_dy = 0;
-        S.pressed = S.was_moving ? -1 : row_at(in->y);
+        press_down(S.was_moving ? -1 : row_at(in->y));
         return 1;
     case IN_DRAG_START:
-        S.pressed = -1;
+        press_cancel();
         if (in->axis != AXIS_Y) { release(0); return 0; }
         S.grab_x = S.x;
         S.grab_dy = in->dy;                    /* absorb the slop: no jump when it locks */
@@ -341,7 +359,7 @@ static int l_input(const nos_input *in)
         return 1;
     case IN_TAP: {
         int was = S.was_moving, i = row_at(in->y);
-        S.pressed = -1;
+        press_up();
         if (S.mode == M_DRAG) release(0);
         if (was || i < 0) return 1;
         row_geo g;
@@ -354,15 +372,23 @@ static int l_input(const nos_input *in)
         return 1;
     }
     case IN_UP:
-        S.pressed = -1;
+        press_up();
         if (S.mode == M_DRAG) release(0);
         return 1;
     case IN_BTN_DOUBLE: {                  /* button twice from the face: the last app */
         const nos_screen *last = sys_launcher_last();
         if (!last) return 0;
-        nos_iris_x = GFX_W; nos_iris_y = UI_CY;
-        nos_feedback(FB_OPEN);
-        nos_replace(last, TX_IRIS);
+        /* the first press began opening this list: close it back into the button from
+         * where its iris is, then the app irises from home (no list it never meant to see,
+         * and no cut) */
+        if (nos_depth() == 2 && nos_transitioning()) {
+            sys_home_open_after(last);
+            nos_home();
+        } else {
+            nos_iris_x = GFX_W; nos_iris_y = UI_CY;
+            nos_feedback(FB_OPEN);
+            nos_replace(last, TX_IRIS);
+        }
         return 1;
     }
     default:

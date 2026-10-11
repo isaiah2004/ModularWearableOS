@@ -9,9 +9,9 @@
  * Tiles are r = 40 discs on a 96 px grid (16 px gaps). Everything fits on the glass, so
  * nothing scrolls: an upward drag always belongs to the engine, which closes the sheet.
  * Toggles: on = white disc + black ink, off = C_SURF2 + white ink; the fill morphs in
- * quantised grey steps and the ink flips at the midpoint, where both read. Torch is a
- * toggle too (the panel is the light: turning it on opens the torch, which turns it off
- * again when it closes). Settings is an action, so it is drawn as an outlined disc.
+ * quantised grey steps from wherever it is (the pressed C_SEC on a tap) and the ink flips
+ * at the midpoint, where both read. Torch and Settings open screens (the panel is the
+ * light), so they are drawn as outlined discs with no on/off state.
  * Absent strap modules show a disabled tile and say why on tap. The brightness bar follows
  * the finger relative to where it was grabbed, ticks every 10 %, shows the % in the
  * header and drives the backlight live. Pulled in by the finger, the sheet shows its
@@ -27,6 +27,7 @@
 #include "apps/nos_apps.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum { T_WIFI = 0, T_BT, T_DND, T_TORCH, T_AOD, T_SOUND, T_HAPTIC, T_LTE, T_GPS, T_RAISE, T_SETTINGS, NT };
@@ -36,9 +37,11 @@ enum { T_WIFI = 0, T_BT, T_DND, T_TORCH, T_AOD, T_SOUND, T_HAPTIC, T_LTE, T_GPS,
 #define HEAD_Y   56
 #define SL_Y     372.0f          /* segment bar top */
 #define SL_H     40.0f
-#define SL_X     128.0f
+#define SL_X     138.0f          /* icon + bar centred as one group */
 #define SL_W     224.0f
-#define SL_ICON_X 104.0f
+#define SL_ICON_X 114.0f
+#define LV_OFF   26              /* C_SURF2 */
+#define LV_PRESS 153             /* C_SEC: the house pressed fill, with dark ink */
 
 /* Dim a neutral grey without the RGB565 rounding casts (keeps G = 2R, B = R). */
 static uint16_t gdim(uint16_t c, float k)
@@ -75,9 +78,34 @@ static const struct { int icon; const char *name; uint32_t need; } k_tile[NT] = 
     [T_SETTINGS] = { DOT_ICON_SETTINGS, "Settings",  0 },
 };
 
+/* Section 8 pressed state: hidden for the first 100 ms (a drag's slop passes first and
+ * cancels it silently), then on until release; a quick tap still shows it for 3 frames. */
+/* the system REC chip (sys_home.c; asked for in nos_apps.h) */
+int sys_rec_state(char *label, int n);
+const nos_screen *sys_rec_screen(int kind);
+int sys_rec_width(const char *label);
+void sys_rec_draw(gfx_fb *fb, int x0, int y, const char *label, uint16_t dot, uint16_t ink);
+#define ID_REC 100           /* press id of the header REC chip */
+
+static struct { int id, down; float t0, until; } P = { -1, 0, 0, 0 };
+static void press_down(int id) { P.id = id; P.down = id >= 0; P.t0 = nos_t; P.until = 0; }
+static void press_cancel(void) { P.id = -1; P.down = 0; P.until = 0; }
+static void press_up(void)
+{
+    if (!P.down) return;
+    P.down = 0;
+    float vis = P.t0 + 0.09f;                    /* when it became visible */
+    P.until = nos_t < vis ? nos_t + 0.09f : vis + 0.10f;
+}
+static int press_on(int id)
+{
+    if (id < 0 || P.id != id) return 0;
+    return P.down ? nos_t - P.t0 >= 0.09f : nos_t < P.until;
+}
+
 static struct {
-    mspring on[NT];          /* 0..1 fill */
-    int pressed;             /* tile under the finger, -1 none; NT = slider */
+    mspring on[NT];          /* morph progress 0..1 from lv_from to lv_to */
+    short lv_from[NT], lv_to[NT];   /* fill grey levels of the running morph */
     int sl_drag;
     float sl_v0, sl_dx0, sl_val;   /* value and finger dx at grab, live value 0..1 */
     int sl_step;             /* last 10 % step (ticks) */
@@ -85,9 +113,11 @@ static struct {
     char note[32];           /* "WI-FI OFF" */
     float note_t;
     int note_hold;           /* keep the note up (slider being dragged) */
-    float torch_t;           /* torch tile turned on: open the torch shortly after */
     int bat, charging;
     char time[8];
+    float rec_raw;           /* header: clock + battery (0) .. REC chip (1), linear */
+    int rec_kind;            /* 1 track, 2 memo (kept while it fades out) */
+    char rec_lbl[16];
 } C;
 
 static void tile_pos(int i, float *x, float *y)
@@ -105,7 +135,6 @@ static int state(int i)
     case T_WIFI: return nos_prefs.wifi;
     case T_BT: return nos_prefs.ble;
     case T_DND: return nos_prefs.dnd;
-    case T_TORCH: return nos_prefs.torch || C.torch_t > 0;
     case T_AOD: return nos_prefs.aod;
     case T_SOUND: return nos_prefs.sound;
     case T_HAPTIC: return nos_prefs.haptics;
@@ -114,6 +143,21 @@ static int state(int i)
     case T_RAISE: return nos_prefs.raise_wake;
     default: return 0;
     }
+}
+
+/* the fill level drawn now (8 steps along the running morph) */
+static int fill_lv(int i)
+{
+    float k = floorf(m_clamp(C.on[i].x, 0, 1) * 8.0f + 0.5f) / 8.0f;
+    return (int)lroundf(C.lv_from[i] + (C.lv_to[i] - C.lv_from[i]) * k);
+}
+/* morph tile i to its state's fill, starting from level `from` */
+static void morph(int i, int from)
+{
+    C.lv_from[i] = (short)from;
+    C.lv_to[i] = (short)(state(i) ? 255 : LV_OFF);
+    msp_init(&C.on[i], 0.0f, SPRING_SNAPPY);
+    msp_to(&C.on[i], 1.0f);
 }
 
 static void set_note(const char *name, const char *st)
@@ -145,7 +189,7 @@ static void toggle(int i)
     }
     prefs_save();
     if (on) nos_feedback(FB_TOGGLE_ON);
-    msp_to(&C.on[i], on ? 1.0f : 0.0f);
+    morph(i, LV_PRESS);                        /* from the pressed fill the finger just saw */
     set_note(k_tile[i].name, on ? "ON" : "OFF");
 }
 
@@ -166,35 +210,33 @@ static void note_brightness(void)
 
 static void c_enter(void)
 {
-    C.torch_t = 0;
-    for (int i = 0; i < NT; i++) msp_init(&C.on[i], state(i) ? 1.0f : 0.0f, SPRING_SNAPPY);
-    C.pressed = -1;
+    for (int i = 0; i < NT; i++) {
+        C.lv_from[i] = C.lv_to[i] = (short)(state(i) ? 255 : LV_OFF);
+        msp_init(&C.on[i], 1.0f, SPRING_SNAPPY);
+    }
+    press_cancel();
     C.sl_drag = 0;
     C.note_hold = 0;
     C.sl_val = nos_prefs.brightness / 100.0f;
+    C.rec_kind = sys_rec_state(C.rec_lbl, sizeof C.rec_lbl);
+    C.rec_raw = C.rec_kind ? 1.0f : 0.0f;  /* the sheet brings its header as it is */
     if (nos_revealed()) return;            /* back from torch/settings: as it was */
     /* the finger is revealing the sheet: show everything at once */
-    C.t_enter = nos_entered_by_finger() ? nos_t - 2.0f : nos_t;
+    C.t_enter = nos_entered_by_finger() ? nos_t - 2.0f : nos_enter_t();
     C.note[0] = 0;
 }
 
 static void c_leave(void)
 {
     if (C.sl_drag) { C.sl_drag = 0; prefs_save(); }
-    C.pressed = -1;
+    if (P.down) press_cancel();                /* a released press stays lit through its iris */
 }
 
 static void c_tick(float dt)
 {
-    if (C.torch_t > 0 && nos_t - C.torch_t >= 0.16f) {     /* the tile has turned on */
-        float x, y;
-        tile_pos(T_TORCH, &x, &y);
-        C.torch_t = 0;
-        nos_open(&scr_torch, (int)x, (int)y);
-    }
     for (int i = 0; i < NT; i++) {
-        float tgt = state(i) ? 1.0f : 0.0f;              /* follow changes made elsewhere */
-        if (C.on[i].target != tgt) msp_to(&C.on[i], tgt);
+        int to = state(i) ? 255 : LV_OFF;                /* follow changes made elsewhere */
+        if (C.lv_to[i] != to) morph(i, fill_lv(i));
         msp_step(&C.on[i], dt);
     }
     if (!C.sl_drag) C.sl_val = nos_prefs.brightness / 100.0f;
@@ -205,6 +247,11 @@ static void c_tick(float dt)
     hal_datetime now;
     hal_get_datetime(&now);
     ui_fmt_time(C.time, sizeof C.time, now.hour, now.minute);
+    /* a recording starting or ending crossfades the header over 6 frames */
+    char lbl[16];
+    int rk = sys_rec_state(lbl, sizeof lbl);
+    if (rk) { C.rec_kind = rk; memcpy(C.rec_lbl, lbl, sizeof lbl); }
+    C.rec_raw = m_clamp(C.rec_raw + (rk ? 1.0f : -1.0f) * dt / (6.0f / NOS_FPS), 0, 1);
 }
 
 /* build-in: tiles arrive row by row (2 frames apart), growing the last few px */
@@ -250,26 +297,23 @@ static void draw_tile(gfx_fb *fb, int i)
     float e = tile_in(i);
     if (e <= 0) return;
     float r = TILE_R * (0.86f + 0.14f * e);
-    int pressed = C.pressed == i;
+    int pressed = press_on(i);
     if (!present(i)) {
         ui_circle(fb, x, y, r, gdim(C_SURF, e));
         tile_icon(fb, i, x, y, gdim(C_DIS, e));
         return;
     }
-    if (i == T_SETTINGS) {                 /* an action, not a state: outlined */
+    if (i == T_SETTINGS || i == T_TORCH) {     /* they open screens, not states: outlined */
         ui_circle(fb, x, y, r, gdim(pressed ? C_SEC : C_SURF2, e));
         ui_circle_line(fb, x, y, r, 2.0f, gdim(pressed ? C_SEC : C_LINE2, e));
         tile_icon(fb, i, x, y, pressed ? C_BG : gdim(C_PRI, e));
         return;
     }
-    /* fill morph: neutral grey steps from C_SURF2 (26) to white; the ink flips at the
+    /* fill morph: neutral grey steps between C_SURF2 (26) and white; the ink flips at the
      * midpoint, where the fill is mid-grey and both inks read */
-    float k = m_clamp(C.on[i].x, 0, 1);
-    k = floorf(k * 8.0f + 0.5f) / 8.0f;
-    int lv = (int)lroundf(26 + (255 - 26) * k);
-    if (pressed) lv = 153;                     /* pressed: C_SEC with dark ink (house style) */
+    int lv = pressed ? LV_PRESS : fill_lv(i);   /* pressed: C_SEC with dark ink (house style) */
     ui_circle(fb, x, y, r, gdim(grey(lv), e));
-    tile_icon(fb, i, x, y, (k >= 0.5f || pressed) ? C_BG : gdim(C_PRI, e));
+    tile_icon(fb, i, x, y, lv >= 140 ? C_BG : gdim(C_PRI, e));
 }
 
 static void draw_header(gfx_fb *fb)
@@ -280,11 +324,20 @@ static void draw_header(gfx_fb *fb)
         k = floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f;
         if (k > 0) { ui_label(fb, UI_CX, HEAD_Y, C.note, gdim(C_PRI, k), UI_CENTER); return; }
     }
+    /* recording: the header is the REC chip (clock and battery out, then the chip in) */
+    float kc = floorf(m_clamp(1.0f - 2.0f * C.rec_raw, 0, 1) * 3.0f + 0.5f) / 3.0f;
+    float kr = floorf(m_clamp(2.0f * C.rec_raw - 1.0f, 0, 1) * 3.0f + 0.5f) / 3.0f;
+    if (kr > 0 && C.rec_kind) {
+        int w = sys_rec_width(C.rec_lbl), x0 = UI_CX - w / 2;
+        if (press_on(ID_REC)) ui_rrect(fb, x0 - 12, HEAD_Y - 21, w + 24, 30, 15, C_SURF2);
+        sys_rec_draw(fb, x0, HEAD_Y, C.rec_lbl, ui_dim(C_RED, kr), gdim(C_PRI, kr));
+    }
+    if (kc <= 0) return;
     char b[16];
     snprintf(b, sizeof b, "%d%%", C.bat);
-    ui_label(fb, UI_CX - 12, HEAD_Y, C.time, C_PRI, UI_RIGHT);
-    dot_disc(fb, UI_CX, HEAD_Y - 6, 4, C_DIS);
-    ui_label(fb, UI_CX + 12, HEAD_Y, b, C.charging ? C_PRI : C_SEC, UI_LEFT);
+    ui_label(fb, UI_CX - 12, HEAD_Y, C.time, gdim(C_PRI, kc), UI_RIGHT);
+    dot_disc(fb, UI_CX, HEAD_Y - 6, 4, gdim(C_DIS, kc));
+    ui_label(fb, UI_CX + 12, HEAD_Y, b, gdim(C.charging ? C_PRI : C_SEC, kc), UI_LEFT);
 }
 
 static void c_draw(gfx_fb *fb)
@@ -295,7 +348,7 @@ static void c_draw(gfx_fb *fb)
     if (e > 0) {
         float v = floorf(C.sl_val * 100.0f + 0.5f) / 100.0f;
         float y = SL_Y + floorf((1 - e) * 8 + 0.5f);
-        int press = C.pressed == NT || C.sl_drag;
+        int press = press_on(NT) || C.sl_drag;
         dot_icon(fb, DOT_ICON_BRIGHT, SL_ICON_X, y + SL_H * 0.5f, 2.4f, 1.9f, gdim(press ? C_PRI : C_SEC, e));
         ui_segments(fb, SL_X, y, SL_W, SL_H, 10, v * 10.0f, gdim(C_WHITE, e), gdim(press ? C_LINE2 : C_SURF2, e));
     }
@@ -303,6 +356,8 @@ static void c_draw(gfx_fb *fb)
 
 static int tile_at(int x, int y)
 {
+    if (C.rec_kind && C.rec_raw >= 0.5f && y < 84 &&    /* the header chip, to the first row */
+        abs(x - UI_CX) <= sys_rec_width(C.rec_lbl) / 2 + 24) return ID_REC;
     for (int i = 0; i < NT; i++) {
         float tx, ty;
         tile_pos(i, &tx, &ty);
@@ -322,25 +377,26 @@ static void tap_tile(int i)
         set_note(i == T_SOUND ? "NO SPEAKER" : i == T_HAPTIC ? "NO MOTOR" : i == T_LTE ? "NO LTE MODULE" : "NO GPS MODULE", 0);
         return;
     }
-    if (i == T_TORCH) {                    /* on: the tile fills, then the light opens */
-        if (C.torch_t > 0) return;
-        nos_feedback(FB_TOGGLE_ON);
-        C.torch_t = nos_t;
-        msp_to(&C.on[T_TORCH], 1.0f);
+    /* the screen grows out of the tile's own icon disc */
+    if (i == T_TORCH || i == T_SETTINGS) {
+        press_up();
+        nos_open_icon(i == T_TORCH ? &scr_torch : &scr_settings, (int)tx, (int)ty, k_tile[i].icon, TILE_R);
         return;
     }
-    if (i == T_SETTINGS) { nos_open(&scr_settings, (int)tx, (int)ty); return; }
+    press_cancel();                            /* the morph starts from the pressed fill */
     toggle(i);
 }
 
 static int c_input(const nos_input *in)
 {
     switch (in->type) {
-    case IN_DOWN:
-        C.pressed = tile_at(in->x, in->y);
+    case IN_DOWN: {
+        int i = tile_at(in->x, in->y);
+        press_down(i >= 0 && i < NT && !present(i) ? -1 : i);   /* disabled tiles explain instead */
         return 1;
+    }
     case IN_DRAG_START:
-        if (C.pressed == NT && in->axis == AXIS_X) {
+        if (P.down && P.id == NT && in->axis == AXIS_X) {
             C.sl_drag = 1;
             C.sl_v0 = C.sl_val;
             C.sl_dx0 = in->dx;                 /* absorb the slop: no jump when it locks */
@@ -349,7 +405,7 @@ static int c_input(const nos_input *in)
             note_brightness();
             return 1;
         }
-        C.pressed = -1;
+        press_cancel();
         return 0;                 /* vertical: up closes the sheet (engine); nothing scrolls */
     case IN_DRAG:
         if (!C.sl_drag) return 0;
@@ -369,18 +425,24 @@ static int c_input(const nos_input *in)
         prefs_save();
         return 1;
     case IN_LONG:
-        if (C.pressed == T_TORCH && present(T_TORCH)) {
+        if (P.down && P.id == T_TORCH) {
             float tx, ty;
             tile_pos(T_TORCH, &tx, &ty);
-            C.pressed = -1;
-            nos_open(&scr_torch, (int)tx, (int)ty);
+            press_up();
+            nos_open_icon(&scr_torch, (int)tx, (int)ty, k_tile[T_TORCH].icon, TILE_R);
             return 1;
         }
         return 0;
     case IN_TAP: {
         int i = tile_at(in->x, in->y);
-        C.pressed = -1;
+        if (i != P.id) press_cancel();
+        if (i == ID_REC) {        /* the recording: open its app */
+            press_up();
+            nos_open(sys_rec_screen(C.rec_kind), in->x, in->y);
+            return 1;
+        }
         if (i == NT) {            /* tap on the bar: jump there */
+            press_up();
             float v = m_clamp((in->x - SL_X) / SL_W, 0.05f, 1.0f);
             v = ceilf(v * 10.0f - 0.001f) / 10.0f;   /* to the tapped segment's end */
             C.sl_val = v;
@@ -392,7 +454,7 @@ static int c_input(const nos_input *in)
         return 1;
     }
     case IN_UP:
-        C.pressed = -1;
+        press_up();
         if (C.sl_drag) { C.sl_drag = 0; prefs_save(); }
         C.note_hold = 0;
         return 1;

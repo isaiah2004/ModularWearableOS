@@ -27,7 +27,9 @@
 #include "faces/face.h"
 #include "faces/face_ext.h"
 #include "gfx_cost.h"
+#include "svc_track.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 void sys_launcher_prewarm(void);              /* sys_launcher.c: bake one row sprite */
@@ -38,7 +40,7 @@ const nos_screen *sys_launcher_last(void);    /* sys_launcher.c: last app opened
 #define NPAGE    (NWG + 1)
 #define FLICK_V  350.0f      /* px/s: faster releases always change page */
 #define ENTER_S  0.40f       /* face build-in duration */
-#define DOTS_Y   448
+#define DOTS_Y   UI_DOTS_Y
 
 /* Dim a neutral grey without the RGB565 rounding casts (keeps G = 2R, B = R). */
 static uint16_t gdim(uint16_t c, float k)
@@ -125,6 +127,49 @@ static void rr_pass(gfx_fb *fb, int x0, int y0, int x1, int y1, float rad, int o
     GFX_COST_PX(GFX_COST_BLEND, nb);
 }
 
+/* ---- the system REC chip ------------------------------------------------------------
+ * While a GPS track (svc_track) or a voice memo (svc_memo) records in the background, a
+ * red dot + "REC 12:34" (Navigate's header words; a memo is counted the same way) on the
+ * face page and in the control centre header. A tap opens the recorder. With both
+ * running the memo shows: the microphone is the one to know about. */
+#define REC_DOT 8
+#define REC_GAP 8
+int sys_rec_state(char *label, int n)
+{
+    if (svc_memo_active()) {
+        unsigned t = (unsigned)(svc_memo_elapsed_ms() / 1000u);
+        if (t >= 3600) snprintf(label, (size_t)n, "REC %u:%02u:%02u", t / 3600, t / 60 % 60, t % 60);
+        else snprintf(label, (size_t)n, "REC %02u:%02u", t / 60, t % 60);
+        return 2;
+    }
+    if (svc_track_active()) { svc_track_label(label, n); return 1; }
+    return 0;
+}
+const nos_screen *sys_rec_screen(int kind) { return kind == 2 ? &scr_memo : &scr_nav; }
+int sys_rec_width(const char *label) { return REC_DOT + REC_GAP + ui_label_width(label); }
+/* the chip from its left edge, label baseline y (the dot sits on the middle of the caps) */
+void sys_rec_draw(gfx_fb *fb, int x0, int y, const char *label, uint16_t dot, uint16_t ink)
+{
+    dot_disc(fb, x0 + REC_DOT * 0.5f, y - 6.5f, REC_DOT, dot);
+    ui_label(fb, x0 + REC_DOT + REC_GAP, y, label, ink, UI_LEFT);
+}
+
+/* Where each face has a free line for it (label baseline, centred), clear of its date,
+ * complications and the page dots. DOT, LIFE and TAPE keep their battery status on that
+ * very line: there the chip takes the line and carries the status after it. */
+typedef struct { const char *face; short y; char shares_status; } rec_slot;
+static const rec_slot k_rec_slot[] = {
+    { "DOT", 428, 1 }, { "MATRIX", 388, 0 }, { "GLYPH", 340, 0 }, { "SPLIT", 404, 0 },
+    { "LIFE", 408, 1 }, { "SEGMENT", 362, 0 }, { "INVERTED", 396, 0 }, { "TAPE", 406, 1 },
+};
+static const rec_slot *rec_slot_of(const nos_face *f)
+{
+    static const rec_slot other = { "", 404, 0 };
+    for (unsigned i = 0; i < sizeof k_rec_slot / sizeof k_rec_slot[0]; i++)
+        if (f && f->name && !strcmp(f->name, k_rec_slot[i].face)) return &k_rec_slot[i];
+    return &other;
+}
+
 static const nos_widget *const k_wg[NWG] = { &wg_activity, &wg_heart, &wg_weather, &wg_music, &wg_timer };
 
 static struct {
@@ -137,7 +182,7 @@ static struct {
     int was_moving;          /* the press stopped a moving pager: no tap */
     int alias;               /* >0: widget page drawn in slot 1 (return-to-face trip) */
     int page;                /* nearest real page (haptic detents) */
-    int shown_page;          /* page whose shown() ran last */
+    unsigned char wvis[NWG]; /* widget page on the glass last tick (shown() on the rising edge) */
     float dots_a;            /* page-dot opacity, quantised to 8 levels */
     float dots_raw, dots_hold;
     face_ctx c;
@@ -148,11 +193,38 @@ static struct {
     int prev_awake_ms;
     int covered;             /* another screen is on top */
     int holding; float hold_t;   /* finger resting on the face: the edit rim charges */
-    int prs;                 /* face complication pressed: 1 finger down, 2 kept through its opening */
-    int pr[4];               /* its press rect (screen x0 y0 x1 y1) */
-    float pr_t;
+    float rim_t;             /* the long press fired: hold the charged rim through the dissolve */
+    float rec_raw;           /* REC chip opacity, linear 0..1 (drawn in 4 steps) */
+    int rec_kind;            /* 1 track, 2 memo (kept while it fades out) */
+    char rec_lbl[16];
+    float aod_t0;            /* AOD began (the entry ramp runs from here) */
+    int aod_out;             /* the face was on the glass: it dims out before the AOD face */
+    int aod_cut;             /* AOD collapsed another screen onto home: no face to dim */
     int inited;
 } H;
+
+/* AOD entry, in frames: the face dims out in 3 (only if it was on the glass), then the AOD
+ * face comes up in 3 more; a 1 Hz AOD frame lands past it. The host keeps 30 Hz frames
+ * (and the user's brightness) while sys_home_aod_entering() says so. */
+#define AOD_OUT_N 3
+#define AOD_IN_N 3
+static int aod_frame(void) { return (int)floorf((nos_t - H.aod_t0) * NOS_FPS + 0.5f); }
+static int aod_dimming_out(void) { return nos_aod && H.aod_out && aod_frame() < AOD_OUT_N; }
+/* the page's ink level during the entry ramp (1 = as is) */
+static float aod_ramp_k(void)
+{
+    if (!nos_aod) return 1.0f;
+    int n = aod_frame();
+    if (H.aod_out) {
+        if (n < AOD_OUT_N) return (float)(AOD_OUT_N - n) / (AOD_OUT_N + 1);
+        n -= AOD_OUT_N;
+    }
+    return n < AOD_IN_N ? (float)(n + 1) / (AOD_IN_N + 1) : 1.0f;
+}
+int sys_home_aod_entering(void)
+{
+    return nos_aod && aod_frame() < (H.aod_out ? AOD_OUT_N : 0) + AOD_IN_N;
+}
 
 static const nos_face *cur_face(void)
 {
@@ -182,12 +254,43 @@ static float real_pos(void)
 static int nearest_page(void) { return slot_page((int)floorf(H.x / PAGE_W + 0.5f)); }
 static int at_face(void) { return !H.dragging && !H.settling && H.x == 0.0f; }
 
-/* widget pressed states: the page under a resting finger hears down / up (or cancel) */
-static int s_press_pg;
-static void widget_press(int page, int x, int y, int down)
+/* §8 pressed state, for a face complication (its press rect) or a widget page (its
+ * press hook): hidden for the first 100 ms, so a page drag's slop passes first and
+ * cancels it silently; then on until release. A quick tap still shows it for 3 frames,
+ * and a tap that opens something keeps it lit while the iris grows over it. */
+static struct {
+    int kind;                /* 0 none, 1 face rect, 2 widget page */
+    int page, x, y;          /* widget: page and finger */
+    int r[4];                /* face: press rect (screen x0 y0 x1 y1) */
+    int down, lit;           /* finger still down; widget has heard press(1) */
+    float t0, until;
+} PR;
+static int pr_visible(void)
 {
-    if (!down) { if (s_press_pg >= 1 && k_wg[s_press_pg - 1]->press) k_wg[s_press_pg - 1]->press(x, y, 0); s_press_pg = 0; return; }
-    if (page >= 1 && k_wg[page - 1]->press) { k_wg[page - 1]->press(x, y, 1); s_press_pg = page; }
+    if (!PR.kind) return 0;
+    return PR.down ? nos_t - PR.t0 >= 0.09f : nos_t < PR.until;
+}
+static void pr_cancel(void)
+{
+    if (PR.kind == 2 && PR.lit && k_wg[PR.page - 1]->press) k_wg[PR.page - 1]->press(PR.x, PR.y, 0);
+    PR.kind = 0; PR.down = PR.lit = 0;
+}
+static void pr_release(float hold)
+{
+    if (!PR.kind || !PR.down) return;
+    PR.down = 0;
+    float vis = PR.t0 + 0.09f;                   /* when it became visible */
+    PR.until = nos_t < vis ? nos_t + 0.09f : vis + 0.10f;
+    if (hold > 0 && PR.until < nos_t + hold) PR.until = nos_t + hold;
+}
+static void pr_tick(void)
+{
+    int on = pr_visible();
+    if (PR.kind == 2 && k_wg[PR.page - 1]->press && on != PR.lit) {
+        k_wg[PR.page - 1]->press(PR.x, PR.y, on);
+        PR.lit = on;
+    }
+    if (PR.kind && !on && !PR.down) pr_cancel();
 }
 
 static void settle_to(float target, float v)
@@ -241,30 +344,35 @@ static void go_page(int p)                 /* air gestures */
 }
 
 /* ---- lifecycle ---------------------------------------------------------------------- */
+/* An app to open once home is back on top (a double press caught the launcher still
+ * opening: its iris closes back into the button first, then the app irises from home). */
+static const nos_screen *s_open_next;
+void sys_home_open_after(const struct nos_screen *s) { s_open_next = s; }
+
 static void home_enter(void)
 {
     if (!H.inited) {
         memset(&H, 0, sizeof H);
         H.inited = 1;
         H.face_idx = nos_prefs.face;
-        H.shown_page = 0;
         H.last_tick_ms = hal_millis();
         sys_home_build_in();
     }
     /* time spent under another screen (the face picker, an app) is not a sleep: the wake
      * test below only measures gaps while home itself is on the glass */
     H.covered = 0;
+    if (nos_aod) H.aod_cut = 1;          /* nos_home_now() for AOD: the face was not showing */
     H.last_tick_ms = hal_millis();
     H.prev_awake_ms = nos_awake_ms();
-    H.prs = 0;
+    pr_cancel();
+    H.rim_t = 0;
 }
 
 static void home_leave(void)
 {
     H.covered = 1;
     H.holding = 0;
-    if (H.prs == 1) H.prs = 0;           /* a latched press stays through its opening */
-    widget_press(0, 0, 0, 0);
+    if (PR.down) pr_cancel();            /* a released press stays lit through its opening */
     if (H.dragging || H.grabbed) pager_release(0);
 }
 
@@ -287,7 +395,7 @@ static void build_ctx(float dt)
     int ah, am, ain;
     c->next_alarm_min = svc_alarm_next(&ah, &am, &ain) ? ain : -1;
     c->t = nos_t;
-    c->aod = nos_aod;
+    c->aod = nos_aod && !aod_dimming_out();   /* the face dims out as itself first */
     c->enter = m_clamp((nos_t - H.enter_t0) / ENTER_S, 0, 1);
     (void)dt;
 }
@@ -301,6 +409,11 @@ const face_ctx *sys_home_ctx(void)
 
 static void home_tick(float dt)
 {
+    if (s_open_next && nos_top() == &scr_home && !nos_transitioning()) {
+        const nos_screen *s = s_open_next;
+        s_open_next = 0;
+        nos_open(s, GFX_W, UI_CY);
+    }
     uint32_t now = hal_millis();
     int awake = nos_awake_ms();
     /* waking: the frame loop paused, AOD ended, or the screen-off timeout had passed */
@@ -309,8 +422,12 @@ static void home_tick(float dt)
     /* out of AOD the time was on the glass a frame ago: no build-in from nothing */
     if (H.last_aod && !nos_aod) woke = 0;
     if (nos_aod && !H.last_aod) {              /* AOD shows the face only */
+        H.aod_t0 = nos_t;
+        H.aod_out = !H.aod_cut && !H.covered && H.x < 0.5f && !H.alias;
+        H.aod_cut = 0;
         H.alias = 0; H.x = 0; H.settling = H.dragging = H.grabbed = 0;
-        H.shown_page = 0; H.page = 0;
+        H.page = 0;
+        pr_cancel();
     }
     if (woke) sys_home_build_in();
     H.last_aod = nos_aod;
@@ -318,7 +435,7 @@ static void home_tick(float dt)
     H.prev_awake_ms = awake;
     /* a face picked in the picker was already shown live and full size: no rebuild */
     if (nos_prefs.face != H.face_idx) H.face_idx = nos_prefs.face;
-    if (H.prs == 2 && nos_t - H.pr_t > 0.6f) H.prs = 0;   /* the opening has covered it */
+    pr_tick();
 
     /* pager */
     if (H.settling) {
@@ -331,11 +448,6 @@ static void home_tick(float dt)
             H.x = H.sp.target;
             if (H.alias && H.x <= 0.0f) H.alias = 0;
             else if (H.alias && H.x >= PAGE_W) { H.x = H.alias * PAGE_W; H.alias = 0; }
-            int p = nearest_page();
-            if (p != H.shown_page) {
-                H.shown_page = p;
-                if (p >= 1 && k_wg[p - 1]->shown) k_wg[p - 1]->shown();
-            }
         }
     }
     int p = nearest_page();
@@ -351,18 +463,29 @@ static void home_tick(float dt)
     H.dots_raw = m_clamp(H.dots_raw, 0, 1);
     H.dots_a = floorf(H.dots_raw * 8.0f + 0.5f) / 8.0f;
 
+    /* REC chip: in and out over 4 frames on a settled home; while home is coming back
+     * (an iris closing over it) it is already as it is now, no stale chip fading out */
+    char lbl[16];
+    int rk = sys_rec_state(lbl, sizeof lbl);
+    if (rk) { H.rec_kind = rk; memcpy(H.rec_lbl, lbl, sizeof lbl); }
+    if (nos_top() != &scr_home || nos_transitioning()) H.rec_raw = rk ? 1.0f : 0.0f;
+    else H.rec_raw = m_clamp(H.rec_raw + (rk ? 1.0f : -1.0f) * dt / (4.0f / NOS_FPS), 0, 1);
+
     /* face + widgets */
     build_ctx(dt);
     const nos_face *f = cur_face();
     if (f && f->tick) f->tick(&H.c, dt);
     float rx = real_pos() * PAGE_W;
     for (int i = 0; i < NWG; i++) {
-        if (!k_wg[i]->tick) continue;
         int slot_vis = 0;
         if (nos_aod) slot_vis = 0;
         else if (H.alias) slot_vis = (i + 1 == H.alias) && H.x > 0.0f;
         else slot_vis = fabsf((i + 1) * PAGE_W - rx) < PAGE_W;
-        k_wg[i]->tick(dt, slot_vis);
+        /* shown() (the widget's entry build) runs on the first frame any of the page is on
+         * the glass, so it builds as it slides in and never blanks once it has arrived */
+        if (slot_vis && !H.wvis[i] && k_wg[i]->shown) k_wg[i]->shown();
+        H.wvis[i] = (unsigned char)slot_vis;
+        if (k_wg[i]->tick) k_wg[i]->tick(dt, slot_vis);
     }
 
     if (!H.dragging && !H.settling && !nos_transitioning()) sys_launcher_prewarm();
@@ -402,6 +525,72 @@ static void draw_dots(gfx_fb *fb)
     }
 }
 
+/* the face's battery status line (as faces.c fk_status: bolt + "15%"), when the chip takes it */
+static int status_shown(void) { return H.c.charging || (H.c.battery > 0 && H.c.battery <= 20); }
+static int status_w(char *b, int n)
+{
+    snprintf(b, (size_t)n, "%d%%", H.c.battery);
+    return ui_text_width(UI_F_LABEL, b, 2) + (H.c.charging ? 18 : 0);
+}
+
+/* the chip line on the current face: x0, baseline, total width; 0 = not shown */
+static int rec_line(int *x0, int *y, int *w)
+{
+    if (H.rec_raw <= 0.0f || !H.rec_kind || nos_aod) return 0;
+    const rec_slot *sl = rec_slot_of(cur_face());
+    char b[8];
+    *w = sys_rec_width(H.rec_lbl);
+    if (sl->shares_status && status_shown()) *w += 16 + status_w(b, sizeof b);
+    *x0 = UI_CX - *w / 2;
+    *y = sl->y;
+    return 1;
+}
+/* its backing / pressed rect (screen), 30 px tall around the caps */
+static void rec_rect(int x0, int y, int w, int r[4])
+{
+    r[0] = x0 - 12; r[1] = y - 21; r[2] = x0 + w + 12; r[3] = y + 9;
+}
+
+static void draw_rec(gfx_fb *fb)
+{
+    int x0, y, w;
+    if (!rec_line(&x0, &y, &w)) return;
+    /* fades with the face build-in too, so a wake never pops it in */
+    float k = floorf(H.rec_raw * 4.0f + 0.5f) / 4.0f * (floorf(H.c.enter * 4.0f + 0.5f) / 4.0f);
+    if (k <= 0.0f) return;
+    int light = (nos_face_style(cur_face()) & FACE_LIGHT) != 0;
+    int r[4];
+    rec_rect(x0, y, w, r);
+    /* a backing that clears the face art under it (ghost dots, hands, its own status) */
+    rr_pass(fb, r[0], r[1], r[2], r[3], (r[3] - r[1]) * 0.5f, light ? RR_LIGHTEN : RR_FADE,
+            light ? C_WHITE : 0, k);
+    uint16_t dot = light ? ui_mix(C_WHITE, C_RED, k) : ui_dim(C_RED, k);
+    uint16_t ink = light ? grey565((int)lroundf(255.0f * (1.0f - k))) : gdim(C_PRI, k);
+    sys_rec_draw(fb, x0, y, H.rec_lbl, dot, ink);
+    const rec_slot *sl = rec_slot_of(cur_face());
+    if (sl->shares_status && status_shown()) {
+        char b[8];
+        int sx = x0 + sys_rec_width(H.rec_lbl) + 16;
+        status_w(b, sizeof b);
+        uint16_t col = light ? grey565((int)lroundf(255.0f - (255.0f - 102.0f) * k)) : gdim(C_SEC, k);
+        if (H.c.charging) {
+            dot_icon(fb, DOT_ICON_BOLT, (float)(sx + 7), (float)(y - 6), 1.45f, 1.7f, col);
+            sx += 18;
+        }
+        ui_label(fb, sx, y, b, col, UI_LEFT);
+    }
+}
+
+/* the finger is on the chip: its line, grown to the 88 px touch target */
+static int rec_hit(int x, int y, int r[4])
+{
+    int x0, by, w;
+    if (H.rec_raw < 0.5f || !rec_line(&x0, &by, &w)) return 0;
+    rec_rect(x0, by, w, r);
+    int cy = (r[1] + r[3]) / 2;
+    return x >= r[0] - 8 && x < r[2] + 8 && y >= cy - 44 && y < cy + 44;
+}
+
 static void draw_page(gfx_fb *fb, int page, int ox)
 {
     gfx_fb sub;
@@ -410,6 +599,7 @@ static void draw_page(gfx_fb *fb, int page, int ox)
     if (page == 0) {
         const nos_face *f = cur_face();
         if (f && f->draw) f->draw(&sub, &H.c);
+        draw_rec(&sub);
     } else if (k_wg[page - 1]->draw) k_wg[page - 1]->draw(&sub);
 }
 
@@ -417,7 +607,14 @@ static void home_draw(gfx_fb *fb)
 {
     if (nos_aod) {
         const nos_face *f = cur_face();
-        if (f && f->draw) f->draw(fb, &H.c);
+        /* the entry ramp: ink-dimmed (recorded, so each step repaints) */
+        float k = aod_ramp_k();
+        gfx_fb sub;
+        if (k < 1.0f && fb->rec) gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_f(0xa0du, k));
+        if (k < 1.0f && nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, 0)) {
+            nos_ink_dim(&sub, k);
+            if (f && f->draw) f->draw(&sub, &H.c);
+        } else if (f && f->draw) f->draw(fb, &H.c);
         return;
     }
     int xi = (int)lroundf(H.x);
@@ -430,8 +627,8 @@ static void home_draw(gfx_fb *fb)
     }
     int light = (nos_face_style(cur_face()) & FACE_LIGHT) != 0;
     /* a pressed complication: C_SURF2 under the face's art (#E0E0E0 under ink on white) */
-    if (H.prs && xi == 0)
-        rr_pass(fb, H.pr[0], H.pr[1], H.pr[2], H.pr[3], 16.0f, light ? RR_DARKEN : RR_LIGHTEN,
+    if (PR.kind == 1 && xi == 0 && pr_visible())
+        rr_pass(fb, PR.r[0], PR.r[1], PR.r[2], PR.r[3], 16.0f, light ? RR_DARKEN : RR_LIGHTEN,
                 light ? grey565(0xE0) : C_SURF2, 1.0f);
     draw_dots(fb);
     /* the unread dot: on page 0 the face draws its own (face_ctx.unread); widget pages get
@@ -440,17 +637,20 @@ static void home_draw(gfx_fb *fb)
         float k = floorf(m_clamp(H.x / PAGE_W, 0, 1) * 8.0f + 0.5f) / 8.0f;
         if (k > 0) {
             if (xi >= UI_CX + 14) dot_disc(fb, UI_CX, 24, 20, C_BG);   /* face clear: backdrop */
-            dot_disc(fb, UI_CX, 24, 9, ui_dim(C_RED, k));
+            dot_disc(fb, UI_CX, 24, 8, ui_dim(C_RED, k));   /* one dot: red, 8 px */
         }
     }
-    /* a resting finger on the face charges the edit rim (the picker continues it) */
+    /* a resting finger on the face charges the edit rim; once the long press fires it holds
+     * at its 3/8 under the picker's dissolve, so both layers carry the same rim and the
+     * picker continues it from there with no gap */
+    float k = 0;
     if (H.holding && xi == 0) {
-        float k = m_clamp((nos_t - H.hold_t - 0.15f) / 0.30f, 0, 1) * 3.0f;
+        k = m_clamp((nos_t - H.hold_t - 0.15f) / 0.30f, 0, 1) * 3.0f;
         k = floorf(k + 0.5f) / 8.0f;
-        /* on a white face the rim darkens by the same amount instead */
-        if (k > 0) gfx_ring(fb, UI_CX, UI_CY, UI_R - 3.5f, 3.0f,
-                            light ? grey565((int)lroundf(255.0f - 153.0f * k)) : gdim(C_SEC, k));
-    }
+    } else if (H.rim_t > 0 && nos_t - H.rim_t < 0.45f && xi == 0) k = 3.0f / 8.0f;
+    /* on a white face the rim darkens by the same amount instead */
+    if (k > 0) gfx_ring(fb, UI_CX, UI_CY, UI_R - 3.5f, 3.0f,
+                        light ? grey565((int)lroundf(255.0f - 153.0f * k)) : gdim(C_SEC, k));
 }
 
 /* ---- input -------------------------------------------------------------------------- */
@@ -466,24 +666,26 @@ static int home_input(const nos_input *in)
         H.grab_page = (int)floorf(H.x / PAGE_W + 0.5f);
         H.holding = !H.was_moving && H.x == 0.0f;
         H.hold_t = nos_t;
-        /* a complication under the finger shows pressed until release (all-zero rect: a
-         * target with nothing to light, e.g. a bezel ring) */
-        H.prs = 0;
+        /* pressed states (pr_*): a complication under the finger lights its press rect
+         * (all-zero rect: a target with nothing to light, e.g. a bezel ring); a settled
+         * widget page hears its press hook */
+        pr_cancel();
         if (H.holding && !H.alias) {
             int r[4] = { 0, 0, 0, 0 };
-            if (nos_face_press_rect(cur_face(), in->x, in->y, r) && r[2] > r[0] && r[3] > r[1]) {
-                memcpy(H.pr, r, sizeof r);
-                H.prs = 1;
+            if (rec_hit(in->x, in->y, r) ||                  /* the REC chip comes first */
+                (nos_face_press_rect(cur_face(), in->x, in->y, r) && r[2] > r[0] && r[3] > r[1])) {
+                memcpy(PR.r, r, sizeof r);
+                PR.kind = 1;
             }
+        } else if (!H.was_moving && !H.alias && H.grab_page >= 1 && H.x == (float)H.grab_page * PAGE_W &&
+                   k_wg[H.grab_page - 1]->press) {
+            PR.kind = 2; PR.page = H.grab_page; PR.x = in->x; PR.y = in->y;
         }
-        /* a settled widget page shows its pressed state */
-        if (!H.was_moving && !H.alias && H.x == (float)H.grab_page * PAGE_W)
-            widget_press(H.grab_page, in->x, in->y, 1);
+        if (PR.kind) { PR.down = 1; PR.lit = 0; PR.t0 = nos_t; PR.until = 0; }
         return 1;
     case IN_DRAG_START:
         H.holding = 0;
-        H.prs = 0;
-        widget_press(0, in->x, in->y, 0);           /* paging or a sheet: cancel */
+        pr_cancel();                                /* paging or a sheet: silently, if still hidden */
         if (in->axis == AXIS_X) {
             H.dragging = 1;
             H.grab_x = H.x;
@@ -514,28 +716,30 @@ static int home_input(const nos_input *in)
     case IN_TAP: {
         int was = H.was_moving;
         H.holding = 0;
-        widget_press(0, in->x, in->y, 0);
         if (H.grabbed) pager_release(0);
-        if (was || H.x != (float)((int)floorf(H.x / PAGE_W + 0.5f)) * PAGE_W) return 1;
+        if (was || H.x != (float)((int)floorf(H.x / PAGE_W + 0.5f)) * PAGE_W) { pr_cancel(); return 1; }
+        pr_release(0);                              /* a quick tap still shows 3 frames */
         int p = nearest_page();
         if (p == 0) {
             const nos_face *f = cur_face();
-            const nos_screen *s = f && f->tap ? f->tap(in->x, in->y) : 0;
-            if (s) {
-                if (H.prs) { H.prs = 2; H.pr_t = nos_t; }   /* stays lit while the iris opens */
-                nos_open(s, in->x, in->y);
-            }
+            int r[4];
+            const nos_screen *s = rec_hit(in->x, in->y, r) ? sys_rec_screen(H.rec_kind)
+                                : f && f->tap ? f->tap(in->x, in->y) : 0;
+            if (s) nos_open(s, in->x, in->y);
         } else if (k_wg[p - 1]->tap) {
             k_wg[p - 1]->tap(in->x, in->y);         /* widgets open with nos_open (FB_OPEN) */
         }
+        /* it opened something: stay lit while the iris grows over it */
+        if (PR.kind && nos_top() != &scr_home && PR.until < nos_t + 0.4f) PR.until = nos_t + 0.4f;
         return 1;
     }
     case IN_LONG:
         H.holding = 0;
-        H.prs = 0;
+        pr_cancel();
         if (nearest_page() == 0 && H.x < 1.0f && !H.was_moving) {
             H.grabbed = 0;
             nos_push(&scr_faces, TX_DISSOLVE);
+            H.rim_t = nos_t;                        /* after leave(): the rim holds */
             return 1;
         }
         return 0;
@@ -543,12 +747,11 @@ static int home_input(const nos_input *in)
         if (H.grabbed && !H.dragging) pager_release(0);
         H.grabbed = 0;
         H.holding = 0;
-        if (H.prs == 1) H.prs = 0;
-        widget_press(0, in->x, in->y, 0);
+        pr_release(0);
         return 1;
     case IN_BTN:                           /* dispatched on release, at once */
         H.holding = 0;
-        H.prs = 0;
+        pr_cancel();
         if (at_face()) nos_open(&scr_launcher, GFX_W, UI_CY);
         else { nos_feedback(FB_BACK); go_face(); }
         return 1;

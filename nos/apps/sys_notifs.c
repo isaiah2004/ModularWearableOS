@@ -4,11 +4,13 @@
  * title, two lines of body). Momentum scroll; a downward drag at the top belongs to the
  * engine and closes the sheet with the finger. Swipe a card left to dismiss: it follows
  * the finger, flies out with the release velocity, and the cards below close the gap on
- * a critically damped spring. "CLEAR ALL" ends the list. Empty: a calm dot bell inside a
- * ring of dots, "No notifications", [ ALL CAUGHT UP ]. Everything is marked read on entry.
+ * a critically damped spring. "CLEAR ALL" ends the list; the cards (and the button) fly
+ * out top first. Empty: the standard ui_absent ("No notifications", [ ALL CAUGHT UP ], or
+ * "Phone not connected" with how to pair). Everything is marked read on entry.
  *
- * Detail (TX_PUSH): full wrapped title and body, scrolling, with OPEN ON PHONE / DISMISS.
- * The detail tracks its notification by id, so new arrivals shifting indexes are fine. */
+ * Detail (TX_PUSH): full wrapped title and body, scrolling, with the OPEN / DISMISS pair
+ * in the thumb zone (or after the body when it scrolls). The detail tracks its
+ * notification by id, so new arrivals shifting indexes are fine. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -23,10 +25,10 @@
 
 #define CARD_W   344.0f
 #define CARD_X   (UI_CX - CARD_W / 2)
-#define CARD_R   30.0f
+#define CARD_R   40.0f           /* section 8 cards: r 40, C_SURF2 */
 #define GAP      12.0f
 #define TOP_Y    100.0f
-#define CLEAR_H  64.0f
+#define CLEAR_H  ((float)UI_BTN_H)
 
 /* Dim a neutral grey without the RGB565 rounding casts (keeps G = 2R, B = R). */
 static uint16_t gdim(uint16_t c, float k)
@@ -50,6 +52,26 @@ static void ago(char *b, int n, uint32_t t, uint64_t now)
 }
 
 static int body_lh(void) { return UI_F_BODY->line_height + 2; }
+
+/* Section 8 pressed state: hidden for the first 100 ms (a scroll or swipe passes the slop
+ * first and cancels it silently), then on until release; a quick tap still shows it for
+ * 3 frames. */
+typedef struct { int id, down; float t0, until; } press_t;
+static void press_down(press_t *p, int id) { p->id = id; p->down = id >= 0; p->t0 = nos_t; p->until = 0; }
+static void press_cancel(press_t *p) { p->id = -1; p->down = 0; p->until = 0; }
+static void press_up(press_t *p)
+{
+    if (!p->down) return;
+    p->down = 0;
+    float vis = p->t0 + 0.09f;                   /* when it became visible */
+    p->until = nos_t < vis ? nos_t + 0.09f : vis + 0.10f;
+}
+static int press_on(const press_t *p, int id)
+{
+    if (id < 0 || p->id != id) return 0;
+    return p->down ? nos_t - p->t0 >= 0.09f : nos_t < p->until;
+}
+#define ID_CLEAR 1000
 
 /* count wrapped lines without drawing: same breaking as ui_text_wrap */
 static int count_lines(const font_t *f, const char *s, int max_w)
@@ -93,7 +115,8 @@ static struct {
     mscroll sc;
     float grab_dy;
     int n;
-    int pressed, was_moving, dragging;
+    press_t pr;               /* card index, or ID_CLEAR */
+    int was_moving, dragging;
     int sw, sw_live, sw_armed; /* card being swiped, finger on it, past the threshold */
     float sw_x, sw_dx0;
     mspring out;              /* swiped card x while flying out / returning */
@@ -104,9 +127,9 @@ static struct {
     int gap_i;
     float t_enter, t_empty;
     int clearing; float t_clear; int clear_n;   /* CLEAR ALL: cards leave top first */
+    int clear_k;              /* the button's place in that stagger, -1 off the glass */
     uint64_t now;
     int phone;
-    int clear_pressed;
     unsigned sig;             /* ids signature the heights were computed for */
     int cnt_from, cnt_to; float cnt_t;   /* header count morph */
 } N;
@@ -171,7 +194,7 @@ static void n_enter(void)
     if (nos_revealed()) {                  /* back from the detail: keep everything */
         N.n = svc_notif_count();
         update_bounds();
-        N.pressed = -1; N.sw = -1; N.sw_live = 0; N.dragging = 0; N.clear_pressed = 0;
+        press_cancel(&N.pr); N.sw = -1; N.sw_live = 0; N.dragging = 0;
         svc_notif_mark_all_read();
         return;
     }
@@ -179,12 +202,12 @@ static void n_enter(void)
     msc_init(&N.sc, 0, 0, 0);
     layout_cards(1);
     update_bounds();
-    N.pressed = -1; N.sw = -1; N.out_i = -1; N.gap_i = -1; N.fly = 0; N.clearing = 0;
-    N.sw_live = 0; N.dragging = 0; N.clear_pressed = 0;
+    press_cancel(&N.pr); N.sw = -1; N.out_i = -1; N.gap_i = -1; N.fly = 0; N.clearing = 0;
+    N.sw_live = 0; N.dragging = 0;
     msp_init(&N.out, 0, SPRING_SNAPPY);
     msp_init(&N.gap, 0, SPRING_PAGE);
     /* pulled in by the finger: the sheet reveals its content as it moves, no build-in */
-    N.t_enter = N.t_empty = nos_entered_by_finger() ? nos_t - 2.0f : nos_t;
+    N.t_enter = N.t_empty = nos_entered_by_finger() ? nos_t - 2.0f : nos_enter_t();
     N.cnt_from = N.cnt_to = N.n; N.cnt_t = -10;
     svc_notif_mark_all_read();
 }
@@ -205,7 +228,7 @@ static void n_tick(float dt)
         if (n == 0 && N.n) N.t_empty = nos_t;
         if (n > N.n && N.out_i < 0) N.gap_i = -1;      /* arrivals: no stale gap */
         N.n = n;
-        if (N.pressed >= n) N.pressed = -1;
+        if (N.pr.id >= n && N.pr.id != ID_CLEAR) press_cancel(&N.pr);
     }
     update_bounds();
     if (N.cnt_to != N.n) { N.cnt_from = N.cnt_to; N.cnt_to = N.n; N.cnt_t = nos_t; }
@@ -252,7 +275,7 @@ static float card_fade(int i, float y, float h)
 static void draw_card(gfx_fb *fb, const svc_notif *n, float x, float y, float h, float fade, int pressed)
 {
     if (!n || fade <= 0) return;
-    ui_rrect(fb, x, y, CARD_W, h, CARD_R, gdim(pressed ? C_LINE2 : C_SURF, fade));
+    ui_rrect(fb, x, y, CARD_W, h, CARD_R, gdim(pressed ? C_LINE2 : C_SURF2, fade));
     int ix = (int)x + 36, hy = (int)y + 38;
     dot_icon(fb, n->icon ? n->icon : DOT_ICON_BELL, (float)ix, (float)(hy - 6), 2.3f, 1.85f, gdim(C_WHITE, fade));
     ui_label(fb, ix + 22, hy, n->app[0] ? n->app : "Phone", gdim(C_SEC, fade), UI_LEFT);
@@ -266,20 +289,21 @@ static void draw_card(gfx_fb *fb, const svc_notif *n, float x, float y, float h,
         ui_text_wrap(fb, UI_F_BODY, tx, tb + body_lh(), TEXT_W, body_lh(), 2, n->body, gdim(C_SEC, fade), UI_LEFT);
 }
 
+/* the standard empty / phone-absent screen (section 8); the state line follows the text */
 static void draw_empty(gfx_fb *fb)
 {
     float p = m_clamp((nos_t - N.t_empty) / 0.45f, 0, 1);
-    float q = floorf(p * 32.0f + 0.5f) / 32.0f;
-    dot_ring(fb, UI_CX, 178, 74, 28, 5.0f, 0, 28.0f * q, C_LINE2, 0);
-    dot_icon_anim(fb, DOT_ICON_BELL, UI_CX, 178, 6.0f, 4.8f, C_PRI, p, DOT_REVEAL_CENTER);
-    /* the words follow the bell (~4 frames later) */
-    float k = floorf(m_clamp((p - 0.3f) / 0.35f, 0, 1) * 8.0f + 0.5f) / 8.0f;
-    if (k <= 0) return;
-    ui_text(fb, UI_F_BODY, UI_CX, 296, "No notifications", gdim(C_PRI, k), UI_CENTER, 0);
-    ui_state(fb, UI_CX, 336, N.phone ? "ALL CAUGHT UP" : "PHONE NOT CONNECTED", gdim(C_SEC, k));
+    if (!N.phone) {
+        ui_absent(fb, DOT_ICON_BT, "Phone not connected", "Pair in Gadgetbridge as Bangle.js NOS", NULL, p);
+        return;
+    }
+    ui_absent(fb, DOT_ICON_BELL, "No notifications", NULL, NULL, p);
+    float k = floorf(m_clamp((p - 0.3f) / 0.7f, 0, 1) * 8.0f + 0.5f) / 8.0f;
+    if (k > 0) ui_state(fb, UI_CX, 340, "ALL CAUGHT UP", gdim(C_SEC, k));
 }
 
-/* header: the count in dot digits (they morph when it changes) + NOTIFICATIONS */
+/* header: the count in section 8 secondary numerals (5x7, pitch 3, 21 px; they morph
+ * when it changes) + NOTIFICATIONS, sitting on the label's baseline */
 static void draw_header(gfx_fb *fb, float off)
 {
     float k = 1.0f - m_clamp(off / 60.0f, 0, 1);
@@ -290,10 +314,10 @@ static void draw_header(gfx_fb *fb, float off)
     char a[8], b[8];
     snprintf(a, sizeof a, "%d", N.cnt_from);
     snprintf(b, sizeof b, "%d", N.cnt_to);
-    dot_style st = { DOT_FONT_5X7, 2.2f, 1.8f, gdim(C_PRI, k), 0, 1, 1 };
+    dot_style st = { DOT_FONT_5X7, 3.0f, 2.4f, gdim(C_PRI, k), 0, 1, 1 };
     int dw = dot_text_width(&st, b), lw = ui_text_width(UI_F_LABEL, word, 2);
     int x0 = UI_CX - (dw + 12 + lw) / 2;
-    float top = (float)(y - 15);
+    float top = (float)(y - 20);
     float mp = m_clamp((nos_t - N.cnt_t) / 0.25f, 0, 1);
     if (strlen(a) == strlen(b) && mp < 1) dot_text_morph(fb, &st, (float)x0, top, a, b, 0, mp);
     else dot_text(fb, &st, (float)x0, top, b);
@@ -319,7 +343,7 @@ static void n_draw(gfx_fb *fb)
             if (sx < -30) {                     /* what letting go will do: dismiss */
                 float r = 22.0f * m_clamp((-sx - 40) / 70.0f, 0, 1);
                 r = floorf(r * 0.5f + 0.5f) * 2.0f;
-                int armed = N.sw_armed || N.out_i == i;
+                int armed = N.sw_armed || (N.out_i == i && N.out.target < 0);   /* not springing back */
                 float cy = y + h * 0.5f;
                 if (r > 0) {
                     ui_circle(fb, 380, cy, r, armed ? C_WHITE : C_SURF2);
@@ -330,7 +354,7 @@ static void n_draw(gfx_fb *fb)
             if (sx < 0) fade *= 1.0f - 0.6f * m_clamp(-sx / CARD_W, 0, 1);
             fade = floorf(fade * 16.0f + 0.5f) / 16.0f;
         }
-        draw_card(fb, svc_notif_get(i), x, y, h, fade, i == N.pressed);
+        draw_card(fb, svc_notif_get(i), x, y, h, fade, press_on(&N.pr, i));
     }
     if (N.fly && s_fly) {                      /* the dismissed card finishing its exit */
         float fx = floorf(CARD_X + N.out.x + 0.5f);
@@ -339,12 +363,15 @@ static void n_draw(gfx_fb *fb)
         float fade = (1.0f - 0.6f * m_clamp(-N.out.x / CARD_W, 0, 1)) * card_fade(0, fy, h);
         draw_card(fb, s_fly, fx, fy, h, floorf(fade * 16.0f + 0.5f) / 16.0f, 0);
     }
-    /* CLEAR ALL closes the list */
+    /* CLEAR ALL closes the list; while clearing it leaves with the cards, last */
     float cy = TOP_Y + list_h() + 20 + CLEAR_H * 0.5f - off;
     if (N.gap_i >= 0) cy += N.gap.x;
-    if (N.n && !N.clearing && cy > -CLEAR_H && cy < GFX_H + CLEAR_H) {
+    if (N.n && cy > -CLEAR_H && cy < GFX_H + CLEAR_H && (!N.clearing || N.clear_k >= 0)) {
         float e = m_clamp((nos_t - N.t_enter - N.n * (2.0f / NOS_FPS)) / 0.2f, 0, 1);
-        if (e >= 1) ui_button(fb, UI_CX, floorf(cy + 0.5f), 200, CLEAR_H, "CLEAR ALL", BTN_SECONDARY, N.clear_pressed);
+        float bx = UI_CX + (N.clearing ? floorf(clear_x(N.clear_k) + 0.5f) : 0);
+        if (e >= 1 && bx > -UI_BTN_W)
+            ui_button(fb, bx, floorf(cy + 0.5f), UI_BTN_W, CLEAR_H, "CLEAR ALL", BTN_SECONDARY,
+                      press_on(&N.pr, ID_CLEAR));
     }
 }
 
@@ -362,7 +389,7 @@ static int clear_at(int x, int y)
 {
     if (!N.n || N.clearing) return 0;
     float cy = TOP_Y + list_h() + 20 + CLEAR_H * 0.5f - floorf(N.sc.x + 0.5f);
-    return fabsf(y - cy) < CLEAR_H * 0.5f + 8 && fabsf((float)(x - UI_CX)) < 110;
+    return fabsf(y - cy) < CLEAR_H * 0.5f + 4 && fabsf((float)(x - UI_CX)) < UI_BTN_W * 0.5f + 10;
 }
 
 static void start_clear(void)
@@ -376,6 +403,8 @@ static void start_clear(void)
         if (y > GFX_H) break;
         vis++;
     }
+    float by = TOP_Y + list_h() + 20 + CLEAR_H * 0.5f - off;
+    N.clear_k = by - CLEAR_H * 0.5f < GFX_H ? vis++ : -1;    /* the button goes last */
     N.clear_n = vis > 0 ? vis : 1;
     N.clearing = 1;
     N.t_clear = nos_t;
@@ -388,20 +417,18 @@ static int n_input(const nos_input *in)
     case IN_DOWN:
         N.was_moving = N.sc.moving && fabsf(N.sc.v) > 60.0f;
         msc_grab(&N.sc);
-        N.pressed = N.was_moving ? -1 : card_at(in->x, in->y);
-        N.clear_pressed = !N.was_moving && clear_at(in->x, in->y);
+        press_down(&N.pr, N.was_moving ? -1 : clear_at(in->x, in->y) ? ID_CLEAR : card_at(in->x, in->y));
         return 1;
     case IN_DRAG_START:
-        N.clear_pressed = 0;
         if (in->axis == AXIS_X) {
-            int i = N.pressed >= 0 ? N.pressed : card_at(in->x0, in->y0);
-            N.pressed = -1;
+            int i = N.pr.down && N.pr.id >= 0 && N.pr.id != ID_CLEAR ? N.pr.id : card_at(in->x0, in->y0);
+            press_cancel(&N.pr);
             msc_release(&N.sc, 0);
             if (i < 0 || N.out_i >= 0 || N.fly) return 0;
             N.sw = i; N.sw_live = 1; N.sw_x = 0; N.sw_dx0 = in->dx; N.sw_armed = 0;
             return 1;
         }
-        N.pressed = -1;
+        press_cancel(&N.pr);
         if (in->dy > 0 && N.sc.x <= 0.5f) { msc_release(&N.sc, 0); return 0; }   /* engine closes */
         N.dragging = 1;
         N.grab_dy = in->dy;
@@ -447,7 +474,7 @@ static int n_input(const nos_input *in)
         int was = N.was_moving;
         if (N.sc.dragging) msc_release(&N.sc, 0);
         int i = card_at(in->x, in->y), clr = clear_at(in->x, in->y);
-        N.pressed = -1; N.clear_pressed = 0;
+        press_up(&N.pr);
         if (was) return 1;
         if (clr) { nos_feedback(FB_SUCCESS); start_clear(); }
         else if (i >= 0) { nos_feedback(FB_TAP); sys_notif_open(i); }
@@ -455,7 +482,7 @@ static int n_input(const nos_input *in)
     }
     case IN_UP:
         if (N.sc.dragging) msc_release(&N.sc, 0);   /* a fling was already released */
-        N.pressed = -1; N.clear_pressed = 0;
+        press_up(&N.pr);
         return 1;
     default:
         return 0;
@@ -470,7 +497,8 @@ static struct {
     int idx;                  /* its current index, -1 gone */
     mscroll sc;
     float grab_dy;
-    int dragging, was_moving, pressed;   /* pressed: 1 open, 2 dismiss */
+    int dragging, was_moving;
+    press_t pr;               /* 1 open, 2 dismiss */
     float t_enter;
     int title_lines, body_lines;
     uint64_t now;
@@ -478,16 +506,19 @@ static struct {
 } D;
 static svc_notif *s_dn;       /* PSRAM copy: still drawable while the detail pops away */
 
-#define D_TOP 104.0f
+#define D_HEAD_Y 94.0f        /* header baseline: at x 68 its icon sits 7 px inside the glass */
+#define D_TOP 132.0f
 
 static int title_lh(void) { return UI_F_TITLE->line_height; }
 static float d_body_y(void) { return D_TOP + UI_F_TITLE->ascent + (D.title_lines - 1) * title_lh() + 22 + UI_F_BODY->ascent; }
+/* the action pair's centre: the thumb-zone row (section 8), or after the body when the
+ * body runs past it (then the end of the scroll brings it up to the same row) */
 static float d_btn_y(void)
 {
-    float y = d_body_y() + (D.body_lines - 1) * body_lh() + 64;
-    return y < 300.0f ? 300.0f : y;               /* short messages: actions in the thumb zone */
+    float y = d_body_y() + (D.body_lines - 1) * body_lh() + 30 + UI_BTN_H * 0.5f;
+    return y < (float)UI_BTN_Y ? (float)UI_BTN_Y : y;
 }
-static float d_content(void) { return d_btn_y() + 84 + 34 + 48; }
+static float d_content(void) { return d_btn_y() + (GFX_H - UI_BTN_Y); }
 
 #define D_W 330
 
@@ -518,8 +549,8 @@ void sys_notif_open(int i)
 static void d_enter(void)
 {
     msc_init(&D.sc, 0, 0, 0);
-    D.dragging = 0; D.pressed = 0;
-    D.t_enter = nos_t;
+    D.dragging = 0; press_cancel(&D.pr);
+    D.t_enter = nos_enter_t();
     d_measure();
 }
 
@@ -545,24 +576,23 @@ static void d_draw(gfx_fb *fb)
     float off = floorf(D.sc.x + 0.5f);
     float e = bezier_ease(&EASE_DECEL, m_clamp((nos_t - D.t_enter) / 0.3f, 0, 1));
     float lift = floorf((1 - e) * 16.0f + 0.5f);
-    /* header: icon + app + time, as the card had it */
-    int hy = (int)(64 - off);
+    /* header: icon + app + time, as the card had it, on the text column (x 68): low
+     * enough that the column clears the bezel there */
+    int tx = UI_CX - D_W / 2;
+    int hy = (int)(D_HEAD_Y - off);
     char a[16];
     ago(a, sizeof a, n->t_epoch, D.now);
     char head[48];
     snprintf(head, sizeof head, "%s%s%s", n->app[0] ? n->app : "Phone", a[0] ? "  " : "", a);
-    int lw = ui_text_width(UI_F_LABEL, head, 2);
-    int x0 = UI_CX - (lw + 30) / 2;
-    dot_icon(fb, n->icon ? n->icon : DOT_ICON_BELL, (float)(x0 + 10), (float)(hy - 6), 2.2f, 1.75f, C_WHITE);
-    ui_label(fb, x0 + 30, hy, head, C_SEC, UI_LEFT);
-    int tx = UI_CX - D_W / 2;
+    dot_icon(fb, n->icon ? n->icon : DOT_ICON_BELL, (float)(tx + 10), (float)(hy - 6), 2.2f, 1.75f, C_WHITE);
+    ui_label(fb, tx + 30, hy, head, C_SEC, UI_LEFT);
     float ty = D_TOP + UI_F_TITLE->ascent - off + lift;
     ui_text_wrap(fb, UI_F_TITLE, tx, (int)ty, D_W, title_lh(), 3, n->title[0] ? n->title : n->app, C_PRI, UI_LEFT);
     float by = d_body_y() - off + lift * 1.5f;
     if (n->body[0]) ui_text_wrap(fb, UI_F_BODY, tx, (int)by, D_W, body_lh(), 12, n->body, C_SEC, UI_LEFT);
     float b1 = d_btn_y() - off + lift * 2;
-    ui_button(fb, UI_CX, b1, 260, 68, "OPEN ON PHONE", BTN_SECONDARY, D.pressed == 1);
-    ui_button(fb, UI_CX, b1 + 84, 260, 68, "DISMISS", BTN_GHOST, D.pressed == 2);
+    ui_button(fb, UI_BTN_PAIR_X0, b1, UI_BTN_PAIR_W, UI_BTN_H, "OPEN", BTN_PRIMARY, press_on(&D.pr, 1));
+    ui_button(fb, UI_BTN_PAIR_X1, b1, UI_BTN_PAIR_W, UI_BTN_H, "DISMISS", BTN_SECONDARY, press_on(&D.pr, 2));
     float content = d_content();
     ui_scrollbar(fb, D.sc.x, content, GFX_H, D.sc.moving || D.dragging ? 1.0f : 0.0f);
 }
@@ -570,9 +600,9 @@ static void d_draw(gfx_fb *fb)
 static int d_btn_at(int x, int y)
 {
     float b1 = d_btn_y() - floorf(D.sc.x + 0.5f);
-    if (fabsf((float)(x - UI_CX)) > 140) return 0;
-    if (fabsf(y - b1) < 40) return 1;
-    if (fabsf(y - (b1 + 84)) < 40) return 2;
+    if (fabsf(y - b1) > UI_BTN_H * 0.5f + 4) return 0;
+    if (x >= UI_BTN_PAIR_X0 - UI_BTN_PAIR_W / 2 - 10 && x < UI_CX) return 1;    /* split at the gap */
+    if (x >= UI_CX && x <= UI_BTN_PAIR_X1 + UI_BTN_PAIR_W / 2 + 10) return 2;
     return 0;
 }
 
@@ -582,10 +612,10 @@ static int d_input(const nos_input *in)
     case IN_DOWN:
         D.was_moving = D.sc.moving && fabsf(D.sc.v) > 60.0f;
         msc_grab(&D.sc);
-        D.pressed = D.was_moving ? 0 : d_btn_at(in->x, in->y);
+        press_down(&D.pr, D.was_moving ? -1 : d_btn_at(in->x, in->y) ? d_btn_at(in->x, in->y) : -1);
         return 1;
     case IN_DRAG_START:
-        D.pressed = 0;
+        press_cancel(&D.pr);
         if (in->axis != AXIS_Y) { msc_release(&D.sc, 0); return 0; }
         D.dragging = 1;
         D.grab_dy = in->dy;
@@ -602,11 +632,11 @@ static int d_input(const nos_input *in)
     case IN_TAP: {
         int b = d_btn_at(in->x, in->y), was = D.was_moving;
         msc_release(&D.sc, 0);
-        D.pressed = 0;
+        press_up(&D.pr);
         if (was || D.idx < 0) return 1;
         if (b == 1) {
-            if (D.phone) { nos_feedback(FB_SUCCESS); svc_notif_open_on_phone(D.idx); nos_toast("Opened on phone"); }
-            else { nos_feedback(FB_ERROR); nos_toast("Phone not connected"); }
+            if (D.phone) { nos_feedback(FB_SUCCESS); svc_notif_open_on_phone(D.idx); nos_toast("Opened"); }
+            else { nos_feedback(FB_ERROR); nos_toast("No phone"); }
         } else if (b == 2) {
             nos_feedback(FB_TAP);
             /* the list closes the card's slot while the detail slides away */
@@ -619,7 +649,7 @@ static int d_input(const nos_input *in)
     }
     case IN_UP:
         if (D.sc.dragging) msc_release(&D.sc, 0);   /* a fling was already released */
-        D.pressed = 0;
+        press_up(&D.pr);
         return 1;
     default:
         return 0;
