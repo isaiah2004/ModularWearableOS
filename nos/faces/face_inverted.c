@@ -67,8 +67,8 @@ static void draw_aod(gfx_fb *fb, const face_ctx *c)
     dot_text_a(fb, &st, UI_CX + dx, Y_TIME + dy, S.tm.to, 1);
     st.dot = P * 0.8f - 3.5f; st.color = C_BG;          /* hollow the dots */
     dot_text_a(fb, &st, UI_CX + dx, Y_TIME + dy, S.tm.to, 1);
-    ui_label(fb, UI_CX + (int)dx, 140 + (int)dy, S.date.to, C_DIS, UI_CENTER);
-    fk_status(fb, c, UI_CX + (int)dx, 166 + (int)dy, C_DIS, UI_CENTER);   /* critical only */
+    ui_label(fb, UI_CX + (int)dx, 132 + (int)dy, S.date.to, C_DIS, UI_CENTER);
+    fk_status(fb, c, UI_CX + (int)dx, 158 + (int)dy, C_DIS, UI_CENTER);   /* critical only */
     fk_unread(fb, c, C_SEC, C_BG, dx, dy + 24.0f);
 }
 
@@ -104,8 +104,8 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     float la = opening ? steps4(after + 0.25f) * (open >= 1.0f) : 1.0f;
     if (la > 0.0f) {
         uint16_t lc = ui_mix(C_WHITE, C_LABW, la);
-        fk_xfade_label(fb, &S.date, c->t, UI_CX, 140, lc, UI_CENTER);
-        fk_status(fb, c, UI_CX, 166, lc, UI_CENTER);
+        fk_xfade_label(fb, &S.date, c->t, UI_CX, 132, lc, UI_CENTER);
+        fk_status(fb, c, UI_CX, 158, lc, UI_CENTER);
         if (S.steps >= 10000) snprintf(b, sizeof b, "%d.%dK STEPS", S.steps / 1000, (S.steps % 1000) / 100);
         else snprintf(b, sizeof b, "%d STEPS", S.steps);
         ui_label(fb, UI_CX, 344, b, lc, UI_CENTER);
@@ -114,7 +114,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     float rad = opening ? 5.5f * steps4(after) : 5.5f;
     if (rad > 0.25f) {
         float as = ((float)c->dt.second + (float)c->dt.millis * 0.001f) / 60.0f * 6.2831853f;
-        gfx_fill_circle(fb, UI_CX + fk_sin(as) * R_RING, UI_CY - fk_cos(as) * R_RING, rad, C_RED);
+        gfx_fill_circle(fb, UI_CX + fk_sin(as) * R_RING, UI_CY - fk_cos(as) * R_RING, rad, fk_red(c, C_INK));
     }
     /* unread, y 48 (clear of the second dot): through the opening it is a mid-grey dot
      * like the digits (on black until the disc covers it), darkening with them */

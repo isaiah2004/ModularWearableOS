@@ -33,12 +33,14 @@ static struct {
     int bpm, steps, batt, charging;
     int wx; float temp;
     fk_wake w;
+    uint16_t red;                       /* C_RED, easing to C_PRI while recording */
 } S;
 
 static void enter(void) { S.init = 0; }
 
 static void tick(const face_ctx *c, float dt)
 {
+    S.red = fk_red(c, C_PRI);
     fk_aod_update(c);
     fk_wake_tick(&S.w, c);
     fk_unread_tick(c);
@@ -96,7 +98,7 @@ static int row_text(int k, int n, char b[16], const char **labp, uint16_t *vcolp
     case 0:
         lab = "HR";
         if (S.bpm > 0) snprintf(b, 16, "%d", S.bpm); else snprintf(b, 16, "--");
-        if (hr_alarm()) vcol = C_RED;
+        if (hr_alarm()) vcol = S.red;
         break;
     case 1:
         lab = "STP";
@@ -110,7 +112,7 @@ static int row_text(int k, int n, char b[16], const char **labp, uint16_t *vcolp
     default:
         if (S.batt > 0 || S.charging) snprintf(b, 16, "%d", S.batt);
         else snprintf(b, 16, "--");
-        if (bat_alarm()) vcol = hr_alarm() ? C_WHITE : C_RED;
+        if (bat_alarm()) vcol = hr_alarm() ? C_WHITE : S.red;
         break;
     }
     *labp = lab; *vcolp = vcol;
@@ -163,7 +165,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         } else
             for (int r = 0; r < n; r++) data_row(fb, r, n, k, c, dx, dy);
         /* grey in AOD, reaching its rest colour (red unless an alarm owns the red) */
-        fk_unread(fb, c, ui_mix(C_SEC, (hr_alarm() || bat_alarm()) ? C_PRI : C_RED, k), C_BG, dx, dy);
+        fk_unread(fb, c, ui_mix(C_SEC, (hr_alarm() || bat_alarm()) ? C_PRI : fk_red(c, C_PRI), k), C_BG, dx, dy);
         return;
     }
     float e = fk_build(&S.w, c);
@@ -186,7 +188,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         }
         if (a > 0.0f) data_row(fb, r, n, a, c, 0, 0);
     }
-    fk_unread(fb, c, (hr_alarm() || bat_alarm()) ? C_PRI : C_RED, C_BG, 0, 0);
+    fk_unread(fb, c, (hr_alarm() || bat_alarm()) ? C_PRI : fk_red(c, C_PRI), C_BG, 0, 0);
 }
 
 /* press rect of the complication under (x, y); returns its screen or 0 */

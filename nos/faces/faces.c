@@ -107,7 +107,7 @@ void fk_morph_settle(fk_morph *m)
 }
 
 /* ---- label cross-fade ------------------------------------------------------------------ */
-#define XF_S 0.33f
+#define XF_HZ 30.0f                         /* one step per frame, like the time morphs */
 void fk_xfade_tick(fk_xfade *x, const char *now, float t, int snap)
 {
     if (!x->init || snap) {
@@ -124,7 +124,8 @@ void fk_xfade_tick(fk_xfade *x, const char *now, float t, int snap)
 }
 void fk_xfade_k(const fk_xfade *x, float t, float *a_from, float *a_to)
 {
-    int st = (int)(m_clamp((t - x->t0) / XF_S, 0, 1) * 5.0f);
+    float n = (t - x->t0) * XF_HZ + 0.5f;           /* frames since the change, rounded */
+    int st = n < 0.0f ? 0 : n > 5.0f ? 5 : (int)n;
     static const float kf[5] = { 2.0f / 3.0f, 1.0f / 3.0f, 0, 0, 0 };
     static const float kt[5] = { 0, 0, 1.0f / 3.0f, 2.0f / 3.0f, 1.0f };
     if (st >= 5 || !strcmp(x->from, x->to)) { *a_from = 0; *a_to = 1.0f; return; }

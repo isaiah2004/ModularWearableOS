@@ -132,12 +132,12 @@ static void tick_dot(int i, const void *vc, float *x, float *y, float *d, uint16
 
 /* the date (and the battery under it) in window `slot` at opacity a; reports where the
  * unread dot goes: 14 px ahead of the date, on its x-height line */
-static void date_at(gfx_fb *fb, const face_ctx *c, int slot, float a, float dx, float dy,
+static void date_at(gfx_fb *fb, const face_ctx *c, int slot, float a, uint16_t dcol, float dx, float dy,
                     float ast, uint16_t stcol, float *ux, float *uy)
 {
     int x = k_sx[slot] + (int)dx, y = k_sy[slot] + (int)dy, al = k_sal[slot];
     int w = ui_text_width(UI_F_LABEL, S.date.to, 2);
-    if (a > 0.0f) w = fk_xfade_label(fb, &S.date, c->t, x, y, ui_dim(C_SEC, a), al);
+    if (a > 0.0f) w = fk_xfade_label(fb, &S.date, c->t, x, y, a >= 1.0f ? dcol : ui_dim(dcol, a), al);
     if (ast > 0.0f) fk_status(fb, c, x, y + 24, ui_dim(stcol, ast), al);
     int xl = al == UI_RIGHT ? x - w : al == UI_CENTER ? x - w / 2 : x;
     *ux = (float)(xl - 14) - UI_CX;
@@ -163,21 +163,22 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         am -= (1.0f - q) * (TWO_PI / 60.0f);
         ah -= (1.0f - q) * (TWO_PI / 720.0f);
     }
-    /* the date window: absent in AOD (its unread dot already sits there), fading up over
-     * the second half of a wake, cross-fading when the window moves at a minute change */
+    /* the date window: C_DIS in AOD (so the unread dot beside it has a reason to be
+     * there), brightening with the wake, cross-fading when the window moves */
     float kl = c->aod ? 0.0f : m_clamp((k - 0.5f) / 0.5f, 0, 1);
     float la = e >= 1.0f ? 1.0f : (float)(int)(fk_ease(e) * 4.0f) / 4.0f;
     face_ctx ca = *c; ca.aod = 1;
     int st_aod = fk_status_shown(&ca);                 /* critical battery: shown in AOD too */
     float ast = st_aod ? la : kl * la;
     uint16_t stcol = c->aod ? C_DIS : st_aod ? ui_mix(C_DIS, C_SEC, k) : C_SEC;
+    uint16_t dcol = c->aod ? C_DIS : ui_mix(C_DIS, C_SEC, k);
     int slot = S.slot < 0 ? 0 : S.slot;
     float q = m_clamp((c->t - S.slot_t0) / 0.2f, 0, 1);
     float qi = q >= 1.0f ? 1.0f : (float)(int)(q * 4.0f + 1.0f) / 4.0f;   /* 4 steps */
     float ux, uy, ox = 0, oy = 0;
     if (qi < 1.0f && S.slot_from >= 0)
-        date_at(fb, c, S.slot_from, kl * la * (1.0f - qi), dx, dy, ast * (1.0f - qi), stcol, &ox, &oy);
-    date_at(fb, c, slot, kl * la * qi, dx, dy, ast * qi, stcol, &ux, &uy);
+        date_at(fb, c, S.slot_from, la * (1.0f - qi), dcol, dx, dy, ast * (1.0f - qi), stcol, &ox, &oy);
+    date_at(fb, c, slot, la * qi, dcol, dx, dy, ast * qi, stcol, &ux, &uy);
 
     /* hands: AOD outlines (2 px) fill in during the wake morph */
     uint16_t hc = ui_mix(C_SEC, C_WHITE, k);
@@ -192,7 +193,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         float r = 6.0f * kl * (e < 1.0f ? fk_stagger(e, 0.8f, 0.2f) : 1.0f);
         if (r > 0.25f) {
             float as = ((float)c->dt.second + (float)c->dt.millis * 0.001f) / 60.0f * TWO_PI;
-            gfx_fill_circle(fb, UI_CX + fk_sin(as) * R_SEC, UI_CY - fk_cos(as) * R_SEC, r, C_RED);
+            gfx_fill_circle(fb, UI_CX + fk_sin(as) * R_SEC, UI_CY - fk_cos(as) * R_SEC, r, fk_red(c, C_PRI));
         }
     }
     if (qi < 1.0f && S.slot_from >= 0 && !c->aod) {

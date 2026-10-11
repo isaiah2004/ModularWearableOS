@@ -61,11 +61,13 @@ static void seg_geom(int ring, int i, seg_geo *g)
     g->nx1 = -fk_cos(a1); g->ny1 = -fk_sin(a1);
 }
 
+static uint16_t s_red;                      /* C_RED, easing to C_PRI while recording (tick) */
+
 static uint16_t seg_color(int ring, int i, float fill)
 {
     /* a second lap continues in red on the steps ring only (one red element); the
      * other rings simply stay full white past their goal */
-    if (ring == 0 && fill >= (float)NSEG + (float)i + 1.0f) return C_RED;
+    if (ring == 0 && fill >= (float)NSEG + (float)i + 1.0f) return s_red;
     if (fill >= (float)i + 1.0f) return C_WHITE;
     return COL_OFF;
 }
@@ -180,6 +182,7 @@ static void enter(void)
 
 static void tick(const face_ctx *c, float dt)
 {
+    s_red = fk_red(c, C_PRI);
     fk_aod_update(c);
     fk_wake_tick(&s_w, c);
     fk_unread_tick(c);
@@ -332,7 +335,7 @@ static void blit_rings(gfx_fb *fb, float a)
         float sh = s_shown[r];
         float lap1 = sh > NSEG ? NSEG : sh;
         fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)lap1, ui_dim(C_WHITE, a), ui_dim(COL_OFF, a));
-        if (sh > NSEG) fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)(sh - NSEG), ui_dim(C_RED, a), 0);
+        if (sh > NSEG) fk_ring(fb, UI_CX, UI_CY, k_r[r], NSEG, 6.0f, (int)(sh - NSEG), ui_dim(s_red, a), 0);
     }
 }
 
@@ -343,7 +346,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     fk_wake_off(&s_w, c, &dx, &dy);
     float k = fk_wake_k(&s_w, c);
     float e = fk_build(&s_w, c);
-    uint16_t unread_rest = red_used() ? C_PRI : C_RED;
+    uint16_t unread_rest = red_used() ? C_PRI : fk_red(c, C_PRI);
     if (c->aod || k < 1.0f) {
         /* AOD: the steps ring as small dots for the lit segments only, time outlined.
          * Wake (6 frames): the dots grow and the time fills in; from the half-way frame
@@ -355,7 +358,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         int lit = (int)s_target[0];
         if (lit > NSEG) lit = NSEG;
         aod_ctx A = { dx, dy, 3.0f + 3.0f * kd, lit, kr > 0.0f ? (int)s_target[0] - NSEG : 0,
-                      ui_mix(C_DIS, C_WHITE, kd), ui_mix(C_WHITE, C_RED, kr) };
+                      ui_mix(C_DIS, C_WHITE, kd), ui_mix(C_WHITE, s_red, kr) };
         if (lit > 0) fk_dots(fb, NSEG, 8, step_dot, &A);
         draw_time(fb, c, k, dx, dy);
         /* the date row: the battery holds it in AOD only when critical, awake from 20 % */

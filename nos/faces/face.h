@@ -16,6 +16,7 @@ typedef struct {
     int  bpm;               /* last heart rate, 0 none */
     int  battery, charging;
     int  unread;            /* unread notifications */
+    float rec;              /* 0..1 recording (4-step ramp on start/stop only; held through AOD and wake): red accents yield to C_PRI */
     int  weather_valid; float temp_c; int wx_cond;
     int  next_alarm_min;    /* minutes to next alarm, -1 none */
     float t;                /* nos_t */

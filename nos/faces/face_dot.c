@@ -92,7 +92,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     }
     /* seconds: one red lattice dot between HH and MM */
     float d = e < 1.0f ? D * fk_stagger(e, 0.85f, 0.15f) : D * fk_blink(c->dt.millis);
-    if (d > 0.5f) dot_disc(fb, UI_CX, UI_CY, d, C_RED);
+    if (d > 0.5f) dot_disc(fb, UI_CX, UI_CY, d, fk_red(c, C_PRI));
     fk_unread(fb, c, C_PRI, C_BG, 0, 0);
 }
 

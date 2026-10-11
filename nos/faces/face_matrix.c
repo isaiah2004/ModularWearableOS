@@ -346,7 +346,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         }
     }
     /* the unread dot replaces the top centre cell (row 0 sits at y = 21.8) */
-    fk_unread(fb, c, ui_mix(C_SEC, C_RED, k), C_BG, dx, dy - 2.2f);
+    fk_unread(fb, c, ui_mix(C_SEC, fk_red(c, C_PRI), k), C_BG, dx, dy - 2.2f);
 }
 
 static const struct nos_screen *tap(int x, int y) { return 0; }

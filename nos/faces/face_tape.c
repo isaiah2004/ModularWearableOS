@@ -190,13 +190,18 @@ static void draw(gfx_fb *fb, const face_ctx *c)
      * pair stays centred; it lights with the shared blink envelope */
     int w = ui_text_width(UI_F_LABEL, S.date.to, 2);
     int lx = UI_CX - (w + 16) / 2;                       /* lamp 9 px + 7 px gap, then text */
-    fk_xfade_label(fb, &S.date, c->t, lx + 16 + (int)dx, 96 + (int)dy,
+    /* AOD has no lamp: the date centres alone, and slides 8 px right as the wake brings
+     * the lamp up (it grows over the wake's second half) */
+    float kw = c->aod ? 0.0f : k;
+    fk_xfade_label(fb, &S.date, c->t, lx + 8 + (int)(8.0f * kw + 0.5f) + (int)dx, 96 + (int)dy,
                    c->aod ? C_DIS : ui_mix(C_DIS, C_SEC, k), UI_LEFT);
-    if (!c->aod && k >= 1.0f) {
-        float g = fk_stagger(e, 0.8f, 0.2f);
-        dot_disc(fb, (float)lx + 4.5f, 90.0f, 9.0f * g, C_SURF2);
+    float kl = m_clamp((kw - 0.5f) / 0.5f, 0, 1);
+    if (kl > 0.0f) {
+        float g = fk_stagger(e, 0.8f, 0.2f) * kl;
+        float x = (float)lx + 4.5f + dx, y = 90.0f + dy;
+        dot_disc(fb, x, y, 9.0f * g, C_SURF2);
         float d = 9.0f * fk_blink(c->dt.millis) * g;
-        if (d > 0.5f) dot_disc(fb, (float)lx + 4.5f, 90.0f, d, C_RED);
+        if (d > 0.5f) dot_disc(fb, x, y, d, C_RED);     /* the REC light: stays red */
     }
     /* battery: a critical one shows in AOD too and brightens; otherwise it fades up */
     face_ctx ca = *c; ca.aod = 1;

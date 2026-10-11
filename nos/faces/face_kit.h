@@ -90,13 +90,27 @@ void  fk_wake_off(const fk_wake *w, const face_ctx *c, float *dx, float *dy);
  * fk_unread_tick() in tick (fades in/out in 4 colour steps); fk_unread() last in draw.
  * 8 px, like the widget pages' dot. col = C_RED unless the face shows another red at the
  * same time (at most one red), then C_PRI (C_INK on white faces): DOT, GLYPH, INVERTED,
- * LIFE and TAPE always; SEGMENT and SPLIT only while their red state is up.
+ * LIFE and TAPE always; SEGMENT and SPLIT only while their red state is up; every face
+ * while recording (pass fk_red(c, C_PRI) as the red: it rests white under the REC chip).
  * In AOD it is a 6 px C_SEC dot. backing = colour of the disc behind it. */
 void  fk_unread_tick(const face_ctx *c);
 void  fk_unread(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy);
 /* same with an extra opacity a (0..1) for faces fading it with their own motion */
 void  fk_unread_a(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy, float a);
 float fk_unread_level(const face_ctx *c);            /* current fade level 0..1 */
+
+/* ---- one red per screen: while the REC chip is up (c->rec 0..1, stepped by the shell)
+ * a face's own red accents ease to alt (C_PRI; C_INK on white). TAPE keeps its lamp red:
+ * there the lamp is the recording light and the chip drops its dot. */
+static inline float fk_rec(const face_ctx *c)
+{
+    return c->rec <= 0.0f ? 0.0f : c->rec >= 1.0f ? 1.0f : c->rec;
+}
+static inline uint16_t fk_red(const face_ctx *c, uint16_t alt)
+{
+    float r = fk_rec(c);
+    return r > 0.0f ? ui_mix(C_RED, alt, r) : C_RED;
+}
 
 /* ---- battery status: nothing above 20 % unless charging; else a bolt (charging)
  * and the percentage as a mono label at baseline y. Returns the drawn width.
