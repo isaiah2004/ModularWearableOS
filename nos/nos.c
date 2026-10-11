@@ -617,6 +617,12 @@ void nos_dim(gfx_fb *fb, float k)
     dim_rows(fb, c0, c1, (int)lroundf(m_clamp(k, 0, 1) * 32.0f));
 }
 
+void nos_ink_dim(gfx_fb *fb, float k)
+{
+    int keep = (int)lroundf((32 - fb->dim) * m_clamp(k, 0, 1));
+    fb->dim = 32 - keep;
+}
+
 int nos_subview(const gfx_fb *fb, gfx_fb *out, int x0, int y0, int x1, int y1, int ox, int oy)
 {
     return sub_fb(fb, out, x0, y0, x1, y1, ox, oy);
@@ -666,29 +672,51 @@ static void scratch_fb(const gfx_fb *fb, gfx_fb *o, int x0, int x1)
     nos_dbg_us[3] += hal_micros() - q;
 }
 
-/* Dissolve: `under` is already in fb; draw `over` into the scratch rows and take its
- * pixels where the ordered-dither mask says so. */
-static void dissolve_over(const gfx_fb *fb, const nos_screen *over, float p)
+/* Dissolve: an 8x8 ordered dither hands pixels from `under` to `over` as p grows. The
+ * layer that owns most pixels this frame draws straight into the stripe; the other one
+ * goes to the scratch rows and only its pixels are copied in, at most half the screen,
+ * from a per-row list of dither phases (no per-pixel compare). */
+static void dissolve_draw(const gfx_fb *fb, const nos_screen *under, const nos_screen *over, float p)
 {
-    if (!over) return;
-    if (fb->rec) { if (over->draw) { gfx_fb f = *fb; over->draw(&f); } return; }
+    int thr = (int)(p * 64.0f + 0.5f);
+    if (!over || thr <= 0) { draw_screen(fb, under, 0, 0, GFX_W, GFX_H, 0, 0, 32); return; }
+    if (thr >= 64 || !s_scratch) { draw_screen(fb, thr >= 32 ? over : under, 0, 0, GFX_W, GFX_H, 0, 0, 32); return; }
+    if (fb->rec) {
+        draw_screen(fb, under, 0, 0, GFX_W, GFX_H, 0, 0, 32);
+        if (over->draw) { gfx_fb f = *fb; over->draw(&f); }
+        return;
+    }
+    int maj_over = thr > 32;
+    const nos_screen *base = maj_over ? over : under, *top = maj_over ? under : over;
+    uint32_t q = hal_micros();
+    draw_screen(fb, base, 0, 0, GFX_W, GFX_H, 0, 0, 32);
+    uint32_t q1 = hal_micros();
+    nos_dbg_us[0] += q1 - q;
     int c0 = fb->cx0, c1 = fb->cx1;
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }
     gfx_fb o;
     scratch_fb(fb, &o, c0, c1);
-    uint32_t q = hal_micros();
-    if (over->draw) over->draw(&o);
     uint32_t q2 = hal_micros();
-    nos_dbg_us[1] += q2 - q;
-    int thr = (int)(p * 64.0f + 0.5f);
+    if (top && top->draw) top->draw(&o);
+    uint32_t q3 = hal_micros();
+    nos_dbg_us[1] += q3 - q2;
+    unsigned sel = 0;                                /* sim cost model only */
     for (int r = 0; r < fb->h; r++) {
         int y = fb->y_base + r;
-        uint16_t *d = gfx_row(fb, r), *s = o.px + (size_t)r * GFX_W;
         const uint8_t *b = BAYER8[y & 7];
-        for (int x = c0; x < c1; x++) if (b[x & 7] < thr) d[x] = s[x];
+        int js[8], nj = 0;
+        for (int j = 0; j < 8; j++) if ((b[j] < thr) != maj_over) js[nj++] = j;
+        if (!nj) continue;
+        uint16_t *d = gfx_row(fb, r), *src = o.px + (size_t)r * GFX_W;
+        for (int x8 = c0 & ~7; x8 < c1; x8 += 8)
+            for (int k = 0; k < nj; k++) {
+                int x = x8 + js[k];
+                if (x >= c0 && x < c1) d[x] = src[x];
+            }
+        sel += (unsigned)((c1 - c0) * nj / 8);
     }
-    GFX_COST_PX(GFX_COST_SELECT, fb->h * (c1 - c0));   /* sim cost model only */
-    nos_dbg_us[2] += hal_micros() - q2;
+    GFX_COST_PX(GFX_COST_SELECT, sel);
+    nos_dbg_us[2] += hal_micros() - q3;
 }
 
 /* Dot-matrix iris. The new screen shows through a circle growing from the tapped
@@ -857,10 +885,7 @@ static void scene_draw(gfx_fb *fb)
             iris_draw(fb, T.under, p > 0.001f ? T.over : 0, p, 32 - (int)lroundf(18.0f * p));
             break;
         }
-        uint32_t q = hal_micros();
-        draw_screen(fb, T.under, 0, 0, W, H, 0, 0, 32);
-        nos_dbg_us[0] += hal_micros() - q;
-        if (p > 0.001f) dissolve_over(fb, T.over, p);
+        dissolve_draw(fb, T.under, T.over, p);
         break;
     }
     default:

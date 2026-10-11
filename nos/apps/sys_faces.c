@@ -117,8 +117,8 @@ static void f_draw(gfx_fb *fb)
         gfx_fb sub;
         int x0 = ox < 0 ? 0 : ox, x1 = ox + (int)PAGE_W > GFX_W ? GFX_W : ox + (int)PAGE_W;
         if (x1 > x0 && nos_subview(fb, &sub, x0, 0, x1, GFX_H, ox, 0) && nos_faces[s]->draw) {
+            if (dk < 1.0f) nos_ink_dim(&sub, dk);     /* drawn dimmed: no pixel pass */
             nos_faces[s]->draw(&sub, &F.c);
-            if (dk < 1.0f) nos_dim(&sub, dk);
         }
     }
     /* edit-mode frame: a thin rim on the very edge of the glass (outside every face's own

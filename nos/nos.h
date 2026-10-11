@@ -97,8 +97,13 @@ int  nos_entered_by_finger(void);
 /* From a sheet's input during IN_DRAG: its content hit the scroll limit in the closing
  * direction, so hand the finger to the engine (re-based, no jump) to move the sheet. */
 void nos_sheet_take(void);
-/* Dim what `fb` covers to k (0..1) of its brightness (edit-mode backdrops). */
+/* Dim what `fb` covers to k (0..1) of its brightness, after drawing (costs a pass
+ * over every lit pixel). Prefer nos_ink_dim before drawing: free. */
 void nos_dim(gfx_fb *fb, float k);
+/* Everything drawn into `fb` from now on keeps k (0..1) of its brightness (edit-mode
+ * backdrops, a face receding). Scales each primitive's colour once, so a dimmed
+ * screen costs no more than a bright one. Composes with a dim already on `fb`. */
+void nos_ink_dim(gfx_fb *fb, float k);
 /* Screen the side button's long press opens when the top screen doesn't take it. */
 extern const struct nos_screen *nos_power_screen;
 void nos_set_root(const nos_screen *s);
