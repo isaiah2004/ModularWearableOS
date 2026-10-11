@@ -1,5 +1,12 @@
 # Watch OS v1 — Waveshare 1.43-B
 
+> **Branch `nothing-os`: NOS**, a from-scratch, Nothing-inspired OS for this board.
+> It has 8 faces, 18 launcher apps (including Diagnostics), a full shell, and every strap module, and runs at
+> 30 fps with 0 late frames measured on the device. See **[docs/NOS.md](docs/NOS.md)**.
+>
+> ![NOS](docs/assets/nos/showcase.png)
+
+
 **2026-09-19 display prototype:** measured Breathe performance improved from
 26.8 to 44.1 presentations/s on COM3 with the existing 40 MHz transport.
 The branch includes USB benchmarks, completed-DMA accounting and regression
