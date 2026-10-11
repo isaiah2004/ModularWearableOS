@@ -121,6 +121,9 @@ static struct {
     int sl_anim;
     float t_enter;
     char note[32];           /* "WI-FI OFF" */
+    char note_name[24];      /* its subject ("WI-FI"): a new subject crossfades, a new value doesn't */
+    char prev_note[32];      /* the note it replaced, going out */
+    float prev_k, swap_t;
     float note_t;
     int note_hold;           /* keep the note up (slider being dragged) */
     int bat, charging;
@@ -178,7 +181,16 @@ static void set_note(const char *name, const char *st)
     snprintf(b, sizeof b, "%s%s%s", name, st ? " " : "", st ? st : "");
     float age = nos_t - C.note_t;
     if (!C.note[0] || age > 1.6f) C.note_t = nos_t;          /* fade in only when not showing */
-    else if (age > 0.10f) C.note_t = nos_t - 0.10f;          /* already up: restart the hold */
+    else {
+        if (strcmp(C.note_name, name)) {                     /* another subject: crossfade */
+            float k = age < 0.10f ? age / 0.10f : age < 1.3f ? 1.0f : 1.0f - (age - 1.3f) / 0.3f;
+            snprintf(C.prev_note, sizeof C.prev_note, "%s", C.note);
+            C.prev_k = m_clamp(k, 0, 1);
+            C.swap_t = nos_t;
+        }
+        if (age > 0.10f) C.note_t = nos_t - 0.10f;           /* already up: restart the hold */
+    }
+    snprintf(C.note_name, sizeof C.note_name, "%s", name);
     snprintf(C.note, sizeof C.note, "%s", b);
 }
 
@@ -236,7 +248,7 @@ static void c_enter(void)
     if (nos_revealed()) return;            /* back from torch/settings: as it was */
     /* the finger is revealing the sheet: show everything at once */
     C.t_enter = nos_entered_by_finger() ? nos_t - 2.0f : nos_enter_t();
-    C.note[0] = 0;
+    C.note[0] = 0; C.prev_note[0] = 0; C.note_name[0] = 0;
 }
 
 static void c_leave(void)
@@ -248,6 +260,7 @@ static void c_leave(void)
 static void c_tick(float dt)
 {
     press_tick();
+    if (C.prev_note[0] && nos_t - C.swap_t > 2.5f / NOS_FPS) C.prev_note[0] = 0;   /* swap done */
     for (int i = 0; i < NT; i++) {
         int to = state(i) ? 255 : LV_OFF;                /* follow changes made elsewhere */
         if (C.lv_to[i] != to) morph(i, fill_lv(i));
@@ -345,7 +358,11 @@ static void draw_header(gfx_fb *fb)
     if (C.note[0] && age < 1.6f) {                       /* the last change, then back */
         float k = age < 0.10f ? age / 0.10f : age < 1.3f ? 1.0f : 1.0f - (age - 1.3f) / 0.3f;
         kn = floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f;
-        if (kn > 0) ui_label(fb, UI_CX, HEAD_Y, C.note, gdim(C_PRI, kn), UI_CENTER);
+        /* one note replacing another: the old out in 2 steps, then the new in 2 */
+        int u = C.prev_note[0] ? (int)floorf((nos_t - C.swap_t) * NOS_FPS + 0.5f) : 2;
+        if (u == 0) ui_label(fb, UI_CX, HEAD_Y, C.prev_note, gdim(C_PRI, 0.5f * C.prev_k), UI_CENTER);
+        else if (kn > 0) ui_label(fb, UI_CX, HEAD_Y, C.note, gdim(C_PRI, u == 1 ? 0.5f * kn : kn), UI_CENTER);
+        if (u < 2 && kn < C.prev_k) kn = C.prev_k;          /* the clock stays out through the swap */
     }
     /* the clock (or the REC chip) gives way to the note and comes back as it goes, in 3 steps */
     float ko = floorf((1.0f - kn) * 3.0f + 0.5f) / 3.0f;
