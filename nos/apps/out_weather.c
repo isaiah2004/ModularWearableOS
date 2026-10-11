@@ -39,7 +39,6 @@
 #define LOOP  120                 /* frames per animation loop (4 s) */
 #define REST  (2 * LOOP - 1)      /* two loops, then hold (storm flash is off here) */
 #define GRID  7.0f                /* one dot pitch for every icon */
-#define IRIS_LAG 0.17f
 #define SWAP_S 0.15f              /* each half of a data crossfade (out, then in) */
 
 /* ------------------------------------------------------------- helpers */
@@ -507,7 +506,7 @@ static void weather_enter(void)
 {
     if (nos_revealed()) return;
     memset(&W, 0, sizeof W);
-    W.t0 = nos_t + IRIS_LAG;
+    W.t0 = nos_enter_t();
     if (s_from_widget) { W.t0 = nos_t - 1.0f; W.frame = s_widget_frame; s_from_widget = 0; }
     W.bar_t = -10;
     msc_init(&W.sc, 0, (NPAGES - 1) * PAGE_H, PAGE_H);

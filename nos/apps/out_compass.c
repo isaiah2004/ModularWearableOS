@@ -37,7 +37,6 @@
 #define R_NUM    170.0f
 #define R_CARD   168.0f
 #define N_TICK   72
-#define IRIS_LAG 0.17f      /* iris entries start their build at 40% of the iris */
 
 #define LONG_S   0.45f      /* the engine's long press */
 #define R_HOLD   222.0f     /* hold ring: the band between the ticks and the glass */
@@ -159,7 +158,7 @@ static void compass_enter(void)
     if (!(hal_ext_present() & EXT_MAG)) set_mode(M_ABSENT);
     else if (!C.mag.calibrated) start_cal(0);
     else set_mode(M_DIAL);
-    C.t_mode = nos_t + IRIS_LAG;
+    C.t_mode = nos_enter_t();
 }
 
 static void compass_leave(void)
@@ -457,7 +456,8 @@ static void level_draw(gfx_fb *fb)
         dot_disc(fb, UI_CX, cy - o, 4, col); dot_disc(fb, UI_CX, cy + o, 4, col);
     }
     /* the bubble */
-    ui_circle(fb, UI_CX + C.bub_x, cy + C.bub_y, 26.0f * b, ui_mix(C_PRI, C_WHITE, lv));
+    /* full size from the first frame (no scale-ups): it fades in with the build */
+    ui_circle(fb, UI_CX + C.bub_x, cy + C.bub_y, 26.0f, fadec(ui_mix(C_PRI, C_WHITE, lv), q8(b)));
     /* readout, clear of the ring (ring bottom y 363): the old one out, then the new in */
     float u = (nos_t - C.flat_t) / 0.1f;
     int flat = u < 1.0f ? !C.level_ok : C.level_ok;

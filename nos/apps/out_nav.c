@@ -39,13 +39,12 @@
 #define MAXDOTS 360
 #define SKY_CY  226.0f
 #define SKY_R   124.0f
-#define IRIS_LAG 0.17f
 #define STALE_S 30.0f        /* lost fix: keep the last values this long */
 #define HOLD_S  0.6f         /* hold to stop a track */
 #define SUMMARY_S 3.0f
 #define FADE_S  0.15f        /* each half of a state crossfade (out, then in) */
 #define HDR_S   0.10f        /* each half of the header crossfade */
-#define NOW_LAG 0.08f        /* fix arrival: the NOW page starts this long after the sky */
+#define NOW_LAG 0.05f        /* fix arrival: the NOW page starts this long after the sky */
 #define ARRIVE_S 0.17f       /* ... and builds in this long (all in ~250 ms) */
 
 /* ------------------------------------------------------------- pager */
@@ -153,6 +152,8 @@ static struct {
     double d_from, d_to, d_shown; float d_t0; int d_init;
     /* values (refreshed 1 Hz) */
     float val_t;
+    int ago;                 /* seconds since the fix, frozen once the fix is back */
+    char slab[32], slab_prev[32]; float sl_t;   /* SEARCHING label: crossfades on a change of form */
     mval m_speed, m_dist;
     /* track view */
     float (*dots)[2]; int ndots;
@@ -329,7 +330,7 @@ static void nav_enter(void)
     memset(&N, 0, sizeof N);
     N.dots = dots;
     pg_init(&N.pg, NPAGE, page);
-    N.t0 = nos_t + IRIS_LAG;
+    N.t0 = nos_enter_t();
     N.fix_t = -10; N.lost_t = -100; N.last_fix_t = -100; N.val_t = -100; N.saved_t = -100; N.hint_t = -100;
     N.hk = -1; N.hk_t = -10; N.ak_t = -10;
     N.first = 1;
@@ -397,6 +398,20 @@ static void nav_tick(float dt)
     int prev_now = N.show_now;
     N.stale = !N.fixed && N.have_last && nos_t - N.last_fix_t < STALE_S;
     N.show_now = N.fixed || N.stale;
+    if (N.stale) N.ago = (int)(nos_t - N.last_fix_t);   /* a refix fades [ NO FIX ] out as it was */
+    {
+        char t[32];
+        if (N.g.sats_used > 0) snprintf(t, sizeof t, "SEARCHING %d/%d", N.g.sats_used, N.g.sats_view);
+        else if (N.g.sats_view > 0) snprintf(t, sizeof t, "SEARCHING  %d SATS", N.g.sats_view);
+        else snprintf(t, sizeof t, "SEARCHING");
+        if (strcmp(t, N.slab)) {
+            /* same form and width (a count ticking): swap; else old out, new in */
+            int same = N.slab[0] && strlen(t) == strlen(N.slab) && !strchr(t, '/') == !strchr(N.slab, '/');
+            if (N.slab[0] && !same && nos_t - N.sl_t >= 0.2f) { strcpy(N.slab_prev, N.slab); N.sl_t = nos_t; }
+            else if (!N.slab[0]) N.sl_t = -10;
+            strcpy(N.slab, t);
+        }
+    }
     if (prev_now && !N.show_now) { N.lost_t = nos_t; N.t0 = nos_t + FADE_S * 0.66f; }  /* NOW out, sky in */
     /* stale values dim in 8 steps (and back on a refix) */
     float dw = N.stale ? 1.0f : 0.0f;
@@ -536,11 +551,9 @@ static void sky_draw(gfx_fb *fb)
         q = floorf(q * 8 + 0.5f) / 8;
         dot_disc(fb, x, y, d, lit ? C_WHITE : ui_mix(C_LINE2, C_SEC, q));
     }
-    char t[32];
-    if (N.g.sats_used > 0) snprintf(t, sizeof t, "SEARCHING %d/%d", N.g.sats_used, N.g.sats_view);
-    else if (N.g.sats_view > 0) snprintf(t, sizeof t, "SEARCHING  %d SATS", N.g.sats_view);
-    else snprintf(t, sizeof t, "SEARCHING");
-    ui_state(fb, UI_CX, 392, t, fadec(C_SEC, q8(k)));
+    float su = (nos_t - N.sl_t) / 0.1f;
+    if (su < 1) ui_state(fb, UI_CX, 392, N.slab_prev, fadec(C_SEC, q8(k * (1 - su))));
+    else ui_state(fb, UI_CX, 392, N.slab, fadec(C_SEC, q8(k * m_clamp(su - 1, 0, 1))));
 }
 
 /* ------------------------------------------------------------- NOW page */
@@ -663,7 +676,7 @@ static void page_now(gfx_fb *fb, float k)
     if (row_on(4)) {
         /* altitude/accuracy and "no fix" swap through the dim ramp */
         if (dim >= 0.5f) {
-            int ago = (int)(nos_t - N.last_fix_t);
+            int ago = N.ago;
             snprintf(t, sizeof t, "[ NO FIX ]  %d:%02d AGO", ago / 60, ago % 60);
             ui_label(fb, UI_CX, 304, t, fadec(C_SEC, k * (dim * 2 - 1)), UI_CENTER);
         } else {

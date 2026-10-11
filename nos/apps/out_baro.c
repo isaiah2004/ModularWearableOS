@@ -31,7 +31,6 @@
 #define NHIST  144
 #define NCOL   24
 #define CROWS  7
-#define IRIS_LAG 0.17f
 
 /* ------------------------------------------------------------- pager */
 typedef struct { mspring sp; int n, page, dragging; float x0; } pager;
@@ -254,7 +253,7 @@ static void baro_enter(void)
     B.hist = h;
     B.inited = 1;
     pg_init(&B.pg, NPAGE, keep);
-    B.t0 = nos_t + IRIS_LAG;
+    B.t0 = nos_enter_t();
     B.hist_t = -100; B.val_t = -100;
     B.saved_t = -100;
     B.storm_t = -10;
@@ -284,21 +283,23 @@ static void page_pressure(gfx_fb *fb)
     else if (B.d3h > 1.0f) { icon = DOT_ICON_ARROW_UP; word = "RISING"; }
     else if (B.d3h < -1.0f) { icon = DOT_ICON_ARROW_DOWN; word = "FALLING"; }
     else { icon = DOT_ICON_ARROW_RIGHT; word = "STEADY"; }
-    /* storm: a red dot + [ STORM ] above the trend line (the screen's one red),
-     * fading in / out over 0.2 s; the trend that triggered it stays readable */
+    /* storm: a red dot + [ STORM ] under the chart (the screen's one red), 16 px
+     * below the axis labels, fading in / out over 0.2 s; the trend that triggered
+     * it stays readable up top */
     float su = (nos_t - B.storm_t) / 0.2f;
     float sk = q8(B.storm ? su : 1.0f - su);
     if (sk > 0) {
         int w = ui_text_width(UI_F_LABEL, "[ STORM ]", 2) + 20;
-        dot_disc(fb, UI_CX - w / 2 + 4, 98 - 6, 9, fadec(C_RED, sk));
-        ui_label(fb, UI_CX - w / 2 + 20, 98, "[ STORM ]", fadec(C_PRI, sk), UI_LEFT);
+        dot_disc(fb, UI_CX - w / 2 + 4, 402 - 6, 9, fadec(C_RED, sk));
+        ui_label(fb, UI_CX - w / 2 + 20, 402, "[ STORM ]", fadec(C_PRI, sk), UI_LEFT);
     }
     if (B.have3h) snprintf(t, sizeof t, "%s %+.1f hPa / 3 h", word, (double)B.d3h);
     else snprintf(t, sizeof t, "%s", word);
     int tw = ui_text_width(UI_F_LABEL, t, 2) + (icon ? 24 : 0);
     int tx = UI_CX - tw / 2;
-    if (icon) dot_icon(fb, icon, tx + 8, 116, 1.8f, 1.5f, C_PRI);
-    lbl(fb, tx + (icon ? 24 : 0), 122, t, C_SEC, UI_LEFT);
+    /* the trend sits midway between the title and the hero */
+    if (icon) dot_icon(fb, icon, tx + 8, 108, 1.8f, 1.5f, C_PRI);
+    lbl(fb, tx + (icon ? 24 : 0), 114, t, C_SEC, UI_LEFT);
     /* hero */
     dot_style st = { DOT_FONT_TALL, UI_HEROW_PITCH, UI_HEROW_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
     mv_draw(fb, &st, UI_CX, 142, &B.m_hpa, b);
