@@ -1,0 +1,28 @@
+skipboot
+wait 3000
+mark launch
+open imu
+wait 5000
+expect top IMU
+expect nolate
+shot opened
+mark background
+tap 233 416
+tap 233 342
+wait 1000
+home_now
+wait 1500
+shot home_recording
+set aod 1
+imu background 10000
+set aod 0
+open! imu
+wait 500
+expect imu state 2
+shot resumed
+tap 233 342
+wait 500
+expect imu state 0
+shot saved
+expect nolate
+quit

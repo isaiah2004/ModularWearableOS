@@ -6,7 +6,9 @@
 #include "freertos/portmacro.h"
 
 #define HIST_BUCKETS 64
-#define FRAME_DEADLINE_US 16667u
+static uint32_t s_frame_deadline_us = 16667u;   /* frame period; 20833 with the 48fps cap */
+
+void display_perf_set_frame_deadline(uint32_t us) { s_frame_deadline_us = us; }
 
 typedef struct {
     uint64_t n, total;
@@ -265,7 +267,7 @@ void display_perf_frame(uint32_t dirty_pixels, uint16_t rects, bool atomic,
         if (rects && present_us != DISPLAY_PERF_MISSING_U32) dist_add(&a->present, present_us);
         if (wall_us != DISPLAY_PERF_MISSING_U32) {
             dist_add(&a->wall, wall_us);
-            if (wall_us > FRAME_DEADLINE_US) a->deadline_misses++;
+            if (wall_us > s_frame_deadline_us) a->deadline_misses++;
         }
     }
     portEXIT_CRITICAL(&s_lock);

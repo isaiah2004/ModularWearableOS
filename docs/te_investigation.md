@@ -114,3 +114,120 @@ No probe or solder connection has been performed or prescribed as confirmed.
 
 Local evidence: `build/te-research/dwo-a.pdf` (FMST10), `dwo-b.pdf` (FMST05),
 their extracted text, `dwo-a-pinout.png`, and Waveshare product photos.
+
+## C-board implementation — 2026-10-22
+
+The sections above describe the B board. The **1.43C routes display TE to
+GPIO8**, confirmed by its [official schematic](https://files.waveshare.com/wiki/ESP32-S3-Touch-AMOLED-1.43C/ESP32-S3-Touch-AMOLED-1.43C-Schematic.pdf)
+and live GPIO interrupts. The initial implementation enabled this by default;
+the follow-up below changes the default to off and adds a saved control.
+
+`nos_display_te.c` consumes rising edges with `35h=00` and explicit `44h=0000`
+(vertical blank, CO5300 datasheet pages 31–33, 170 and 180). The flush owner
+prepares its first DMA chunk, waits for a fresh edge, then streams the frame.
+Subsequent stripes and exposure fences do not wait again. A static semaphore
+avoids a new heap allocation. A missing edge falls back after 25 ms. Panel
+sleep disables the interrupt; wake discards old edges and restores it.
+The B build has no TE GPIO configuration or wait.
+
+USB `te` reports readiness, edge count/period, synchronized frames, timeouts
+and ISR-to-worker wake latency without waking the screen. `te 0` / `te 1`
+disable/enable synchronization. These commands now update the saved preference,
+just like the Developer Tools control. `info` also includes `NOSTE`, with
+`saved=0|1` alongside the effective `enabled` state.
+
+COM4 validation: approximately **60.6 Hz**, **421 waits / 421 synchronized /
+0 timeouts**, maximum measured ISR-to-worker wake latency **244 us**.
+Sleep/wake, microphone/speaker, saved Wi-Fi and API key, and preference
+checkpoint hash all passed. Both board builds succeeded; 68 host tests passed.
+
+**Performance limit:** the same twelve scrolling gestures averaged 54.87 UI
+frames/s with TE disabled and 32.22 with TE enabled. With TE enabled, 71 of
+156 painted intervals exceeded the 33.3 ms floor and p95 was 36 ms. The strict
+30 fps interval requirement is therefore **not consistently met**. The QSPI
+clock remains 40 MHz; full-screen RGB565 payload alone takes at least 21.7 ms,
+longer than a panel refresh. Aligning frame starts does not guarantee tear-free
+presentation, and no optical tearing measurement was performed.
+
+See [structured verification](performance/C143_TE_SYNC_20261022.json) for build
+identities, timing captures, checks and evidence hashes. That initial verification
+ended with TE enabled; the follow-up below leaves it disabled.
+
+## Saved TE control and 60 fps investigation — 2026-10-22
+
+**TE is now off on the watch.** Developer Tools has a **TE sync** ON/OFF row,
+between Frame rate and Turn all off. Unsupported boards/simulators show N/A.
+The choice survives reboot. Existing installations migrate to OFF; new installs
+also default to OFF. Turning off the developer overlays does not change TE or
+the frame-rate preference.
+
+The preference occupies byte 50 of the existing 52-byte V4 payload, with field
+revision 5. It retains the alternating verified SD checkpoint and the existing
+NVS/card-absent fallback, dirty retry, delayed-load merge and explicit edit
+overlay. Existing overlay bit assignments and wrist provenance are preserved.
+The UI owner applies changed TE intent only between completed display frames;
+unchanged settings do not reset the measured edge period every frame. An
+unavailable GPIO cannot enable synchronization. The controller's TE generator
+remains configured for an eventual enable, while OFF disables the GPIO IRQ and
+all frame-start waiting.
+
+Both board builds and 61 targeted tests passed. Simulator captures verify the
+reflowed page and access to Frame rate. The connected C board identified itself
+on COM4 (the B-board workspace instructions' COM3 is absent). The checked flash
+used this workspace's C build, verified all required runtime features and
+excluded NVS. On-watch taps enabled and disabled TE; a controlled ROM read/reset
+after each verified checkpoint proved both choices survive reboot. The final
+52-byte preference hash matches the post-migration OFF checkpoint, with the
+original brightness, face, radios and 60 fps cap retained. No display faults or
+allocation failures were observed.
+
+Repeated twelve-swipe Settings windows reproduced **55.07 UI loop fps with TE
+off** and **32.22 with TE on**. Painted-interval p95 was **20 ms / 36 ms**. The
+disabled window had zero TE waits. These windows contain settling/idle frames;
+loop fps is not a count of optical refreshes. These measurements use the current
+sharp renderer (`NOS_RENDER_SHARP=1`), not the motion-blurred reference build.
+
+Further bounded profiles explain the remaining gap:
+
+- Settings uses about 71–75 thousand pixels and 62–64 DMA chunks per painted
+  frame. End-to-end work averages 17.95–18.17 ms; the display API averages about
+  12–13 ms and C-board byte swapping/copying about 2.2 ms. Raster includes producer
+  waiting; these overlapping stage times must not be added together as CPU costs.
+- The existing damage-band diagnostic improved Settings from about 54 to 57 loop
+  fps in two comparisons (painted p95 24/22 ms to 20/19 ms). The app list improved
+  from 47.26 to 57.37 loop fps in one pair (p95 27 to 19 ms). This is a promising
+  measured direction, still short of sustained 60 fps and not an optical
+  qualification. The diagnostic was restored to OFF after profiling.
+- Unlimited produced 67 loop calls/s but only 51.85 painted frames/s across the
+  whole window; painted-interval p95 was 22 ms. Removing the cap does not solve
+  the display cost. The saved cap was restored to 60.
+
+The next focused driver optimization is to reduce small-transfer overhead.
+Each 8-row `esp_lcd_panel_draw_bitmap` call currently sends CASET, RASET and a
+color transfer. The C board needs no rotation, and each 16-row source stripe is
+already split across two 8-row DMA buffers. Setting one window for that source
+stripe and sending its two buffers with RAMWR/RAMWRC could remove half those
+repeated address commands while retaining DMA ownership and the final fence.
+The controller documents RAMWRC (`3Ch`); this driver change has **not** been
+implemented or measured. Damage-band tuning and a paired byte-swap kernel are
+other candidates. All need pixel comparisons and timing measurements before
+changing defaults.
+
+There is also a hard payload limit. At 40 MHz quad SPI, RGB565 transfers at most
+20 MB/s before overhead: 466 × 466 × 2 bytes takes **21.716 ms**, or at most
+46.05 full rectangular writes/s. Even an ideal circular mask would take about
+17.1 ms. A full rectangular RGB565 frame at 60 Hz needs at least 52.12 MHz
+before overhead. The ESP32-S3's current 80 MHz source/divider cannot supply an
+intermediate 50 MHz setting; its next faster setting is 80 MHz. The
+[CO5300 timing table, page 107](https://dl.espressif.com/AE/esp-iot-solution/CO5300_Datasheet_V0.00.pdf)
+specifies a minimum 20 ns write cycle, so 80 MHz exceeds that rating. The C-board
+vendor examples also use 40 MHz. No overclock trial was performed.
+
+The same datasheet documents RGB332 QSPI on pages 22 and 25: 8-bit transfer
+could halve full-screen payload to 10.86 ms at 40 MHz, at the cost of 256-color
+quantization and a driver/packing change. This is a possible quality tradeoff,
+not a performance result or a change made to the watch. Full-color partial
+updates and fewer commands are the first candidates to pursue.
+
+See [verification and profiles](performance/C143_TE_SETTING_60FPS_20261022.json)
+for identities, exact per-frame measurements, restored state and evidence hashes.

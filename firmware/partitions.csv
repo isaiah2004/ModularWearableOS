@@ -1,7 +1,11 @@
-# 16 MB flash; 15 MB app including existing Earth sprites/fonts.
-# SD holds files; settings stay in NVS. OTA is not implemented in v1.
+# 16 MB flash: two 7.5 MB OTA slots (current image ~6.65 MB incl. Earth sprites/fonts).
+# Settings checkpoints live on SD; preserve the original NVS migration fallback.
+# The unused SPIFFS tail is reserved for first-crash evidence. No automatic erase.
 # Name, Type, SubType, Offset, Size
 nvs, data, nvs, 0x9000, 0x6000
 phy_init, data, phy, 0xf000, 0x1000
-factory, app, factory, 0x10000, 0xef0000
-storage, data, spiffs, 0xf00000, 0x100000
+otadata, data, ota, 0x10000, 0x2000
+ota_0, app, ota_0, 0x20000, 0x780000
+ota_1, app, ota_1, 0x7a0000, 0x780000
+storage, data, spiffs, 0xf20000, 0x60000
+coredump, data, coredump, 0xf80000, 0x80000

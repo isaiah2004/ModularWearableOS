@@ -1,0 +1,113 @@
+# Priority tiles start their exact stable sport IDs via real taps.
+wait 100
+present 0
+set step_rate 0
+open workout
+wait 700
+tap 154 150
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top BODY MASS
+tap 233 372
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 6
+workout info priority_6
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+tap 312 150
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 7
+workout info priority_7
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+tap 154 244
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 8
+workout info priority_8
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+tap 312 244
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 1
+workout info priority_1
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+tap 154 338
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 3
+workout info priority_3
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+expect motionok

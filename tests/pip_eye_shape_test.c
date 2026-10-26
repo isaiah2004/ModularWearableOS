@@ -1,6 +1,7 @@
-/* Pixel-for-pixel regression against the pre-span eye raster. Keep the frozen
- * reference below unchanged: it independently checks AA, translations, stripes
- * and narrow x clips. Optional --bench measures the helper, not watch FPS. */
+/* Pixel-for-pixel regression against the pre-span eye raster. Keep its raster
+ * and AA unchanged; the record adapter follows gfx's logical-coordinate
+ * contract. Also independently check that damage encloses every changed pixel.
+ * Optional --bench measures the helper, not watch FPS. */
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -20,10 +21,10 @@ static void pip_eye_blob_reference(gfx_fb *fb, float cx, float cy,
     if(fb->rec) {
         unsigned hash=gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(
             gfx_hash_u(0x50495042u,color),cx),cy),hw),hh);
-        gfx_rec_cmd(fb,(int)floorf(cx-hw-1)+fb->ox,
-            (int)floorf(cy-hh-1)+fb->oy,
-            (int)ceilf(cx+hw+1)+fb->ox,
-            (int)ceilf(cy+hh+1)+fb->oy,hash);
+        gfx_rec_cmd(fb,(int)floorf(cx-hw-1),
+            (int)floorf(cy-hh-1),
+            (int)ceilf(cx+hw+1),
+            (int)ceilf(cy+hh+1),hash);
         return;
     }
     int c0=fb->cx0,c1=fb->cx1;
@@ -114,7 +115,11 @@ static void verify(float x,float y,float w,float h,int ox,int oy,
     assert(!memcmp(&ra,&rb,sizeof ra));
     if(rb.n)for(int py=0;py<rows;py++)for(int px=0;px<GFX_W;px++)
         if(actual[GUARD+py*GFX_W+px]!=background((unsigned)(GUARD+py*GFX_W+px)))
-            assert(px>=rb.c[0].x0 && px<rb.c[0].x1 && py+y_base>=rb.c[0].y0 && py+y_base<rb.c[0].y1);
+            if(!(px>=rb.c[0].x0 && px<rb.c[0].x1 && py+y_base>=rb.c[0].y0 && py+y_base<rb.c[0].y1)) {
+                fprintf(stderr,"Eye damage escapes case %u: pixel %d %d, bounds %d %d %d %d; shape %.9g %.9g %.9g %.9g; translate %d %d; stripe %d %d; clip %d %d\n",
+                    checked,px,py+y_base,rb.c[0].x0,rb.c[0].y0,rb.c[0].x1,rb.c[0].y1,x,y,w,h,ox,oy,y_base,rows,cx0,cx1);
+                abort();
+            }
     checked++;
 }
 static double seconds(void)
@@ -164,6 +169,11 @@ static void benchmark(void)
 }
 int main(int argc,char **argv)
 {
+#ifdef _WIN32
+    /* a failed check prints and exits non-zero; no Windows crash dialog on the desktop */
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
     const float shapes[][4]={
         {158.3f,240.4f,50.7f,66.3f},{318.8f,265.6f,50.4f,5.3f},
         {.1f,.1f,42.7f,36.9f},{465.8f,465.8f,42.7f,36.9f},

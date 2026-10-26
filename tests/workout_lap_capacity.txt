@@ -1,0 +1,55 @@
+# Twenty cumulative splits are bounded; extra and paused splits are rejected.
+wait 100
+present 0
+set step_rate 0
+workout start 5
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+wait 1000
+workout lap
+workout lap 0
+expect workout laps 20
+workout pause
+workout lap 0
+workout finish
+wait 200
+workout finish 0
+expect workout history 1
+workout info capped_laps
+

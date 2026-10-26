@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orrery: the solar system on your wrist (NOS face draft)</title>
+<style>
+  :root { --bg:#0e0f13; --panel:#16181f; --line:#2a2d38; --txt:#e6e6ea; --dim:#9a9caa; --ok:#4fd18b; --warn:#f2b84b; --bad:#ff6b6b; --acc:#8fd3ff; --red:#d71921; }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.6 system-ui,"Segoe UI",sans-serif; }
+  nav { position:fixed; top:0; left:0; bottom:0; width:230px; overflow-y:auto; background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; font-size:13px; }
+  nav a { display:block; color:var(--dim); text-decoration:none; padding:3px 6px; border-radius:6px; }
+  nav a:hover { color:var(--txt); background:#ffffff0d; }
+  nav .grp { color:#6c6f7d; text-transform:uppercase; letter-spacing:.06em; font-size:11px; margin:14px 0 4px 6px; }
+  main { margin-left:230px; max-width:1120px; padding:32px 44px 120px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 6px; letter-spacing:-.01em; }
+  h2 { font-size:23px; margin:60px 0 10px; padding-top:12px; border-top:1px solid var(--line); }
+  h2 .n { color:var(--red); font-family:ui-monospace,Consolas,monospace; margin-right:10px; }
+  h3 { font-size:16px; margin:26px 0 6px; color:var(--acc); }
+  p, li { color:#d4d5dc; } a { color:var(--acc); }
+  .lede { font-size:18px; color:#c9cad3; max-width:860px; }
+  .meta { color:var(--dim); font-size:13px; }
+  .big { background:linear-gradient(90deg,#1b1d25,#16181f); border-left:3px solid var(--red); border-radius:8px; padding:12px 16px; margin:14px 0; font-size:16px; }
+  .big b { color:#fff; }
+  .note { background:#1d2029; border:1px solid var(--line); border-radius:10px; padding:10px 14px; font-size:13.5px; color:var(--dim); margin:14px 0; }
+  .ask { background:#1f1a12; border:1px solid #4a3a1c; border-radius:10px; padding:10px 14px; margin:14px 0; font-size:14px; }
+  .ask::before { content:"Your call"; display:block; font:700 11px ui-monospace,Consolas,monospace; color:var(--warn); letter-spacing:.08em; margin-bottom:4px; }
+  .hero { display:grid; grid-template-columns: 492px 1fr; gap:28px; align-items:start; margin-top:22px; }
+  .watch { position:relative; width:492px; height:492px; border-radius:50%; background:#050506; box-shadow:0 0 0 10px #1c1d22, 0 0 0 11px #2c2e36, 0 30px 60px #0008; display:grid; place-items:center; }
+  .watch canvas { width:466px; height:466px; border-radius:50%; touch-action:none; cursor:grab; display:block; }
+  .ctl { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0 8px; }
+  .ctl button { background:#1d2029; color:var(--txt); border:1px solid var(--line); border-radius:999px; padding:6px 12px; font:600 12px ui-monospace,Consolas,monospace; letter-spacing:.06em; cursor:pointer; }
+  .ctl button.on { background:#fff; color:#000; border-color:#fff; }
+  .ctl button:hover { border-color:#555; }
+  .try { font-size:14px; } .try li { margin:3px 0; }
+  .try b { color:#fff; }
+  kbd { font:600 11px ui-monospace,Consolas,monospace; background:#22252f; border:1px solid #333; border-radius:4px; padding:1px 5px; }
+  .readout { font:12px ui-monospace,Consolas,monospace; color:var(--dim); margin-top:6px; min-height:18px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0; font-size:13.5px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  td code, li code, p code { font:12.5px ui-monospace,Consolas,monospace; background:#1d2029; padding:1px 5px; border-radius:4px; color:#cfe3ff; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  .card h4 { margin:0 0 6px; font-size:14px; color:#fff; }
+  .card p { margin:0; font-size:13.5px; color:var(--dim); }
+  .flow { display:flex; align-items:stretch; gap:10px; flex-wrap:wrap; margin:16px 0; }
+  .flow .box { flex:1; min-width:170px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:13px; }
+  .flow .box b { display:block; color:#fff; margin-bottom:4px; }
+  .flow .arr { align-self:center; color:var(--red); font:700 18px ui-monospace,monospace; }
+  .evrow td:first-child { white-space:nowrap; font:12.5px ui-monospace,Consolas,monospace; color:var(--dim); }
+  .tag { display:inline-block; font:600 10.5px ui-monospace,Consolas,monospace; letter-spacing:.06em; padding:1px 6px; border-radius:999px; border:1px solid #444; color:#bbb; margin-right:6px; }
+  .phase { display:grid; grid-template-columns:110px 1fr; gap:4px 16px; margin:10px 0; }
+  .phase > div:nth-child(odd) { font:700 12px ui-monospace,Consolas,monospace; color:var(--red); padding-top:3px; }
+  svg text { font-family:ui-monospace,Consolas,monospace; }
+  @media (max-width:1100px) { nav { display:none; } main { margin-left:0; } .hero { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<nav>
+  <div style="font-weight:700;color:#fff;padding:0 6px 6px">Orrery face</div>
+  <div class="meta" style="padding:0 6px">draft for review</div>
+  <div class="grp">Look</div>
+  <a href="#top">Live prototype</a>
+  <a href="#exists">Does this exist?</a>
+  <div class="grp">How</div>
+  <a href="#where">Where everything is</a>
+  <a href="#use">Making it amazing to use</a>
+  <a href="#events">Alignments &amp; events</a>
+  <a href="#details">Planet details</a>
+  <a href="#threed">3D, and will it fit?</a>
+  <a href="#atlas">The atlas</a>
+  <div class="grp">Plan</div>
+  <a href="#nos">Fitting NOS</a>
+  <a href="#plan">Build plan</a>
+  <a href="#decide">Your calls</a>
+  <a href="#credits">Sources &amp; credits</a>
+</nav>
+<main>
+<h1 id="top">Orrery: the solar system on your wrist</h1>
+<p class="meta">NOS face + app draft · <span id="today"></span> · nothing in the firmware has changed yet: this page is the proposal</p>
+<p class="lede">The face shows where every planet really is right now. It opens into zones (inner, outer, beyond).
+Time is something you drag with one finger. Alignments light up in red. Any planet opens into a real
+3D globe with a heat map, its moons and the spacecraft orbiting it. Everything on this page is computed live
+with the same maths the watch would run, from public NASA/JPL data.</p>
+
+<div class="hero">
+  <div>
+    <div class="watch"><canvas id="w"></canvas></div>
+    <div class="ctl" id="ctl">
+      <button data-k="back">◀ BACK (EDGE SWIPE)</button>
+      <button data-k="lock">LOCKED</button>
+      <button data-k="rings">TIME RINGS</button>
+      <button data-k="menu">MENU</button>
+      <button data-k="now">NOW</button>
+      <button data-k="tilt">3D TILT</button>
+      <button data-k="aod">ALWAYS-ON</button>
+      <button data-k="tint">TINT</button>
+      <button data-k="fps">30 FPS</button>
+      <button data-k="zones">TOUCH ZONES</button>
+    </div>
+    <div class="readout" id="ro"></div>
+  </div>
+  <div class="try">
+    <h3 style="margin-top:0">Try it (mouse = finger)</h3>
+    <ul>
+      <li><b>It's a watch face, so it starts locked.</b> Touches do nothing until you <b>hold anywhere for 1.5 s</b>: a ring of dots fills round
+          your finger and the controls (time tab, menu arc, zoom dial) fade in. Hold 1.5 s again to lock. Let go once the ring is
+          <b>half full (0.75 s)</b> and it toggles 3D tilt instead, locked or not.</li>
+      <li><b>Drag the face</b> to pan the map (the default) and flick it to glide. In TILT view the same drag looks around in 3D.
+          Switch the menu's <code>DRAG</code> to <code>TIME</code> and a drag moves time instead: grab Earth and pull it round its orbit
+          (one lap is a year; grab Jupiter and it's 12 years), months tick, and events are <b>magnets</b>. Tap <kbd>NOW</kbd> to come home.</li>
+      <li><b>Motion blur:</b> whenever time moves fast (NOW, the rings, a flick, a jump to an event) each planet smears along its own
+          orbit over the time that frame covered, and asteroids and comets streak.</li>
+      <li><b>Tap a ring band:</b> inner band → inner system at true scale (with the real asteroid belt),
+          outer band → giants, the rim → beyond Neptune (Pluto, Sedna, the Voyagers, the heliopause).
+          In a zone: tap the <b>rim</b> to go out, the <b>core</b> to go in, the <b>time</b> to go home.</li>
+      <li><b>Zoom dial</b> (bottom rim, 4:30 to 7:30): drag along it to zoom 0.5× to 4× (+ at 4:30, − at 7:30). It ticks at 0.5, 1, 2 and 4
+          and snaps gently to 1×; tap a spot to fly to that zoom. On desktop the mouse wheel zooms too. It steps aside while the time rings are open.</li>
+      <li><b>Time rings</b> (three short arcs at top right): tap them, or pull them inward, and they open into three dials
+          round the glass. Outer = years, middle = months, inner = days, each labelled with real dates. The values in white pills
+          under the notch at 12 o'clock are the time, read out in the middle. Drag a ring round to travel (counter-clockwise = forward,
+          the way the planets go; flick to coast). Tap a value to fly there, tap <code>NOW</code> in the middle to come home,
+          and tap the × grip (or pull it) to fold them away. The solar system shrinks to fit inside while they're open.</li>
+      <li><b>Menu</b> (a 40° arc on the right edge, centred on 3 o'clock): tap it, or swipe in from it, and four round icon buttons slide in
+          from the rim (the swipe follows your finger). Swipe them back out to the edge, or tap outside, to close.
+          Icons only; a short read-out names whatever you set. Hit one and its options fan inward:
+          <ul>
+            <li><code>DRAG</code>: PAN (moves the map, flat or tilted) · LOOK (orbits the 3D camera in tilt) · TIME · RECENTRE.</li>
+            <li><code>VIEW</code>: OVERHEAD (default) · TILT.</li>
+            <li><code>FILTER</code>: planets · asteroids · comets · craft · FROM EARTH (lines to the five nearest, with distances; Earth always stays).</li>
+            <li><code>LINES</code>: the red alignment geometry on or off.</li>
+          </ul>
+          Tap outside to fold it away.</li>
+      <li><b>Hold anywhere</b> (not on a control): the ring round your finger fills in two halves. Release at half (0.75 s) for 3D/flat; keep going to 1.5 s to lock or unlock.</li>
+      <li><b>Back is only a swipe from the edge</b>: start in the outer ring of the glass on the left and swipe inward.
+          The screen follows your finger and goes if you pass a quarter of the way or flick.</li>
+      <li><b>Tap a planet</b> (or the Sun in the middle): it opens with an iris into its card.
+        <ul>
+          <li>Drag the globe to fly round it. The Sun stays put, so turning to the far side shows the night side (city lights on Earth).</li>
+          <li><code>NOW | FREE</code> under the globe. <b>NOW</b> is the real view with real sunlight, and it springs back to how the planet faces you right now.
+              <b>FREE</b> lights everything you can see, stays where you leave it, and lets you tilt over the poles.</li>
+          <li>Tap the globe to cycle the rendering: <code>PHOTO</code>, <code>HEAT</code> and <code>DOT</code>.</li>
+          <li>Swipe up for the Heat graph, Moons &amp; craft and Facts pages.</li>
+          <li>Drag along the rim to dial to the next body.</li>
+          <li>Swipe left/right inside the card for the next/previous body (it follows your finger).</li>
+          <li>Swipe in from the left edge (or right-click) to go back.</li>
+        </ul></li>
+      <li><b>Tap the event chip</b> at the bottom: a list of what's coming. Tap a row and the face flies there.</li>
+      <li>Tap asteroids, comets and spacecraft dots for a one-line read-out.</li>
+    </ul>
+    <div class="note">The canvas is the real 466 × 466 px and is throttled to <b>30 fps</b> like the watch.
+      Colours follow NOS: white ink, greys, and red only for the event. <code>TINT</code> shows the alternative
+      with planet colours on the face. The photo globe is the one deliberate colour exception (see
+      <a href="#decide">your calls</a>).</div>
+  </div>
+</div>
+
+<h2 id="exists"><span class="n">01</span>Is there something like this already?</h2>
+<p>There are pieces of it. Nothing combines the full atlas, events, real globes and offline maths on a watch.</p>
+<table>
+  <tr><th>What</th><th>What it does</th><th>What it lacks</th></tr>
+  <tr><td>Apple Watch <b>Astronomy</b> face</td><td>Earth, Moon and a solar-system view. The Digital Crown moves through time.</td><td>Planets only. No events, moons, spacecraft or detail pages.</td></tr>
+  <tr><td><a href="https://www.facer.io/watchface/OK6pMz43OO">Wear OS orrery faces</a> (Facer)</td><td>Stylised tilted orbits, with positions solved from orbital periods every second.</td><td>Decorative: their own makers say they are not to scale and use no ephemeris.</td></tr>
+  <tr><td><a href="https://mezha.ua/en/2024/03/29/samsung-and-esa-create-galaxy-time-watch-that-shows-time-on-all-planets-of-the-solar-system/">Samsung × ESA "Galaxy Time"</a></td><td>Time on each planet, plus positions "using real-time ESA data".</td><td>A single view, with no exploring.</td></tr>
+  <tr><td><a href="https://gitea.kosmos.org/hueso/Sensor-Watch/src/branch/main/legacy/watch_faces/complication/orrery_face.h">Sensor Watch <code>orrery_face</code></a></td><td>An F-91W board that computes planet positions on a tiny MCU.</td><td>Segment LCD, so text only. It does prove the maths fits anywhere.</td></tr>
+  <tr><td><a href="https://github.com/neoblitz/celestial-watchface">celestial-watchface</a></td><td>An open-source celestial face.</td><td>Sky only.</td></tr>
+  <tr><td>NASA's Eyes on the Solar System, Solar Walk, SkySafari</td><td>Full 3D atlases on phones and desktops, with spacecraft and moons.</td><td>These are the experience bar we're aiming at, shrunk to a 1.43" circle and made usable with one finger.</td></tr>
+</table>
+<div class="big"><b>What's new here:</b> the whole JPL catalogue on a 32 GB card, positions computed on the
+watch with no network, events as magnets in time, and real lit 3D globes, all inside Nothing's visual language.</div>
+
+<h2 id="where"><span class="n">02</span>How the watch knows where everything is</h2>
+<div class="big"><b>You don't download positions. You download the rules of motion once, then compute any moment.</b>
+Orbits are ellipses that drift slowly. Six numbers per body (plus how they drift) give its position at any time
+through Kepler's equation: about 40 lines of C and microseconds per body. Planets never need the internet.</div>
+<table>
+  <tr><th>Objects</th><th>Method on the watch</th><th>Data &amp; source</th><th>Refresh</th><th>Accuracy</th><th>Size</th></tr>
+  <tr><td>8 planets</td><td>Elements + rates → Kepler's equation → rotate to the ecliptic</td><td>JPL "Approximate Positions of the Planets", Table 1 (built in)</td><td class="ok">never (valid 1800–2050)</td><td>15″–10′; less than a pixel at the face's scale</td><td>96 numbers</td></tr>
+  <tr><td>Our Moon</td><td>12-term series</td><td>Astronomical Almanac low-precision (built in)</td><td class="ok">never</td><td>~0.3°</td><td>tiny</td></tr>
+  <tr><td><span id="nMoons">460</span> moons</td><td>Mean orbital elements; the 20 major moons are re-seeded with today's osculating elements</td><td>JPL SSD satellite elements + Horizons</td><td>monthly (major 20)</td><td>Display grade. Fast inner moons need the refresh.</td><td>~20 KB</td></tr>
+  <tr><td>Asteroids</td><td>Same Kepler solver</td><td>JPL SBDB (this draft: the <span id="nBelt">4,000</span> brightest). Full MPC catalogue ≈ 1.4 M on SD</td><td>monthly</td><td>arcminutes for years</td><td>~45 MB full</td></tr>
+  <tr><td>Comets</td><td>Ellipse, parabola (Barker) or hyperbola: interstellar 3I/ATLAS works too</td><td>JPL SBDB query</td><td>weekly (new comets appear)</td><td>good; outgassing nudges them</td><td>&lt; 1 MB</td></tr>
+  <tr><td>Spacecraft</td><td>Vectors and orbit elements, propagated between refreshes</td><td>JPL Horizons API</td><td>weekly (they manoeuvre)</td><td>km at fetch</td><td>4 KB</td></tr>
+  <tr><td>Earth satellites (ISS, Hubble, Tiangong…)</td><td>SGP4 from TLE/OMM</td><td>CelesTrak</td><td class="warn">daily</td><td>~1 km/day drift</td><td>~2 MB</td></tr>
+  <tr><td>Events</td><td>Scanned on the watch from the same maths (day steps + parabolic refine)</td><td>none needed</td><td class="ok">computed</td><td>hours</td><td>none</td></tr>
+</table>
+<h3>Checked against published dates and JPL</h3>
+<table>
+  <tr><th>Check</th><th>This code</th><th>Reference</th></tr>
+  <tr><td>Saturn at opposition</td><td>2026-10-04</td><td class="ok">4 Oct 2026 ✓</td></tr>
+  <tr><td>Neptune at opposition</td><td>2026-09-26</td><td class="ok">26 Sep 2026 ✓</td></tr>
+  <tr><td>Venus inferior conjunction</td><td>2026-10-24</td><td class="ok">24 Oct 2026 ✓</td></tr>
+  <tr><td>Uranus at opposition</td><td>2026-11-25</td><td class="ok">25 Nov 2026 ✓</td></tr>
+  <tr><td>Jupiter / Mars oppositions</td><td>2027-02-11 / 2027-02-19</td><td class="ok">11 Feb / 19 Feb 2027 ✓</td></tr>
+  <tr><td>Mars position vs Horizons (MRO's vector, it orbits 300 km up)</td><td colspan="2">≈ 30,000 km apart. Table 1 promises 25,000 km nominal for Mars: at the face's scale that is 0.0002 of a pixel.</td></tr>
+</table>
+<h3>How the data reaches the watch</h3>
+<div class="flow">
+  <div class="box"><b>NASA / JPL / CelesTrak</b>public APIs, no keys: SBDB, Horizons, satellite elements, CAD, TLE</div>
+  <div class="arr">→</div>
+  <div class="box"><b><code>tools/skypack.py</code></b>already written: fetches, trims, writes the pack (today it feeds this page)</div>
+  <div class="arr">→</div>
+  <div class="box"><b>SD card <code>/sky/</code></b>binary tables + textures. Copied from a PC, or fetched by the watch itself over Wi-Fi (ESP32-S3 HTTPS)</div>
+  <div class="arr">→</div>
+  <div class="box"><b>Watch</b>planets, Moon and events built in: works offline forever; the pack adds the atlas</div>
+</div>
+<p class="meta">The live snapshot in this page was built <span id="built"></span>: it has
+<span id="cnt"></span>.</p>
+
+<h2 id="use"><span class="n">03</span>Making it amazing to use</h2>
+<div class="grid3">
+  <div class="card"><h4>1 · It's a watch first</h4><p>The time is the Sun: dot-matrix numerals in the middle, and the planets orbit round it. Glanceable before it's explorable.</p></div>
+  <div class="card"><h4>2 · Time under one finger</h4><p>Grab a planet and drag it round the Sun. Time runs at that planet's pace. Detents every month, and a strong tick when you hit an event.</p></div>
+  <div class="card"><h4>3 · Zones, not pinches</h4><p>A round 1.43" screen hates pinching. You tap the band you care about. The rim goes out a level, the core goes in, the time goes home.</p></div>
+  <div class="card"><h4>4 · Everything answers a tap</h4><p>Planets open cards with an iris from where they sit. Asteroids, comets and spacecraft give a one-line read-out.</p></div>
+  <div class="card"><h4>5 · Always back to the truth</h4><p>A NOW pill whenever you've travelled. A spun globe springs back to how the planet really faces you right now.</p></div>
+  <div class="card"><h4>6 · One red thing</h4><p>The next event, drawn as its geometry: Sun, Earth and planet in a line, or Earth to two planets meeting.</p></div>
+</div>
+<h3>The face as zones</h3>
+<div class="grid2">
+<svg viewBox="0 0 300 300" style="max-width:340px">
+  <circle cx="150" cy="150" r="146" fill="#000" stroke="#333"/>
+  <circle cx="150" cy="150" r="143" fill="none" stroke="#d71921" stroke-dasharray="3 4"/>
+  <circle cx="150" cy="150" r="101" fill="none" stroke="#8fd3ff" stroke-dasharray="3 4"/>
+  <circle cx="150" cy="150" r="40" fill="none" stroke="#4fd18b" stroke-dasharray="3 4"/>
+  <text x="150" y="146" fill="#fff" font-size="13" text-anchor="middle">14:35</text>
+  <text x="150" y="162" fill="#4fd18b" font-size="8" text-anchor="middle">SUN · TIME</text>
+  <text x="150" y="80" fill="#8fd3ff" font-size="9" text-anchor="middle">INNER · tap</text>
+  <text x="150" y="35" fill="#ccc" font-size="9" text-anchor="middle">OUTER · tap</text>
+  <text x="150" y="12" fill="#d71921" font-size="8" text-anchor="middle">RIM → BEYOND</text>
+  <rect x="95" y="252" width="110" height="18" rx="9" fill="#1a1a1a"/><circle cx="104" cy="261" r="3" fill="#d71921"/>
+  <text x="152" y="264" fill="#fff" font-size="8" text-anchor="middle">NEXT EVENT · IN 10 D</text>
+</svg>
+<table>
+  <tr><th>Where</th><th>Gesture</th><th>Does</th></tr>
+  <tr><td>Face, anywhere (DRAG = PAN, the default)</td><td>drag · flick</td><td>Overhead: move the map, glide on a flick (RECENTRE in the menu). Tilt: look around</td></tr>
+  <tr><td>Face, anywhere (DRAG = TIME)</td><td>drag round the centre</td><td>Scrub time at the grabbed planet's pace (Earth by default), with momentum. Within 36 px of the centre a twitch is ignored</td></tr>
+  <tr><td>Anywhere that isn't a control (locked or not)</td><td>hold 0.75 s · hold 1.5 s</td><td>Release after 0.75 s: 3D tilt / flat · at 1.5 s: lock / unlock (a 32-dot ring round the finger fills in two halves)</td></tr>
+  <tr><td>Locked face (the default)</td><td>tap · drag</td><td>Nothing but a read-out, "HOLD 1.5 S TO UNLOCK": a watch face must survive sleeves. The time tab, menu arc and zoom dial are hidden</td></tr>
+  <tr><td>Centre (r &lt; 62), unlocked</td><td>tap</td><td>The Sun's card</td></tr>
+  <tr><td>Face in TILT (DRAG = LOOK)</td><td>drag</td><td>Look around: sideways orbits the camera round the Sun, up/down changes the tilt (10–85°). Time moves on the rings, so you can look freely</td></tr>
+  <tr><td>Time tab (top right arcs)</td><td>tap · pull inward</td><td>Open the time rings (pull follows the finger, past 40 % it opens)</td></tr>
+  <tr><td>Time rings (open)</td><td>drag along · tap a value · tap × grip</td><td>Years / months / days travel with detent ticks and momentum · fly to that date · fold back into the tab. Empty taps don't change zones while they're open</td></tr>
+  <tr><td>Zoom dial (bottom rim, 135–225°)</td><td>drag along · tap a spot · mouse wheel</td><td>Zoom 0.5–4× about the Sun (log scale, ticks at 0.5/1/2/4, snap to 1×) · fly to that zoom</td></tr>
+  <tr><td>Menu arc (right rim, 70–110°; touch area 62–118°, outer 47 px)</td><td>tap or edge swipe inward · swipe outward · tap an icon · tap an option · tap outside</td><td>Slide the menu out (the pull follows your finger) · slide that button's options out · apply · fold away</td></tr>
+  <tr><td>NOW pill / event chip</td><td>tap</td><td>Buttons claim the touch the moment the finger lands and stay visible while pressed (this fixed taps on NOW falling through to the outer ring)</td></tr>
+  <tr><td>Anywhere</td><td>press 0.45–0.75 s</td><td>Nothing: a press that long is never a tap</td></tr>
+  <tr><td>Edge band (outer 36 px), left half</td><td>swipe inward</td><td>Back: zone → face; card / events → face, following the finger. The only back gesture</td></tr>
+  <tr><td>Inner / outer band, rim</td><td>tap</td><td>Expand that zone (the others collapse to the rim or the core)</td></tr>
+  <tr><td>A planet</td><td>tap</td><td>Its card, opened with an iris from the planet</td></tr>
+  <tr><td>Event chip / NOW pill</td><td>tap</td><td>Events list / fly back to now</td></tr>
+  <tr><td>Card: globe core (inner 62 %, ≥ 56 px from the glass edge)</td><td>drag / tap the globe</td><td>Fly round the planet: the surface follows your finger, the Sun stays put / PHOTO → HEAT → DOT</td></tr>
+  <tr><td>Card: <code>NOW | FREE</code> switch (thumb zone)</td><td>tap a side</td><td>NOW: real sunlight, springs back to the true view · FREE: everything you see is lit, stays put, tilts to ±88°</td></tr>
+  <tr><td>Card: inside, including the globe's outer ring</td><td>swipe left · right · up/down</td><td>Next body · previous body (both follow the finger; 90 px or a flick commits) · pages (~56 px or a flick)</td></tr>
+  <tr><td>Card: edge band</td><td>drag along the rim · swipe in from the left</td><td>Dial through bodies, clockwise = next · back</td></tr>
+</table>
+</div>
+<h3>Motion, to the Smooth-at-30 budgets</h3>
+<table>
+  <tr><th>Move</th><th>Frames</th><th>Curve</th><th>Budget check</th></tr>
+  <tr><td>Zone morph (each body slides along its radius)</td><td>10</td><td>EASE_STEADY</td><td>Largest move: Jupiter, 167 → 80 px (peak ~19 px/f): a transition, so ≤ 64 ✓</td></tr>
+  <tr><td>Planet card in/out</td><td>13 / 11</td><td>iris, hard edge + 2 px rim</td><td>Same iris as NOS today</td></tr>
+  <tr><td>Dial to next body</td><td>9</td><td>rigid slide</td><td>≤ 64 ✓</td></tr>
+  <tr><td>Scrub</td><td>1:1</td><td>finger + momentum (×0.9 per frame)</td><td>Earth under the finger ✓. Mercury moves 4.2× faster than Earth: it can step &gt; 16 px. Cap its step and draw a 2-ghost <code>ui_trail</code></td></tr>
+  <tr><td>Fly to an event / NOW, rings, flicks</td><td>10–30</td><td>in-out</td><td>Motion blur: each planet is drawn as a streak along its orbit covering the time the frame spanned (≤ 56 samples, fading tail), so fast travel reads as motion, not strobing</td></tr>
+  <tr><td>Menu out / options out</td><td>9 / 8</td><td>EASE_STEADY, rows one frame apart</td><td>Rigid slides from the left edge; ≤ 64 px/f</td></tr>
+  <tr><td>3D tilt</td><td>12</td><td>EASE_STEADY</td><td>Rim moves ≤ 15 px/f ✓</td></tr>
+</table>
+
+<h2 id="events"><span class="n">04</span>Alignments &amp; events</h2>
+<p>"Alignment" means several things, so the face flags each kind on its own. All of them are found by the
+watch scanning its own maths a few hundred days ahead (≈ 20 ms on the ESP32, once a day).</p>
+<table>
+  <tr><th>Kind</th><th>What it means for you</th><th>Rule</th></tr>
+  <tr><td><span class="tag">OPPOSITION</span></td><td>Planet opposite the Sun: up all night, at its closest and brightest. The best night of the year to look.</td><td>elongation maximum &gt; 170°</td></tr>
+  <tr><td><span class="tag">MEETS</span></td><td>Two planets close together in the sky</td><td>separation minimum ≤ 3° (bright pairs) or ≤ 1.5°</td></tr>
+  <tr><td><span class="tag">LINE-UP</span></td><td>The "planet parade" of the news: 4+ planets in one sky at once</td><td>≥ 4 planets ≥ 18° from the Sun on the same side, ≥ 3 visible to the naked eye</td></tr>
+  <tr><td><span class="tag">ELONGATION</span></td><td>Mercury or Venus at their farthest from the Sun: the best chance to see them</td><td>elongation maximum</td></tr>
+  <tr><td><span class="tag">CONJUNCTION</span></td><td>Behind the Sun (radio blackout for Mars rovers) or passing between us and it</td><td>elongation minimum &lt; 12° (shown in cards, not the chip)</td></tr>
+  <tr><td><span class="tag">MISSION</span> <span class="tag">FLYBY</span> <span class="tag">COMET</span></td><td>BepiColombo arriving, asteroids ~25 m and up passing inside 1.4 lunar distances, bright comets at perihelion</td><td>from the pack</td></tr>
+</table>
+<h3>Next 12 months (computed in this page, now)</h3>
+<table id="evtable"></table>
+
+<h2 id="details"><span class="n">05</span>Planet details</h2>
+<p>Every body gets the same four pages, so it's learnable after one visit:</p>
+<div class="grid2">
+  <div class="card"><h4>GLOBE</h4><p>The planet as it faces you <i>right now</i>, from its IAU spin axis and rotation:
+  <ul style="margin:6px 0 0 18px;padding:0">
+    <li>Venus as a 4 %-lit crescent ten days before it passes between us and the Sun.</li>
+    <li>Saturn's rings nearly edge-on after the 2025 crossing.</li>
+    <li>The Moon at its real phase.</li>
+    <li>Earth lit by the real Sun, with city lights on the night side.</li>
+  </ul>
+  The hero number is how far it is from you, and how long its light takes to reach you.</p></div>
+  <div class="card"><h4>HEAT</h4><p>An estimated temperature distribution, shown two ways:
+  <ul style="margin:6px 0 0 18px;padding:0">
+    <li><b>On the globe</b>, as 8 discrete colour steps: the day/night pattern live (tap the globe to switch).</li>
+    <li><b>As a dot-matrix graph</b> that suits the body. Rocky bodies show one solar day at the equator. Venus shows altitude, with the Earth-like layer at 55 km. The giants show temperature against depth in pressure. The Sun shows core to corona.</li>
+  </ul>
+  All are labelled as models from the probe and orbiter data they're based on.</p></div>
+  <div class="card"><h4>MOONS &amp; CRAFT</h4><p>Face-on from above the pole: the major moons at their real positions, every minor moon as a dot on the outer band, orbiters as × with their status, and SUN / YOU directions on the rim. Mercury shows BepiColombo's countdown to arrival.</p></div>
+  <div class="card"><h4>FACTS</h4><p>Five or six rows: distance from the Sun now, day and year, gravity, one surprising fact, and the next event involving this body.</p></div>
+</div>
+<p class="meta">Next, with the strap modules: <b>Where to look</b>. GPS + compass (QMC5883L) turn the card into a pointer: "Jupiter: 34° up, east-south-east", with an arrow that follows your wrist.
+That needs the observer's location for altitude and azimuth; the rest of the face doesn't.</p>
+
+<h2 id="threed"><span class="n">06</span>3D, and will it fit?</h2>
+<div class="big"><b>Yes, it fits:</b> everything is under 0.5 % of the 32 GB card. The real limits are PSRAM
+(8 MB, shared with the fling-blur cache) and the SD bus. The design below works within both.</div>
+<h3>How a lit, spinning, textured globe runs on an ESP32-S3</h3>
+<ol>
+  <li><b>Build a lookup table when the card opens</b> (and per 5° of tilt). For every pixel of the disc, store its latitude,
+  longitude and surface normal for the planet's real tilt toward you. That's 44 k pixels at R = 118 → ~350 KB in PSRAM.
+  It's built with fast atan/asin approximations. libm is ~1000 cycles a call on this build and must never run per pixel.</li>
+  <li><b>Each frame</b>, for each pixel: add the spin to the longitude, fetch one RGB565 texel, and shade with a 3-term dot product
+  against the Sun. That's ~25 cycles/px ≈ 1.1 M cycles ≈ <b>5 ms on one core</b>. Rows map straight onto NOS's 16-row stripes.</li>
+  <li><b>Flush</b> only the globe's 236 × 236 window: 26 % of a frame ≈ 6 ms of bus. At rest it's a cached sprite: 0 ms.</li>
+  <li><b>Saturn's rings</b>: a second table (ring radius per pixel, front/behind) and a 1-D ring texture. The planet's shadow on the rings is one test per pixel.</li>
+  <li><b>HEAT and DOT</b> modes reuse the same table: a temperature function into an 8-colour palette, or a colour halftone of the texture.
+  Each 4 px cell becomes one dot: the cell's hue at full strength, sized by its brightness.</li>
+  <li><b>FREE view</b> swaps the Sun vector for a fixed light over your shoulder: same 3-term dot product, no extra cost.</li>
+</ol>
+<p>This page's globe is that exact algorithm in JavaScript (<code>class Globe</code> in <code>watch.js</code>).</p>
+<table>
+  <tr><th>Item</th><th>On SD</th><th>In PSRAM while open</th><th>Note</th></tr>
+  <tr><td>Planet textures 1024 × 512 RGB565, pre-converted (no JPEG decode on the watch)</td><td>12 × 1 MB</td><td>1 MB (the open body)</td><td>Load: ~0.6 s at today's 1-bit 20 MHz SD. Show a DOT render from a 16 KB thumbnail instantly, then dissolve to the photo. Preload neighbours while dialling</td></tr>
+  <tr><td>2048 × 1024 versions for a zoom view (optional)</td><td>12 × 4 MB</td><td>tiles only</td><td>Streamed in 64-row tiles</td></tr>
+  <tr><td>Globe lookup table</td><td>none</td><td>~350 KB</td><td>Rebuilt per tilt step in ~10 ms</td></tr>
+  <tr><td>Full asteroid catalogue (MPCORB ≈ 1.4 M × 28 B)</td><td>~45 MB</td><td>32 KB live set</td><td>Live: the 4,000 brightest. A density map of all of them is rebuilt nightly on the charger (~2 s)</td></tr>
+  <tr><td>Moons, comets, spacecraft, events</td><td>&lt; 1 MB</td><td>~100 KB</td><td></td></tr>
+  <tr><td>Earth satellite TLEs (active catalogue)</td><td>~2 MB</td><td>only the chosen few</td><td>ISS, Hubble, Tiangong… v2</td></tr>
+  <tr><td><b>Total</b></td><td><b>&lt; 110 MB (0.3 % of 32 GB)</b></td><td><b>~1.6 MB</b></td><td>Borrow the idle fling-blur arena (2.6 MB) while the card is open</td></tr>
+</table>
+<p class="meta">Also in 3D: holding the centre tilts the whole system (in the prototype). A software 3D mesh renderer
+isn't needed: spheres are the only 3D shape here, and the lookup-table trick is far cheaper than triangles.</p>
+
+<h2 id="atlas"><span class="n">07</span>The atlas</h2>
+<div class="grid2">
+  <div>
+    <h3>Moons by planet</h3><table id="moontable"></table>
+    <h3>Bright comets near the Sun</h3><table id="comettable"></table>
+  </div>
+  <div>
+    <h3>Spacecraft (status as reported publicly, Oct 2026)</h3><table id="crafttable"></table>
+    <h3>Closest asteroid flybys ahead</h3><table id="flybytable"></table>
+  </div>
+</div>
+<div class="note">Mission status is a hand-kept list in the pack:
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li>MAVEN was declared lost in June 2026.</li>
+  <li>Akatsuki ended in September 2025, so Venus has no orbiter.</li>
+  <li>Juno's extension expired in September 2025, and reports since conflict on whether it's operating.</li>
+  <li>BepiColombo's Mercury orbit insertion is planned for 21 November 2026.</li>
+</ul>
+The watch would show these as stated, not guess.</div>
+
+<h2 id="nos"><span class="n">08</span>Fitting NOS</h2>
+<ul>
+  <li>True black, white ink and greys for hierarchy. <b>Red appears once</b>: the active event's geometry and the chip's dot.</li>
+  <li>Hero numbers in dot matrix (the time, the distance, the temperature range). Labels are ALL-CAPS mono, and words use the grotesk.</li>
+  <li>Planets are flat discs with the sunward half lit: two fills, no gradients. The face stays monochrome unless you choose TINT.</li>
+  <li>Discrete scales: the heat palette has 8 steps, and the graph is a dot-matrix line.</li>
+  <li><b>Always-on:</b> grey dots for the planets plus the time, no orbits or belt. It redraws once a minute; Mercury moves ~5 px a day, so that's plenty.</li>
+  <li>Back is an edge swipe: it starts in the outer 36 px of the glass, on the left, heading inward. Inside a card, horizontal swipes page between bodies; that's why back had to move to the edge. A flick means real speed (&gt; 0.6 px/ms over the last 100 ms), not pixels per touch event.</li>
+</ul>
+
+<h2 id="plan"><span class="n">09</span>Build plan</h2>
+<div class="phase">
+  <div>0 · NOW</div><div>This draft: you review the look, the gestures and the scope. Nothing changes in firmware.</div>
+  <div>1 · MATHS</div><div><code>core/ephem.c</code>: planets, Moon, the conic solver for small bodies, moons, events. Host tests against Horizons fixtures written by <code>skypack.py</code>, added to <code>tools/test.ps1</code>.</div>
+  <div>2 · FACE</div><div><code>nos/faces/face_orrery.c</code> in the sim: face, zones, scrub with detents and magnets, event chip, AOD.
+    <ul style="margin:4px 0 0 18px;padding:0">
+      <li>Checks: <code>--damagecheck</code>, the motion audit and the cost model.</li>
+      <li>Per-frame body lists cached (the stripe lesson). The belt only while zoomed.</li>
+    </ul></div>
+  <div>3 · CARDS</div><div><code>nos/globe.c</code> (lookup-table renderer, RGB565) and the four pages. The sim reads textures from <code>sim/sd/sky/</code>.</div>
+  <div>4 · BOARD</div><div><code>skypack.py --sd</code> writes the binary pack. Flash to the 1.43-B, then measure:
+    <ul style="margin:4px 0 0 18px;padding:0">
+      <li>globe ms per frame, SD load time and face cost (<code>facecost2.py</code>);</li>
+      <li>scrub smoothness (<code>gestures.py</code>);</li>
+      <li>0 late frames, which is the bar.</li>
+    </ul></div>
+  <div>5 · LIVE</div><div>Wi-Fi refresh (or the phone), SGP4 for the ISS and other satellites with pass alerts, Where to look with GPS + compass, and an optional buzz on the evening of an event.</div>
+</div>
+<p class="meta">Risks:
+<ul style="margin:4px 0 0 18px;padding:0">
+  <li>PSRAM pressure from blur, textures and lookup tables together. Mitigation: lend the blur arena.</li>
+  <li>The 1-bit SD bus. Mitigation: thumbnails first and preloading; 40 MHz mode doubles it.</li>
+  <li>Belt dots while scrubbing. Mitigation: cap to 1,000 during drags.</li>
+  <li>Label collisions in crowded zones. Mitigation: a priority list.</li>
+</ul></p>
+
+<h2 id="decide"><span class="n">10</span>Your calls</h2>
+<div class="big"><b>Decided (15 Oct):</b>
+<ul style="margin:6px 0 0 18px;padding:0">
+  <li><b>Globe:</b> both PHOTO and DOT, a tap apart (HEAT too).</li>
+  <li><b>Planets:</b> tinted on the face.</li>
+  <li><b>Orientation:</b> the Sun stays fixed at the centre and Earth orbits it like every other planet (the vernal point at 12 o'clock).</li>
+</ul></div>
+<div class="ask"><b>Photo globe or dot globe by default?</b> The photo globe is the one place colour enters NOS: it's a
+window onto a real world. The DOT render keeps the house style. (I'd default to PHOTO for planets and DOT in always-on.)</div>
+<div class="ask"><b>Mono or tinted planets on the face?</b> Toggle <code>TINT</code> above. (I'd keep mono: sizes and
+Saturn's ring already make each planet recognisable.)</div>
+<div class="ask"><b>Which events may buzz you?</b> I'd allow oppositions, bright conjunctions, line-ups, and ISS passes once satellites land: at most one a day, in the evening.</div>
+<div class="ask"><b>Face or app?</b> I'd make both. The face is the overview with scrubbing. The cards and the events list are pushed screens of an <i>Orrery</i> app, so the launcher can open it too.</div>
+
+<h2 id="credits"><span class="n">11</span>Sources &amp; credits</h2>
+<ul class="meta">
+  <li>Planet positions: <a href="https://ssd.jpl.nasa.gov/planets/approx_pos.html">JPL, Approximate Positions of the Planets</a> (E. M. Standish).</li>
+  <li>Moon elements: <a href="https://ssd.jpl.nasa.gov/sats/elem/">JPL planetary satellite mean elements</a>.</li>
+  <li>Spacecraft and moon refresh: <a href="https://ssd.jpl.nasa.gov/horizons/">JPL Horizons API</a>.</li>
+  <li>Asteroids and comets: <a href="https://ssd-api.jpl.nasa.gov/doc/sbdb.html">SBDB</a>, <a href="https://ssd-api.jpl.nasa.gov/doc/sbdb_query.html">SBDB query</a>, <a href="https://ssd-api.jpl.nasa.gov/doc/cad.html">close-approach data</a>.</li>
+  <li>Galilean moons and the Moon series: Meeus, <i>Astronomical Algorithms</i>, ch. 44 / Astronomical Almanac. Spin axes: IAU WGCCRE.</li>
+  <li>Textures: <a href="https://www.solarsystemscope.com/textures/">Solar System Scope</a>, CC BY 4.0, based on NASA imagery; downscaled to 1024 × 512.</li>
+  <li>Mission status:
+    <ul style="margin:2px 0 0 18px;padding:0">
+      <li><a href="https://en.wikipedia.org/wiki/MAVEN">MAVEN</a>, <a href="https://en.wikipedia.org/wiki/2001_Mars_Odyssey">Mars Odyssey</a>, <a href="https://global.jaxa.jp/press/2025/09/20250918-2_e.html">JAXA on Akatsuki</a>;</li>
+      <li><a href="https://www.space.com/space-exploration/missions/nasas-juno-probe-orbiting-jupiter-may-have-come-to-an-end-but-no-one-can-confirm">Space.com on Juno</a>, <a href="https://en.wikipedia.org/wiki/BepiColombo">BepiColombo</a>.</li>
+    </ul></li>
+  <li>Built by <code>tools/skypack.py</code>. The maths is in <code>docs/assets/solar/ephem.js</code>; the prototype is in <code>docs/assets/solar/watch.js</code>.</li>
+</ul>
+</main>
+
+<script src="assets/solar/ephem.js"></script>
+<script src="assets/solar/atlas.js"></script>
+<script>window.ATLAS = ATLAS;</script>
+<script src="assets/solar/textures.js"></script>
+<script>window.SOLAR_TEX = SOLAR_TEX;</script>
+<script src="assets/solar/watch.js"></script>
+<script>
+(function () {
+  const O = window.Orrery, E = window.Ephem, A = window.ATLAS;
+  O.setup(document.getElementById('w'));
+  document.getElementById('today').textContent = new Date().toDateString();
+  const ctl = document.getElementById('ctl');
+  const sync = () => {
+    ctl.querySelector('[data-k=aod]').classList.toggle('on', O.opt.aod);
+    ctl.querySelector('[data-k=tint]').classList.toggle('on', O.opt.tint);
+    ctl.querySelector('[data-k=zones]').classList.toggle('on', O.opt.zones);
+    ctl.querySelector('[data-k=tilt]').classList.toggle('on', !!O.st.tilt);
+    ctl.querySelector('[data-k=fps]').textContent = O.opt.fps + ' FPS';
+    const lb = ctl.querySelector('[data-k=lock]'); lb.textContent = O.st.locked ? 'LOCKED' : 'UNLOCKED'; lb.classList.toggle('on', !O.st.locked);
+  };
+  window.onOrreryOpt = sync;
+  ctl.addEventListener('click', (e) => {
+    const k = e.target.dataset && e.target.dataset.k; if (!k) return;
+    if (k === 'lock') O.lock(); else if (k === 'rings') O.rings(); else if (k === 'menu') O.menu(); else if (k === 'back') O.back(); else if (k === 'now') O.now(); else if (k === 'tilt') O.tilt();
+    else if (k === 'fps') O.opt.fps = O.opt.fps === 30 ? 60 : 30; else O.opt[k] = !O.opt[k];
+    sync();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' || e.key === 'Backspace') O.back(); });
+  const ro = document.getElementById('ro');
+  let n = 0;
+  window.onOrreryFrame = (st) => {
+    if (++n % 6) return;
+    const jd = E.jdOf(Date.now()) + st.off;
+    ro.textContent = `${st.screen === 'card' ? 'card: ' + st.card.body : st.screen === 'events' ? 'events' : 'face · zone ' + st.view} · ` +
+      `${O.fmtDate(jd)}${Math.abs(st.off) > 0.02 ? ` (${st.off > 0 ? '+' : ''}${st.off.toFixed(1)} d)` : ' · now'}${st.snapped ? ' · ⦿ ' + st.snapped.title : ''}`;
+    sync();
+  };
+  /* tables from the live data */
+  const nowJD = E.jdOf(Date.now());
+  const evs = O.events().filter((e) => e.jd >= nowJD - 1 && e.jd <= nowJD + 366);
+  document.getElementById('evtable').innerHTML = '<tr><th>When</th><th>Event</th><th>Detail</th></tr>' + evs.map((e) =>
+    `<tr class="evrow"><td>${O.fmtDate(e.jd)}<br>${O.fmtIn(e.jd - nowJD).toLowerCase()}${e.end ? '<br>to ' + O.fmtDate(e.end, false) : ''}</td>` +
+    `<td><span class="tag">${e.kind.toUpperCase()}</span>${e.title}</td><td>${e.detail}</td></tr>`).join('');
+  const by = {}; A.moons.forEach((m) => by[m.planet] = (by[m.planet] || 0) + 1);
+  const majors = (p) => A.moons.filter((m) => m.planet === p && m.fresh).map((m) => m.name).join(', ') || A.moons.filter((m) => m.planet === p).slice(0, 3).map((m) => m.name).join(', ');
+  document.getElementById('moontable').innerHTML = '<tr><th>Planet</th><th>In JPL list</th><th>Major (shown labelled)</th></tr>' +
+    Object.keys(by).map((p) => `<tr><td>${p[0].toUpperCase() + p.slice(1)}</td><td>${by[p]}</td><td>${majors(p)}</td></tr>`).join('');
+  const comets = A.comets.filter((c) => c.M1 !== null).slice(0, 7);
+  document.getElementById('comettable').innerHTML = '<tr><th>Comet</th><th>Perihelion</th><th>q (au)</th><th>Mag.</th></tr>' +
+    comets.map((c) => `<tr><td>${c.name}</td><td>${O.fmtDate(c.tp)}</td><td>${c.q.toFixed(2)}</td><td>${c.M1.toFixed(1)}</td></tr>`).join('');
+  document.getElementById('crafttable').innerHTML = '<tr><th>Craft</th><th>Where</th><th>Status</th></tr>' +
+    A.craft.map((c) => { const r = c.xyz ? Math.hypot(...c.xyz) : 0; return `<tr><td>${c.name}</td><td>${c.planet ? 'orbiting ' + c.planet[0].toUpperCase() + c.planet.slice(1) : r.toFixed(r < 2 ? 2 : 0) + ' au from the Sun'}</td><td>${c.status}</td></tr>`; }).join('');
+  const fl = A.flybys.slice().sort((a, b) => a.au - b.au).slice(0, 6);
+  document.getElementById('flybytable').innerHTML = '<tr><th>Asteroid</th><th>Date (UT)</th><th>Distance</th><th>Size</th></tr>' +
+    fl.map((f) => `<tr><td>${f.des}</td><td>${f.date}</td><td>${(f.au / 0.00257).toFixed(2)} LD</td><td>${f.H ? '~' + Math.round(1329 / Math.sqrt(0.14) * Math.pow(10, -f.H / 5) * 1000) + ' m' : ''}</td></tr>`).join('');
+  document.getElementById('built').textContent = A.built;
+  document.getElementById('nMoons').textContent = A.moons.length;
+  document.getElementById('nBelt').textContent = A.belt.length.toLocaleString();
+  document.getElementById('cnt').textContent = `${A.moons.length} moons, ${A.belt.length.toLocaleString()} asteroids, ${A.small.length} named bodies, ${A.comets.length} comets near perihelion, ${A.flybys.length} Earth flybys and ${A.craft.length} spacecraft (${Math.round((A.belt.length * 60 + 95000) / 1024)} KB as JSON)`;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Repeated fresh stationary GNSS fixes must not add distance.
+wait 100
+set step_rate 0
+set gps_motion 0
+workout start 0
+wait 30000
+expect workout gps_status 2
+expect workout distance 0
+expect workout steps 0
+expect workout pace_valid 0
+workout info stationary
+workout finish
+wait 200
+expect workout save 2
+

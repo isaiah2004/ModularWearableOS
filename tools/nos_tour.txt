@@ -1,0 +1,188 @@
+# nos_tour.txt — a screenshot of every NOS screen plus the main motions.
+# Run: build\nos_sim.exe --shots-all            (writes build/nos_shots/)
+# Every app: open (iris), settle, shot, back home. Sections give per-area cost summaries.
+time 10:09:30
+set battery 78
+
+mark home
+wait 800
+shot 00_home
+film 01_home_pager 12
+flick 120 233 380 233 140
+wait 600
+expect home_page 6
+flick 120 233 380 233 140
+wait 600
+expect home_page 5
+shot 02_home_music
+flick 380 233 120 233 140
+wait 600
+expect home_page 6
+flick 380 233 120 233 140
+wait 600
+expect home_page 0
+flick 380 233 120 233 140
+wait 600
+expect home_page 1
+shot 02_home_apps
+flick 120 233 380 233 140
+wait 600
+expect home_page 0
+
+mark control
+gif 03_control_drop 24
+drag 233 8 233 330 300
+wait 600
+expect top CONTROL
+shot 04_control
+home
+wait 700
+
+mark notifs
+notify Messages|Ana|See you at 7?
+wait 600
+shot 05_banner
+wait 4500
+drag 233 458 233 120 300
+wait 700
+shot 06_notifs
+home
+wait 700
+
+mark launcher
+open launcher
+wait 900
+shot 07_launcher
+film 08_launcher_scroll 16
+flick 233 330 233 140 150
+wait 900
+home
+wait 700
+
+mark faces
+open faces
+wait 900
+shot 09_faces
+home
+wait 700
+
+mark apps
+gif 10_iris_open 18
+open activity
+wait 900
+shot app_activity
+home
+wait 700
+open heart
+wait 900
+shot app_heart
+home
+wait 700
+open breathe
+wait 900
+shot app_breathe
+home
+wait 700
+open timer
+wait 900
+shot app_timer
+home
+wait 700
+open stopwatch
+wait 900
+shot app_stopwatch
+home
+wait 700
+open alarm
+wait 900
+shot app_alarm
+home
+wait 700
+open worldclock
+wait 900
+shot app_worldclock
+home
+wait 700
+open compass
+wait 900
+shot app_compass
+home
+wait 700
+open baro
+wait 900
+shot app_baro
+home
+wait 700
+open nav
+wait 900
+shot app_nav
+home
+wait 700
+open weather
+wait 900
+shot app_weather
+home
+wait 700
+open music
+wait 900
+shot app_music
+home
+wait 700
+open cell
+wait 900
+shot app_cell
+home
+wait 700
+open find
+wait 900
+shot app_find
+home
+wait 700
+open memo
+wait 900
+shot app_memo
+home
+wait 700
+open torch
+wait 900
+shot app_torch
+home
+wait 700
+open settings
+wait 900
+shot app_settings
+home
+wait 700
+open modules
+wait 900
+shot app_modules
+home
+wait 700
+open about
+wait 900
+shot app_about
+home
+wait 700
+open power
+wait 900
+shot app_power
+home
+wait 700
+
+mark modules_absent
+present 0
+open heart
+wait 900
+shot absent_heart
+home
+wait 700
+open compass
+wait 900
+shot absent_compass
+home
+wait 700
+present 0xFFFFFFFF
+
+mark idle
+wait 2000
+shot 99_end

@@ -1,0 +1,20 @@
+skipboot
+memfail 0
+imu start 100
+imu background 0
+expect imu state 4
+expect memfailures 1
+memfail 1
+imu start 100
+imu background 0
+expect imu state 4
+expect memfailures 2
+imu start 100
+imu background 0
+imu background 1000
+imu stop
+imu background 0
+expect imu state 0
+expect imu samples 100
+mem
+quit

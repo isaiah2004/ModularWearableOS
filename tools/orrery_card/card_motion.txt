@@ -1,0 +1,220 @@
+face 8
+wait 2500
+card 3
+open! orrery_card
+wait 3000
+card 3
+wait 3000
+mark earth_photo_spin
+film earth_photo_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot earth_photo_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot earth_photo_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark earth_heat_spin
+film earth_heat_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot earth_heat_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot earth_heat_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark earth_dot_spin
+film earth_dot_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot earth_dot_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot earth_dot_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark earth_paging
+film earth_pages 30 10 2
+drag 100 300 100 170 600
+wait 700
+drag 100 300 100 170 600
+wait 700
+drag 100 170 100 300 600
+wait 700
+drag 100 170 100 300 600
+wait 1000
+expect idle
+expect nolate
+card 7
+wait 3000
+mark saturn_photo_spin
+film saturn_photo_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot saturn_photo_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot saturn_photo_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark saturn_heat_spin
+film saturn_heat_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot saturn_heat_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot saturn_heat_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark saturn_dot_spin
+film saturn_dot_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot saturn_dot_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot saturn_dot_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark saturn_paging
+film saturn_pages 30 10 2
+drag 100 300 100 170 600
+wait 700
+drag 100 300 100 170 600
+wait 700
+drag 100 170 100 300 600
+wait 700
+drag 100 170 100 300 600
+wait 1000
+expect idle
+expect nolate
+card 2
+wait 3000
+mark venus_photo_spin
+film venus_photo_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot venus_photo_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot venus_photo_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark venus_heat_spin
+film venus_heat_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot venus_heat_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot venus_heat_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark venus_dot_spin
+film venus_dot_spin 24 8 2
+drag 233 214 350 220 600
+wait 4500
+shot venus_dot_now
+expect idle
+expect nolate
+tap 275 430
+drag 233 214 330 340 700
+wait 1500
+shot venus_dot_free
+expect idle
+expect nolate
+tap 191 430
+wait 4500
+tap 233 214
+wait 500
+mark venus_paging
+film venus_pages 30 10 2
+drag 100 300 100 170 600
+wait 700
+drag 100 300 100 170 600
+wait 700
+drag 100 170 100 300 600
+wait 700
+drag 100 170 100 300 600
+wait 1000
+expect idle
+expect nolate
+mark body_swipe
+film bodies 35 7 2
+drag 360 320 180 320 600
+wait 2000
+drag 100 320 280 320 600
+wait 2000
+expect idle
+expect nolate
+mark rim
+drag 440 233 340 410 700
+wait 2000
+shot rim_body
+expect idle
+expect nolate
+mark back
+flick 10 233 220 233 180
+wait 1000
+expect top HOME
+expect idle
+expect nolate

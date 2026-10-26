@@ -1,0 +1,18 @@
+menu "Watch board"
+
+choice WATCH_BOARD
+    prompt "Waveshare board variant"
+    default WATCH_BOARD_143B
+    help
+        Selects pin map, panel init and peripherals. The 1.43-B is the default;
+        build the 1.43C with sdkconfig.defaults.c143 (see tools/build_c143.ps1).
+
+config WATCH_BOARD_143B
+    bool "ESP32-S3-Touch-AMOLED-1.43 / 1.43-B"
+
+config WATCH_BOARD_143C
+    bool "ESP32-S3-Touch-AMOLED-1.43C"
+
+endchoice
+
+endmenu

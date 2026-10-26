@@ -1,0 +1,160 @@
+ORRERY rings / month scrub investigation, 2026-10-16
+Baseline: ecc74d9, watch-test. No commits, rebases, pushes, flashing or serial.
+
+STATUS: the 33 ms board target is NOT established or achieved by the model.
+The changes fix a real input error and avoid unnecessary cache construction.
+They substantially improve opening and the erroneous ring-fold gesture, but
+ordinary time scrubbing still exceeds budget. Do not present this as a 30 fps
+fix, and do not use the simulator's estimates as new watch measurements.
+
+Root causes and evidence
+
+1. The close grip's 22 px touch radius overlaps the outer side of the month
+   band near 43 degrees. IN_DOWN checked the grip before the month ring.
+   For example, (368,88) is on the month band but selected target 4 / drag 6:
+   folding the rings, rather than target 6 / drag 4: time travel. This changes
+   ringe and solar-system shrink and legitimately invalidates orbit coverage,
+   dot bins and labels. The new input test covers 49 starts in this overlap.
+   The actual grip centre still selects the grip. This is a demonstrated
+   route to the reported symptom, not proof of which gesture the board saw.
+
+2. Orbit shapes already exclude ephemeris dates in ecc74d9. In the original
+   arc_motion sequence the orbit build count rises by exactly ten while
+   opening, then remains fixed throughout month scrubbing. The original
+   overlap sequence repeatedly builds orbits with peak context drag=6.
+   A date-only orbit rebuild could not be reproduced at this HEAD.
+
+3. The dot key unnecessarily included planet dates and the previous trail
+   time. Dot bins actually depend on belt/small-body ephemerides, camera,
+   filters and ink. Real belt/small-body changes still rebuild their bins.
+
+4. Layout timing includes orbit coverage construction and dot collection /
+   scatter, not just rings_layout. Ordinary date-ring geometry already had
+   cached polar bases; calendar boundaries still rebuilt whole windows.
+   The new ORRPEAK_LAYOUT reports geometry / orbit coverage / dot bins /
+   labels / ring calendar / menu separately, plus ring opening and shrink
+   in thousandths. This avoids assigning the whole 29 ms to calendar layout.
+
+5. The UI cache explicitly rejected all open-ring reuse, then copied and
+   saved the changing command list again. The overview also rebuilt an empty
+   label layout on every ephemeris change.
+
+6. Cached bezel coverage was used only at ringe == 1. The last two opening
+   frames still rasterized six full band-edge arcs. Those arcs dominate the
+   baseline controls peak; steady-open controls use cached coverage already.
+   Tick marks still evaluated Wu slopes/coverage on each overlapping stripe.
+
+Changes
+
+- Visible inner date bands take priority over the grip's overlapping slop.
+- Independent dot dependency key; retain empty overview labels while open.
+- Cache the hidden/open controls prefix separately from live date controls.
+- Reuse scaled orbit/dot coverage during opening, with one exact rebuild at
+  the endpoint instead of ten. Camera/view/filter changes still invalidate.
+- Keep each ring's polar calendar window until its guard ticks approach the
+  cutout. Track the original calendar-entry origin independently so settling
+  restores precisely the original floating-point geometry and AA rounding.
+- Optional per-ring row-ordered Wu coverage streams. During time motion the
+  rotation is quantized to half degrees, allowing warm-phase reuse, especially
+  on the year ring. Settling uses exact coordinates. Replay performs no trig,
+  divisions or line raster setup. Legacy line capture is only populated on
+  cache allocation/capacity failure, not alongside a successful stream.
+- Replay the warm final bezel in the last two opening frames. This preview
+  differs by under 1.7 px at the inner band edge; the settled bezel is exact.
+- Add scoped layout profiling and a reproducible local validation runner.
+
+Calibration and timings
+
+The simulator now prices opening orbit-bucket operations at 7437/1391 of
+their old price and the uncached controls arcs from the supplied 24250 us
+peak (old replay: 7487 us controls, of which 6496 us was arcs). These are
+aggregate workload fits, not isolated PSRAM/kernel measurements. The same
+cost-only changes are applied to an isolated ecc74d9 snapshot for comparison.
+They do not discount operations just because a new implementation emits them.
+
+On the original month/grip-overlap script the priced baseline produces a
+25.6 ms layout and 24.3 ms controls peak, close to the supplied 28.7 / 24.25 ms.
+It identifies the same all-cache-build pattern, with context drag=6. Its
+capture and total work still underpredict the board. The original proper
+month scrub has no orbit rebuilds and cannot be fitted to the supplied orbit
+bucket tuple as though those were the same workload.
+
+Consequently the requested ~90 ms pre-fix reproduction is NOT complete.
+No arbitrary per-frame residual was inserted or removed to manufacture a
+before/after target. The remaining NOSF gap cannot be allocated confidently
+without matching raw NOSF work/rec/ras/wait/rot/drain and ORRPEAK context.
+
+Current model-only numbers, milliseconds:
+                                         priced HEAD       changed
+  Ordinary month scrub, painted mean        51.94            51.24
+  Ordinary month scrub, maximum             56.86            57.10
+  Opening, painted mean                     44.26            29.43
+  Opening, maximum                          77.49            59.62
+  Coast, late frames / 150                   94               48
+  Open rest, all-tick mean                    2.69             2.69
+  Open rest, maximum                         5.22             5.17
+  Open rest, transmitted frames / 30         0                0
+
+Overlap path: painted mean 70.39 -> 50.86 ms, maximum 79.07 -> 56.50 ms.
+The old path folds the rings; the changed path actually moves the date, so
+this comparison includes correcting the action, not only rendering speed.
+
+Expected board scrub/open/rest milliseconds: not reliably established.
+The model still misses the measured ~93 ms baseline, so extrapolating its
+after values to the watch would repeat the previous calibration mistake.
+The steady-scrub model also fails 33 ms independently of that uncertainty.
+Resting pixels and idle damage behavior are preserved; no new board result
+is claimed. The scoped traces now make the unresolved costs distinguishable.
+
+Memory, ESP32-S3 compile-only size probe
+
+  Additional PSRAM payload: 79,436 bytes (77.57 KiB).
+    Three tick caches:       3 x 18,268 bytes
+    Shared build workspace:     24,576 bytes
+    State/list/orbit additions:      56 bytes
+  Additional internal static RAM: 80 bytes
+    Optional-cache pointers:        16 bytes
+    Expanded profiling state:       64 bytes
+
+Allocator headers are excluded. Each new allocation is below 64 KiB.
+No frame-sized RGB buffer or new internal pixel array is introduced.
+The target compiler reports scene_update's own stack frame as 1712 bytes
+versus 1696 previously; draw_scene is 304 versus 272. These are individual
+function frames, not a measured task-stack high-water mark.
+
+Validation
+
+Run: python tools/orrery/check_scrub.py validate
+Artifacts: build/orrery/scrub/{results.json,memory.json,*.log,*.exe,...}
+
+- All 17 orrery input scripts and both blur scripts pass (19 total).
+- Existing renderer regressions pass with cost hooks both on and off.
+- 108 independent exact Wu / row-stream comparisons on patterned backgrounds,
+  translated and dimmed, with 13-row stripe boundaries and clipped columns.
+- 60 planet/trail-only dependency updates keep orbit/dot/label/UI caches warm;
+  belt/small-body changes and final scale changes invalidate independently.
+- 49 month/grip-overlap input checks; grip-centre behavior preserved.
+- The four settled now/travelled/returned/tilt PNG SHA-256 hashes match HEAD.
+- Cost/no-cost full frame hashes match; damage/full-render checks pass.
+- mblur, gate, pblur (including allocation failures), kblur and PSRAM unit
+  programs pass. A deliberately failed assertion exits 2 on stderr.
+- Strict simulator build (93 sources) and tools/test_settings_blur.py pass:
+  scalar blur/crop, fling/release, per-entry invalidation, allocation recovery,
+  immediate fling and damage checking. Existing unrelated compiler warnings
+  remain in nos_phone_sim.c.
+- Tests inherit disabled OS crash dialogs. Native blur assertions are linked
+  to explicit exit handlers; the simulator also disables CRT error UI.
+- ESP32-S3 translation-unit compilation and size probe pass; no firmware link
+  or device access is involved. Existing format-truncation warnings remain.
+
+Risks and remaining work
+
+Motion previews change transient pixels: half-degree tick rotation and scaled
+orbit/dot coverage; exact settled rendering is restored and checked. Optional
+cache failure falls back to the original renderer and its higher cost.
+The new tick stream mostly moves work from raster into capture; it does not
+eliminate all moving-frame preparation. The current ordinary-scrub maximum is
+slightly worse in the model despite lower mean and improved coast behavior.
+The end-of-opening exact rebuild still spikes. The 33 ms objective and full
+NOSF calibration remain open; this is a reviewed partial change, not a claim
+that the requested performance work is finished.

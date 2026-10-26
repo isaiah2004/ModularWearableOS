@@ -1,0 +1,59 @@
+# Energy and series coverage: first-Start weight prompt, live and summary energy rows, the
+# per-session movement / heart-rate charts in details, history kcal, and the body editor rows.
+wait 100
+set step_rate 120
+set gps_motion 2.5
+set hr_sample 148 0.95 1
+motion on
+open workout
+wait 900
+tap 312 244
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top BODY MASS
+shot energy_weight_prompt
+tap 233 372
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 150000
+expect workout state 1
+shot energy_live_long
+tap 312 372
+wait 500
+tap 154 372
+wait 500
+expect top FINISH SESSION
+tap 312 372
+wait 1200
+expect workout state 3
+shot energy_summary
+tap 154 372
+wait 700
+expect top SESSION DETAILS
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_1
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_2
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_3
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_4
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_5
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_6
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_7
+slide 233 380 233 140 700 100
+wait 700
+shot energy_details_8

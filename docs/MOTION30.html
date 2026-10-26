@@ -1,0 +1,968 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smooth at 30: motion principles for NOS</title>
+<style>
+  :root { --bg:#0e0f13; --panel:#16181f; --line:#2a2d38; --txt:#e6e6ea; --dim:#9a9caa; --ok:#4fd18b; --warn:#f2b84b; --bad:#ff6b6b; --acc:#8fd3ff; --red:#d71921; }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.6 system-ui,Segoe UI,sans-serif; }
+  nav { position:fixed; top:0; left:0; bottom:0; width:250px; overflow-y:auto; background:var(--panel); border-right:1px solid var(--line); padding:20px 14px; font-size:13px; }
+  nav a { display:block; color:var(--dim); text-decoration:none; padding:3px 6px; border-radius:6px; }
+  nav a:hover { color:var(--txt); background:#ffffff0d; }
+  nav .grp { color:#6c6f7d; text-transform:uppercase; letter-spacing:.06em; font-size:11px; margin:14px 0 4px 6px; }
+  main { margin-left:250px; max-width:1060px; padding:36px 48px 120px; }
+  h1 { font-size:34px; line-height:1.15; margin:0 0 6px; letter-spacing:-.01em; }
+  h2 { font-size:23px; margin:64px 0 10px; padding-top:12px; border-top:1px solid var(--line); }
+  h2 .n { color:var(--red); font-family:ui-monospace,Consolas,monospace; margin-right:10px; }
+  h3 { font-size:16px; margin:26px 0 6px; color:var(--acc); }
+  p, li { color:#d4d5dc; } a { color:var(--acc); }
+  .lede { font-size:18px; color:#c9cad3; max-width:820px; }
+  .meta { color:var(--dim); font-size:13px; }
+  .hz { background:#1d2029; border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:13px; color:var(--dim); margin:14px 0; }
+  .rule { background:linear-gradient(90deg,#1b1d25,#16181f); border-left:3px solid var(--red); border-radius:8px; padding:12px 16px; margin:14px 0; font-size:15.5px; }
+  .rule b { color:#fff; }
+  .nos { background:#141a14; border:1px solid #23402c; border-radius:10px; padding:10px 14px; margin:14px 0; font-size:14px; }
+  .nos::before { content:"NOS today"; display:block; font:700 11px ui-monospace,Consolas,monospace; color:var(--ok); letter-spacing:.08em; margin-bottom:4px; }
+  .todo { background:#1f1a12; border:1px solid #4a3a1c; border-radius:10px; padding:10px 14px; margin:14px 0; font-size:14px; }
+  .todo::before { content:"Change for the teams"; display:block; font:700 11px ui-monospace,Consolas,monospace; color:var(--warn); letter-spacing:.08em; margin-bottom:4px; }
+  .demo { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin:18px 0; }
+  .demo .cap { color:var(--dim); font-size:13px; margin-top:8px; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+  .wc { width:300px; height:300px; border-radius:50%; display:block; touch-action:none; }
+  .wc.sm { width:210px; height:210px; }
+  .grid4 { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .grid4 > div, .grid3 > div { text-align:center; font-size:13px; color:var(--dim); }
+  .grid4 canvas, .grid3 canvas { margin:0 auto 6px; }
+  .ctl { display:grid; grid-template-columns:auto 1fr auto; gap:6px 10px; align-items:center; font-size:13px; color:var(--dim); min-width:300px; flex:1; }
+  .ctl input[type=range] { width:100%; }
+  .ctl output, .ctl .v { color:var(--txt); font-family:ui-monospace,Consolas,monospace; font-size:12px; white-space:nowrap; }
+  select, button { background:#1d2029; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:5px 9px; font:inherit; font-size:13px; cursor:pointer; }
+  button:hover { border-color:#4a4f60; }
+  .stats { font-size:13.5px; color:#c9cad3; margin-top:10px; line-height:1.7; }
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)} .dim{color:var(--dim)}
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:10px 0; }
+  td, th { padding:6px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12.5px; }
+  td.n, th.n { text-align:right; font-family:ui-monospace,Consolas,monospace; white-space:nowrap; }
+  code { background:#0006; padding:1px 5px; border-radius:4px; font-size:13px; }
+  .cards { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; font-size:14px; }
+  .card b { color:#fff; } .card .k { font:700 12px ui-monospace,Consolas,monospace; color:var(--red); margin-right:6px; }
+  .src { font-size:12.5px; color:var(--dim); }
+  .src li { margin:3px 0; color:var(--dim); }
+  .pipe { width:100%; height:auto; }
+  @media (max-width: 1100px) { nav { display:none; } main { margin-left:0; padding:24px; } .grid4 { grid-template-columns:repeat(2,1fr); } }
+</style>
+</head>
+<body>
+<nav>
+  <div style="font-weight:700;color:#fff;padding:0 6px">Smooth at 30</div>
+  <div class="grp">Start</div>
+  <a href="#tldr">The rules on one page</a>
+  <a href="#why">Why 30 fps can look smooth</a>
+  <div class="grp">Principles</div>
+  <a href="#cadence">1 · Even cadence</a>
+  <a href="#step">2 · The per-frame step budget</a>
+  <a href="#spacing">3 · Author spacing for frames</a>
+  <a href="#far">4 · Moving far: fade or cut</a>
+  <a href="#endings">5 · Crisp endings</a>
+  <a href="#subpx">6 · Honest sub-pixel motion</a>
+  <a href="#smear">7 · Smear what is fast</a>
+  <a href="#quant">8 · Quantise on purpose</a>
+  <a href="#rhythm">9 · Whole-frame rhythm</a>
+  <a href="#latency">10 · Touch latency</a>
+  <a href="#tearing">11 · Tearing without TE</a>
+  <a href="#stable">12 · Stable frame cost</a>
+  <div class="grp">Apply</div>
+  <a href="#budget">Motion budget by class</a>
+  <a href="#audit">NOS audit and changes</a>
+  <a href="#measure">How we measure</a>
+  <a href="#team">Team hand-off</a>
+  <a href="#sources">Sources</a>
+</nav>
+<main>
+<h1>Smooth at 30</h1>
+<div class="lede">How to make motion on a 30 fps watch read as fluid, intentional and fast, and how the NOS engine and apps apply it. Built for the Waveshare 1.43-B: a 466 × 466 round AMOLED, about 36 mm across, fed over 40 MHz QSPI with no tearing-effect line.</div>
+<div class="meta">2026-10-12 · branch <code>nothing-os</code> · demos replay NOS's real curves and springs (ported from <code>nos/motion.c</code>) at exactly 30 fps</div>
+<div class="hz">Measuring your screen…</div>
+
+<p>We can't reach 60 fps on this board. A full repaint costs about 27 ms of work, and the bus alone takes 23.5 ms. NOS therefore runs at a flawless 30. But "30 fps" is a budget, not a look: the same 30 frames can feel like a premium device or a slideshow. Smoothness at low frame rates comes from <b>what each frame shows</b>, not how many frames there are. These are the four things that make 30 fps look bad, and each has a fix:</p>
+<ul>
+  <li><b>Uneven pacing.</b> A single 66 ms frame in a run of 33 ms frames is more visible than a steady lower rate.</li>
+  <li><b>Big steps per frame.</b> Once an object jumps further than the eye's short-range motion system can bridge, motion turns into strobing copies.</li>
+  <li><b>Hold blur.</b> AMOLED holds every frame for the full 33 ms, so a tracking eye smears a moving object by its per-frame step.</li>
+  <li><b>Latency.</b> A finger-driven object that trails the finger feels heavy. At 30 fps, every pipeline stage costs twice as much as at 60.</li>
+</ul>
+<p>On this board there's a fifth: <b>tearing</b>, because the panel's TE pin isn't routed.</p>
+
+<!-- ============================================================ -->
+<h2 id="tldr"><span class="n">00</span>The rules on one page</h2>
+<div class="cards">
+  <div class="card"><span class="k">R1</span><b>Even cadence beats speed.</b> Fixed 30 Hz deadlines, time-based motion that jumps ahead after a late frame, clamped stalls, and no first-frame jank inside the animation.</div>
+  <div class="card"><span class="k">R2</span><b>Respect the step budget.</b> ≤ 16 px per frame for anything the eye tracks. Up to ~64 px in short transitions. Bigger only as a deliberate single-frame cut.</div>
+  <div class="card"><span class="k">R3</span><b>Author spacing for frames.</b> Count durations in whole frames. Choose curves by their worst frame: peak step ≤ 1.6× the average (<code>EASE_STEADY</code>). No first frames near 0 %.</div>
+  <div class="card"><span class="k">R4</span><b>Move less, fade more.</b> Programmatic transitions travel ≤ 60 px and let ink fades carry the change, or they cut: anticipate, jump in one frame, settle 4-2-1-0.</div>
+  <div class="card"><span class="k">R5</span><b>Crisp endings.</b> Snap within 1 px or 1 dot. A spring never creeps for 6 frames of 0.2–1.5 px full repaints.</div>
+  <div class="card"><span class="k">R6</span><b>Honest sub-pixels.</b> AA shapes move at float positions. Text and sprites round the cumulative position, and slow scrolls use whole-pixel speeds.</div>
+  <div class="card"><span class="k">R7</span><b>Smear what is fast.</b> Small objects moving > 16 px/frame get one or two ghosts (≈45 % / 20 % ink, ≤ 2 frames) or a velocity stretch. Cost: one primitive.</div>
+  <div class="card"><span class="k">R8</span><b>Quantise on purpose.</b> Dot morphs, split-flap steps and decorative loops on twos read as style. Never step something the eye tracks.</div>
+  <div class="card"><span class="k">R9</span><b>Whole-frame rhythm.</b> Staggers of 1–2 frames, ≤ 8 items. Fades in 16 gamma-spaced ink levels. Durations from the frame table, not milliseconds.</div>
+  <div class="card"><span class="k">R10</span><b>Cut latency, then predict.</b> Sample touch at 60–100 Hz with timestamps and use the newest sample just before tick. Extrapolate drags by ≤ ½ frame. Least-squares fling velocity.</div>
+  <div class="card"><span class="k">R11</span><b>Design around tearing.</b> Prefer vertical motion and small per-frame deltas over full-screen fast horizontal slides. Keep writes in row order.</div>
+  <div class="card"><span class="k">R12</span><b>Keep frame cost flat.</b> Motion frames under 80 % of budget. Prebake and keep damage small, so the cadence never breaks mid-gesture.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="n">01</span>Why 30 fps can look smooth</h2>
+<p>Film runs at 24 fps and nobody calls it choppy. That works because of three things a UI has to do on purpose:</p>
+<ul>
+  <li><b>The frames are perfectly even.</b></li>
+  <li><b>Each frame carries motion blur.</b> The 180° shutter exposes for half the frame time.</li>
+  <li><b>Camera moves are kept slow.</b> Cinematographers' pan-speed rules exist because fast pans on 24 fps judder.</li>
+</ul>
+<p>A watch UI has no shutter and moves things far and fast. So we have to supply evenness, keep steps small, add blur ourselves where it helps, and make large changes in ways the eye doesn't try to track.</p>
+<h3>Our geometry</h3>
+<table>
+  <tr><th>Quantity</th><th class="n">Value</th><th>Note</th></tr>
+  <tr><td>Panel</td><td class="n">466 px / 36.3 mm</td><td>12.8 px per mm, ~326 ppi</td></tr>
+  <tr><td>One degree of visual angle at 30 cm</td><td class="n">67 px</td><td>The whole display spans about 7°</td></tr>
+  <tr><td>Short-range motion limit (Braddick d<sub>max</sub> ≈ 15 arcmin)</td><td class="n">~17 px/frame</td><td>~14 px at 25 cm, ~22 px at 40 cm</td></tr>
+  <tr><td>Frame</td><td class="n">33.3 ms</td><td>Fixed 30 Hz esp_timer deadline</td></tr>
+  <tr><td>Full-frame bus time</td><td class="n">23.5 ms / 11.7 ms</td><td>RGB565 / RGB332 at 40 MHz QSPI</td></tr>
+  <tr><td>Panel refresh</td><td class="n">~60 Hz ± 2 %</td><td>CO5300 internal oscillator, single GRAM, TE not routed</td></tr>
+</table>
+<p>Every px/frame figure in this document comes from this geometry. The demos below draw the watch about twice its real size on a typical monitor, so a step looks somewhat worse here than on the wrist. The ratios still hold.</p>
+
+<!-- ============================================================ -->
+<h2 id="cadence"><span class="n">02</span>Even cadence beats speed</h2>
+<div class="rule"><b>R1.</b> Present on a fixed 30 Hz grid.
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>Advance animation by real elapsed time, quantised to whole frames, so motion stays on schedule after a late frame.</li>
+    <li>Clamp long stalls.</li>
+    <li>Start an animation's clock on its first presented frame.</li>
+    <li>Targets: frame-time jitter under 4–5 ms, at most one missed slot per ~7 s of motion (hitch ratio &lt; 5 ms/s), p95 frame interval ≤ 40 ms.</li>
+  </ul>
+</div>
+<p>The perception evidence is consistent:</p>
+<ul>
+  <li>In a CHI 2023 study, the 95th-percentile frame-rate floor predicted experience better than average fps, and quality fell linearly with frame-time variance.</li>
+  <li>NVIDIA found 12 ms of frame-time variation hurt perceived smoothness, while 4 ms barely registered.</li>
+</ul>
+<p>Every platform converges on the same answer:</p>
+<ul>
+  <li><b>Apple</b> calls a frame that arrives late a <i>hitch</i>. It treats a hitch-time ratio under 5 ms/s as "mostly unnoticeable" and over 10 ms/s as critical. It advises dropping to a steady 30 rather than a jittery 40–60.</li>
+  <li><b>Android's frame pacing library</b> was built because a "30 fps" game showing frames of 49, 16, 33 ms is perceived as stutter.</li>
+  <li><b>Digital Foundry</b> faulted Bloodborne for averaging 30 fps with 16–66 ms frame times.</li>
+  <li><b>Pebble</b> ran its whole animation system on a self-correcting 33 ms timer.</li>
+  <li><b>LVGL</b> uses a 33 ms default refresh period.</li>
+</ul>
+<p>When a frame is late, Apple, Android, Pebble and LVGL all <b>jump ahead</b>: progress is (now − start) / duration. A fixed step per frame makes the animation slow down, and its timing goes rubbery. Huge stalls are clamped so nothing teleports.</p>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv_pace" class="wc"></canvas>
+    <div class="ctl">
+      <span>speed</span><input id="pace_v" type="range" min="100" max="1400" step="50" value="500"><output id="pace_v_v"></output>
+      <span>late frames</span><input id="pace_drop" type="range" min="0" max="30" step="1" value="8"><output id="pace_drop_v"></output>
+      <div style="grid-column:1/-1" class="cap">
+        Lanes, top to bottom:
+        <ul style="margin:4px 0 0 0;padding-left:18px">
+          <li><span style="color:var(--acc)">60 fps</span> reference.</li>
+          <li>A steady <b>30</b>.</li>
+          <li><b>30 skip</b>: some frames miss their slot and the next one shows where the motion should be (time-based, what NOS does).</li>
+          <li><b>30 slow</b>: missed frames don't advance (frame-based, what TouchGFX does by default).</li>
+        </ul>
+        The steady 30 lane is smoother than either lane with late frames, even though the late frames are rare.
+      </div>
+    </div>
+  </div>
+</div>
+<div class="nos">
+  <ul style="margin:0;padding-left:18px">
+    <li><b>Grid:</b> <code>nos_main.c</code> paces frames with an absolute esp_timer deadline (<code>next += period</code>). After more than one period late it realigns instead of bursting.</li>
+    <li><b>Time steps:</b> <code>nos_frame_run</code> quantises elapsed time to whole periods <code>k ∈ [1,4]</code>. Animation jumps ahead after a late frame and clamps at 133 ms. This matches the industry consensus.</li>
+    <li><b>First frame:</b> transitions start one step in (<code>T.tw.t0 -= nos_dt</code>), so input moves the very next frame.</li>
+    <li><b>Measured:</b> the board suite showed 0 late frames in every bench.</li>
+  </ul>
+</div>
+<div class="todo">
+  <ul style="margin:0;padding-left:18px">
+    <li><b>Hitch metric:</b> add <b>hitch ms/s</b> (missed-slot time per second of motion) and a longest-miss-run count to <code>NOSPERF</code>, so cadence regressions show up as one number.</li>
+    <li><b>Expensive first frames:</b> make sure the animation clock starts at the first <i>presented</i> frame (Android's <code>commitAnimationFrame</code> rule), so a slow snapshot frame doesn't eat the first 30 ms of a transition.</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="step"><span class="n">03</span>The per-frame step budget</h2>
+<div class="rule"><b>R2.</b> Anything the eye tracks moves <b>≤ 16 px per frame</b>; 5–10 px is the safe zone.
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>Short programmatic transitions may reach <b>~64 px per frame</b> (about 1° of visual angle).</li>
+    <li>Bigger jumps happen only as a deliberate single-frame cut (§5), never as a mid-speed frame of a smooth curve.</li>
+    <li>Thin text strokes step visibly at 1–2 px per frame, so move text slowly or fade it.</li>
+    <li>Dot fields move by less than half a dot pitch per frame, or in whole pitches.</li>
+  </ul>
+</div>
+<p>Apparent motion needs each step to land within the visual system's short-range window: about 15 arcmin (Braddick's d<sub>max</sub>), which is ~17 px on this watch at 30 cm.</p>
+<ul>
+  <li><b>Inside the window:</b> motion reads as continuous.</li>
+  <li><b>Past it:</b> the eye sees an object hopping, and later separate copies.</li>
+  <li><b>Smooth sampling depends on detail.</b> Burr, Ross and Morrone found sampled motion looks smooth when each step is about ⅛–⅓ of the moving pattern's spatial period:
+    <ul>
+      <li>A soft 100 px blob tolerates 13–36 px per frame.</li>
+      <li>Text with a 4–6 px stroke period tolerates 1–2 px.</li>
+    </ul>
+  </li>
+  <li><b>Other converging estimates:</b> the film pan-speed rule, Watson's window of visibility, and Mackin's "50 % of the critical frame rate" all land at roughly 6–17 px per frame at 30 fps.</li>
+  <li><b>Hold blur:</b> AMOLED holds each frame for the full 33 ms with sub-millisecond pixel response, so a tracking eye sees the per-frame step as a crisp stutter rather than a soft blur.</li>
+  <li><b>No strobing at 30:</b> black-frame insertion or short persistence doesn't help here. A 30 Hz strobe flickers, and 30 fps content on a 60 Hz strobe double-images.</li>
+  <li><b>Periodic patterns</b> such as a dot grid alias once they step more than half their period, the wagon-wheel effect.</li>
+  <li><b>Brightness and contrast make judder worse.</b> Moving layers that are dimmer, like the outgoing screen of a push, judder less.</li>
+</ul>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv_speed" class="wc"></canvas>
+    <div class="ctl">
+      <span>speed</span><input id="spd_v" type="range" min="60" max="3000" step="30" value="480"><output id="spd_v_v"></output>
+      <div style="grid-column:1/-1" class="stats" id="spd_stats"></div>
+      <div style="grid-column:1/-1" class="cap">
+        <p style="margin:0 0 4px">Three objects at the same speed: a dot, a dot-matrix numeral and a card. Watch the numeral. Its fine dot pattern breaks first, which is why dot-matrix content wants the tightest budget.</p>
+        <p style="margin:0">Reference speeds: a flick-driven list at release ≈ 1500–3000 px/s; a 466 px push over 340 ms averages 1370 px/s and peaks far higher.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<p>Slowing down is often not an option: a whole-screen push at ≤ 16 px/frame would take a full second. That is why the rest of this document is about <i>which</i> frames to show, not how to show more of them.</p>
+
+<!-- ============================================================ -->
+<h2 id="spacing"><span class="n">04</span>Author spacing for frames, not milliseconds</h2>
+<div class="rule"><b>R3.</b> Treat every animation as a short list of frames:
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>Choose the curve by its <b>worst frame</b>, not its shape on a graph. The biggest step should be ≤ 1.6× the average step.</li>
+    <li>Frame 1 shows a meaningful part of the move: at least 15 %, never ~0.</li>
+    <li>The last moving frame still moves ≥ 1 px.</li>
+    <li>Durations are whole frames: micro moves 3–6 frames, transitions 7–12.</li>
+  </ul>
+</div>
+<p>A cubic-bezier that looks gentle as a curve can hide a brutal frame at 30 fps.</p>
+<ul>
+  <li><b>EASE_DECEL</b> (Material's "emphasized decelerate") starts at about 14× linear speed. Over 250 ms it puts <b>68 % of a 466 px move into the first frame</b>.</li>
+  <li><b>EASE_STANDARD</b> peaks at 4× linear around t ≈ 0.12. That lands in frame 1 or 2, so it jumps 130–165 px there.</li>
+  <li><b>Ease-in curves</b> waste frame 1: a 3 % first step on a 60 px move is a 2 px "did it start?" frame.</li>
+</ul>
+<p>The demo plays any NOS curve or spring at 30 fps and charts exactly how far it moves in each frame.</p>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv_space" class="wc"></canvas>
+    <div style="flex:1;min-width:360px">
+      <div class="ctl">
+        <span>curve</span>
+        <select id="sp_curve" style="grid-column:span 2">
+          <optgroup label="NOS tweens (motion.c)"><option value="STANDARD" selected>EASE_STANDARD (0.2,0,0,1)</option><option value="DECEL">EASE_DECEL (0.05,0.7,0.1,1)</option><option value="ACCEL">EASE_ACCEL (0.3,0,0.8,0.15)</option><option value="INOUT">EASE_INOUT (0.65,0,0.35,1)</option><option value="MECH">EASE_MECH (0.7,0,0.2,1)</option></optgroup>
+          <optgroup label="proposed"><option value="STEADY">EASE_STEADY (0.61,1,0.88,1) ease-out sine</option><option value="LINEAR">linear (closes today)</option><option value="table:MOOOK">cut: Pebble "moook" table</option></optgroup>
+          <optgroup label="NOS springs (critically damped, exact)"><option value="spring:SNAPPY">SPRING_SNAPPY 0.26 s</option><option value="spring:PAGE">SPRING_PAGE 0.38 s</option><option value="spring:SHEET">SPRING_SHEET 0.42 s</option></optgroup>
+        </select>
+        <span>distance</span><input id="sp_dist" type="range" min="20" max="466" step="2" value="466"><output id="sp_dist_v"></output>
+        <span>duration</span><input id="sp_dur" type="range" min="100" max="700" step="10" value="340"><output id="sp_dur_v"></output>
+        <span>start in</span><label style="grid-column:span 2"><input id="sp_startin" type="checkbox" checked> first frame already one step in (NOS <code>tx_begin</code>)</label>
+      </div>
+      <div style="margin:10px 0;display:flex;gap:6px;flex-wrap:wrap">
+        <button data-preset="STANDARD,466,340,1">TX_PUSH open today</button>
+        <button data-preset="STEADY,466,400,1">push, EASE_STEADY</button>
+        <button data-preset="STEADY,40,300,1">shared axis 40 px</button>
+        <button data-preset="DECEL,466,300,0">EASE_DECEL sheet</button>
+        <button data-preset="spring:PAGE,120,0,0">page spring 120 px</button>
+      </div>
+      <canvas id="cv_chart" style="width:100%;max-width:560px;height:auto;border-radius:8px"></canvas>
+    </div>
+  </div>
+  <div class="stats" id="sp_stats"></div>
+  <div class="cap">Green bars are within the comfort budget, amber are visible steps, red is strobing. Grey bars are sub-1.5 px creep. On the watch face, the tick marks show where each frame lands.</div>
+</div>
+<h3>NOS's curves on a TX_PUSH (466 px, 340 ms, starting one step in)</h3>
+<div id="curve_table"></div>
+<p><b>Proposal: <code>EASE_STEADY</code> = cubic-bezier(0.61, 1, 0.88, 1)</b>, a close fit to ease-out sine. It is for arrivals that must still feel instant:</p>
+<ul>
+  <li>Frame 1 already moves (~16 % of the travel).</li>
+  <li>Speed falls evenly.</li>
+  <li>The peak step is 1.6× the average, against 2.8–3.7× for EASE_STANDARD.</li>
+  <li>It lands with a ~1 % final step instead of a creep.</li>
+</ul>
+<p>For moves of only a few frames, write the spacing as a table. Animators' "thirds", the craft research and Pebble all do this:</p>
+<ul>
+  <li>3 frames: 60 / 90 / 100 %</li>
+  <li>4 frames: 45 / 78 / 95 / 100 %</li>
+  <li>6 frames: 28 / 53 / 73 / 87 / 96 / 100 %</li>
+</ul>
+<p>Round the <i>cumulative</i> position, never each step. Rounding steps produces lumps such as 9-8-5-5-2-1, and dead frames.</p>
+
+<!-- ============================================================ -->
+<h2 id="far"><span class="n">05</span>Moving far: fade it or cut it</h2>
+<div class="rule"><b>R4.</b> A programmatic change that covers the screen should not slide the screen. Do one of two things:
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>(a) <b>Move less, fade more:</b> ≤ 60 px of travel, with an ink fade or a reveal carrying the change.</li>
+    <li>(b) <b>Cut:</b> a 1-frame anticipation, the bulk of the move in one frame (optionally smeared), then a 4-2-1-0 px settle. No frame sits at a mid-speed position for the eye to track.</li>
+  </ul>
+  Finger-driven moves stay 1:1, because the finger is the motion.</div>
+<p><b>Motion should be either slow or brief.</b> Smooth pursuit (the eye locking onto a moving target) starts about 100 ms after motion begins. A move that completes within about 5 frames is over before the eye can follow it, so it reads as one decisive change rather than as judder. Long, medium-fast motion is the worst of both worlds: the eye tracks it, and every step is too big.</p>
+<p>Two industry answers fit a 30 fps budget:</p>
+<ul>
+  <li><b>Material's shared-axis transition</b> travels only <b>30 dp</b> (~61 px here) over 300 ms and lets a fade-through do the rest. The outgoing content fades over the first 35 %, the incoming over the rest.</li>
+  <li><b>Pebble's "moook" curve</b> was built for its 30 fps round screen: a 1 px nudge, a 20 px lead-in, one hard cut to 4 px past the target, then 2, 1, 0. Seven frames, 231 ms, and none of them at a speed where judder shows.</li>
+</ul>
+<p>Fading is cheap on true black. A screen fades by drawing its primitives in scaled ink (NOS's <code>nos_ink_dim</code>), so there's no per-pixel blend, and a sequential fade-through never composites two screens at once.</p>
+<div class="demo">
+  <div class="grid4">
+    <div><canvas id="mv_a" class="wc sm"></canvas>TX_PUSH today<br><span class="dim">466 px, EASE_STANDARD, 10 f</span></div>
+    <div><canvas id="mv_b" class="wc sm"></canvas>push, EASE_STEADY<br><span class="dim">466 px, 12 f, peak 1.6× avg</span></div>
+    <div><canvas id="mv_c" class="wc sm"></canvas>shared axis<br><span class="dim">40 px + 16-level ink fade</span></div>
+    <div><canvas id="mv_d" class="wc sm"></canvas>cut ("moook")<br><span class="dim">nudge, jump, 4-2-1-0</span></div>
+  </div>
+  <div class="cap">The same push from a list to a detail screen, forward and back, in four styles. On a 60 Hz screen watch the edges of the cards: the left watch strobes at its peak frame, the shared axis never has a large step, and the cut reads as a single mechanical "click". That last one is Nothing's "click, not swoosh".</div>
+</div>
+<p>Which to use: <b>shared axis</b> for in-place changes and opening detail from a list; <b>cut</b> for mechanical, decisive moves (a pager snapping a page, a tile flipping); <b>steady push</b> only where spatial continuity matters more than smoothness. Closing at constant speed, which is what NOS does now, is acceptable because the steps are even (466 px over 6.6 frames ≈ 70 px/frame). Shortening the close travel would make it better.</p>
+
+<!-- ============================================================ -->
+<h2 id="endings"><span class="n">06</span>Crisp endings</h2>
+<div class="rule"><b>R5.</b> End every motion within 1 px (or 1 dot) of the target by snapping. No spring or tween may spend more than 2 frames moving less than 1.5 px per frame.</div>
+<p>Critically damped springs approach their target exponentially, and NOS settles them within <code>min(0.25, 1 % of the move)</code>. That's precise but costly:</p>
+<ul>
+  <li>A 466 px <code>SPRING_PAGE</code> move spends <b>6 of its 19 frames creeping under 1.5 px</b>.</li>
+  <li>The creep is invisible as motion, but every one of those frames is a repaint, and during transitions a full one.</li>
+  <li>It also smears the "click" of the arrival.</li>
+</ul>
+<p>Android Compose ends spring animations at a 1 px visibility threshold for exactly this reason.</p>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv_sub" class="wc"></canvas>
+    <div class="ctl">
+      <span>drift speed</span><input id="sub_v" type="range" min="0.2" max="3" step="0.05" value="0.6"><output id="sub_v_v"></output>
+      <div style="grid-column:1/-1" class="cap">
+        <p style="margin:0 0 4px"><b>Top two lanes:</b> a slow drift drawn at rounded integer positions (it stalls and hops in a 1-0-1-1-0 rhythm) and at true sub-pixel positions with anti-aliasing.</p>
+        <p style="margin:0"><b>Bottom two lanes:</b> a 120 px <code>SPRING_PAGE</code> move with today's epsilon, and with a 1 px snap. Amber marks frames that still repaint.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="subpx"><span class="n">07</span>Honest sub-pixel motion</h2>
+<div class="rule"><b>R6.</b>
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>Anti-aliased primitives (circles, pills, rings, dots) take <b>float</b> positions: pass the unrounded value.</li>
+    <li>Integer-positioned content (text, sprites, rects) rounds the <b>cumulative</b> position once per frame. Never accumulate rounded steps.</li>
+    <li>Slow continuous motion of fine detail uses <b>whole-pixel speeds</b> (1, 2 or 3 px/frame) or moves dots by brightness steps.</li>
+    <li>Dot grids move in whole dot pitches or under half a pitch.</li>
+  </ul>
+</div>
+<p>NOS's <code>gfx_fill_circle</code>, <code>gfx_fill_pill</code> and <code>gfx_ring</code> take floats, so they can be positioned at sub-pixel accuracy for free. Text, sprites and <code>gfx_fill_rect</code> are integer.</p>
+<p>A list sliding at 1.33 px/frame steps 1, 1, 2, 1, 1, 2…, which shows as shimmer on thin strokes. The cinema "7-second rule" for pans works out to about 2.2 px/frame here, which is why slow scrolls of fine detail judder unless their speed is a whole number of pixels.</p>
+<p>LED-sign practice offers a cheap middle ground: move a dot one pixel by splitting its brightness between the old and new positions (4:0, 3:1, 2:2, 1:3).</p>
+
+<!-- ============================================================ -->
+<h2 id="smear"><span class="n">08</span>Smear what is fast</h2>
+<div class="rule"><b>R7.</b> Small objects that must move faster than ~16 px/frame (seconds-hand sweeps, spinners, dot bursts, the jump frame of a cut) get a cheap smear: one ghost at the previous frame's position at ~45 % ink plus an optional second at ~20 %, or a capsule stretched along the velocity. Ghosts last ≤ 2 frames and are never fainter than ~20 % ink.</div>
+<p>Hand animators fake motion blur with smear frames, multiples and speed lines, because real blur muddies the in-betweens. Games do it with afterimages (Celeste, Mega Man X).</p>
+<p>Film's 180° shutter sets the right amount: a blur of about <b>half the per-frame step</b>. Blur helps motion the eye is <i>not</i> tracking, such as flings, snaps and the jump frame of a cut. On a finger-tracked drag it only adds to the hold smear, so never smear drags.</p>
+<p>On this watch a ghost is one extra primitive drawn in dimmed ink: cost class "cheap". There's no per-pixel pass. AMOLED adds no response blur of its own, so the smear has to be drawn.</p>
+<p>Keep ghosts short and not too faint. Users report very dim near-black content smearing purple on AMOLED.</p>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv_smear" class="wc"></canvas>
+    <div class="ctl">
+      <span>angular speed</span><input id="sm_v" type="range" min="30" max="720" step="10" value="360"><output id="sm_v_v"></output>
+      <span>treatment</span><select id="sm_mode" style="grid-column:span 2"><option value="none">none</option><option value="ghost1" selected>1 ghost (45 % ink)</option><option value="ghost2">2 ghosts (45 % + 18 %)</option><option value="stretch">stretch along velocity</option><option value="dots">dot-ring trail (NOS style)</option></select>
+      <div style="grid-column:1/-1" class="cap">A dot sweeping round the bezel. At 360°/s it moves 63 px per frame. With no treatment the eye sees separate dots; with one ghost it reads as a single fast object. The dot-ring trail lights the bezel dots it passes and lets them decay. That fits NOS's dot language and costs a few circles.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="quant"><span class="n">09</span>Quantise on purpose</h2>
+<div class="rule"><b>R8.</b> Where a change is discrete (a digit, a state, a level), animate it as discrete: dot morphs, split-flap steps, whole-row odometer rolls, or ring dots filling one by one. Decorative loops may run on twos (15 fps) as a deliberate style. Never step anything the eye tracks: scrolls, drags or pans.</div>
+<p>Low frame rates read as style when the stepping is a choice with a contrast. Spider-Verse animates Miles on twos and Peter on ones. Anime holds poses and skips in-betweens to exaggerate speed. Split-flap boards and Nothing's Glyph Matrix make the discrete state change <i>be</i> the motion.</p>
+<p>A dot-matrix numeral that slides is a fine pattern moving fast, the worst case from R2. The same numeral morphing its dots in place has no spatial step at all.</p>
+<div class="demo">
+  <div class="grid3">
+    <div><canvas id="qz_a" class="wc sm"></canvas>slide (continuous)</div>
+    <div><canvas id="qz_b" class="wc sm"></canvas>dot morph (NOS <code>dot_text_morph</code>)</div>
+    <div><canvas id="qz_c" class="wc sm"></canvas>mechanical roll on twos</div>
+  </div>
+  <div class="cap">The same counter. The slide strobes its dot pattern at its peak frame. The morph flips each dot on its own hashed frame within 6 frames. The roll moves in three held steps and reads as a mechanism, not a stutter.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="rhythm"><span class="n">10</span>Whole-frame rhythm</h2>
+<div class="rule"><b>R9.</b> Staggers are whole frames (1 or 2 per item), start at frame 0, and cover ≤ 8 items and ≤ ~10 frames in total. Fades use NOS's 16 ink levels, spaced by perceived brightness rather than linearly. Durations come from the frame table: 3 (snap), 4–6 (micro), 7–9 (component), 10–12 (screen).</div>
+<p>A 20 ms stagger at 30 fps starts items on frames 0, 0, 1, 1, 2, 3, 3, 4: uneven clumps. A 1-frame stagger is a perfect cascade.</p>
+<p>Fades read evenly when their levels follow perceived brightness (for example 100 / 70 / 45 / 25 / 10 / 0 %). Linear alpha spends half its steps where the eye can barely tell them apart.</p>
+<table>
+  <tr><th>Frames</th><th class="n">ms</th><th>Use</th></tr>
+  <tr><td>2</td><td class="n">67</td><td>pop: pressed states, the jump of a cut</td></tr>
+  <tr><td>3</td><td class="n">100</td><td>snap: toggles, chips</td></tr>
+  <tr><td>4–6</td><td class="n">133–200</td><td>micro: pills, badges, small reveals</td></tr>
+  <tr><td>7–9</td><td class="n">233–300</td><td>component: cards, sheets settling, banners</td></tr>
+  <tr><td>10–12</td><td class="n">333–400</td><td>screen: transitions, iris (NOS IRIS_S = 10.2 f)</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="latency"><span class="n">11</span>Touch latency</h2>
+<div class="rule"><b>R10.</b>
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>Sample touch at the controller's rate (60–100 Hz) with timestamps, and feed every sample to the velocity tracker.</li>
+    <li>Latch the newest sample immediately before <code>tick</code>.</li>
+    <li>Extrapolate drag positions to the present time: about ½–¾ of a frame (16–25 ms), at most half the last delta, and never past a release.</li>
+    <li>Taps show a visible response within 1–2 frames.</li>
+    <li>Fling velocity is a least-squares fit over the last 100 ms (≥ 3 samples), zero if the finger has been still for 40 ms.</li>
+  </ul>
+</div>
+<p>On direct touch, people notice drag latency from about 6–11 ms, improvements of 8 ms are detectable, and dragging performance degrades above about 25 ms. Taps are more forgiving, with noticeable latency starting around 64–69 ms. At 30 fps the drag pipeline is long:</p>
+<ol>
+  <li>The touch is read at the start of frame n.</li>
+  <li>It is ticked and rasterised.</li>
+  <li>It is flushed over ~23 ms.</li>
+  <li>The panel scans it out on its next pass.</li>
+</ol>
+<p>Content therefore shows a finger position that is roughly 1–2 frames old: 50–60 ms end to end. A drag at 1000 px/s trails the finger by ~60 px (4.5 mm). Drags at 30 fps will always feel a little sticky. The fix is to cut latency first and predict the rest; in one study, predicting about 25 ms ahead restored pointing performance.</p>
+<p>Android resamples touch to (frame time − 5 ms) and predicts at most 8 ms, capped at half the last delta. Chrome found that adding half a frame of prediction minimised scroll lag. Inconsistent sample counts per frame (2 vs 1) were its biggest source of jank.</p>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv_lat" class="wc" style="cursor:grab"></canvas>
+    <div class="ctl">
+      <span>pipeline latency</span><input id="lat_ms" type="range" min="16" max="90" step="2" value="50"><output id="lat_ms_v"></output>
+      <span>prediction</span><label style="grid-column:span 2"><input id="lat_pred" type="checkbox"> extrapolate by velocity × latency (capped 48 px)</label>
+      <div style="grid-column:1/-1" class="cap">Drag inside the watch. The blue ring is your pointer and the card is what a 30 fps pipeline shows. Turn on prediction: the card catches up on steady drags and overshoots a little on sudden stops. That's why prediction is capped and dropped at release. Your browser adds its own latency on top.</div>
+    </div>
+  </div>
+</div>
+<div class="nos">
+  <ul style="margin:0;padding-left:18px">
+    <li><b>Velocity:</b> <code>velocity()</code> in <code>nos.c</code> is already a least-squares fit over 100 ms.</li>
+    <li><b>Touch rate:</b> on the watch, <code>nos_main.c</code> reads the FT3168 <b>once per frame</b> (30 Hz) at the top of the loop. The fit therefore sees only about 3 samples, while the simulator delivers 60 Hz (6 samples). Drags carry up to a frame of extra latency, and nothing is predicted.</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tearing"><span class="n">12</span>Tearing without TE</h2>
+<div class="rule"><b>R11.</b> Design motion that hides tears:
+  <ul style="margin:6px 0 0;padding-left:20px">
+    <li>Prefer vertical travel and top-to-bottom reveals.</li>
+    <li>Keep horizontal per-frame deltas small, or make them a single-frame cut so a tear lasts one frame.</li>
+    <li>Prefer fades and in-place changes for full-screen transitions.</li>
+    <li>Keep writes in row order.</li>
+  </ul>
+  Judge tearing on the real watch, never by bench numbers.</div>
+<p>The CO5300 has a single GRAM that it scans at ~60 Hz ± 2 %, and we write it at 30 Hz over 23.5 ms with no sync.</p>
+<ul>
+  <li><b>Where the tear comes from:</b> the panel re-reads GRAM at its own speed, so the slow write doesn't shear the image. Wherever the scan overtakes the writer, rows above show one frame and rows below another. The seam is a step of one frame's motion.</li>
+  <li><b>Why it moves:</b> the oscillator's tolerance makes the seam drift. At a 1 % mismatch it cycles every ~1.7 s, and it shifts with temperature.</li>
+  <li><b>Seam by motion direction:</b>
+    <ul>
+      <li>Horizontal motion breaks vertical edges sideways, the most visible case.</li>
+      <li>Vertical motion duplicates or cuts a strip.</li>
+      <li>Fades show as a faint brightness seam.</li>
+    </ul>
+  </li>
+</ul>
+<p>The demo simulates the actual writer and scan.</p>
+<div class="demo">
+  <div class="row">
+    <canvas id="cv_tear" class="wc"></canvas>
+    <div class="ctl">
+      <span>speed</span><input id="te_v" type="range" min="100" max="2400" step="50" value="900"><output id="te_v_v"></output>
+      <span>write time</span><select id="te_w" style="grid-column:span 2"><option value="23.5" selected>23.5 ms: RGB565 at 40 MHz (today)</option><option value="11.7">11.7 ms: RGB332, unthrottled</option><option value="16.7">16.7 ms: RGB332 paced to the scan</option></select>
+      <span>oscillator</span><input id="te_eps" type="range" min="-2" max="2" step="0.1" value="0.6"><output id="te_eps_v"></output>
+      <div style="grid-column:1/-1" class="cap">
+        <p style="margin:0 0 4px">Each of your screen's refreshes stands in for one panel scan. Every row shows the newest frame the writer had finished for that row when the scan read it.</p>
+        <p style="margin:0 0 4px">Left: a vertical bar moving sideways. Right: a horizontal bar moving up and down. The seam wanders as the oscillator drifts.</p>
+        <p style="margin:0">Paced RGB332 writes almost never cross the scan. That's a model prediction to verify on the watch.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<p>The repo's own history agrees:</p>
+<ul>
+  <li>Column-band flushes benchmarked faster, but tore visibly worse. Row stripes stay the default.</li>
+  <li>Scan-line readback (45h) is impossible on this board.</li>
+  <li>Locking our cadence to exactly half the panel rate would only freeze a random tear position, since we know neither the panel's exact period (±2 %) nor its phase. A still seam is less distracting than a rolling one, but only a slow-motion camera calibration could get us there.</li>
+</ul>
+<p>The one engine experiment worth running is a write speed matched to the scan (RGB332 paced to ~16.7 ms per full height), and it needs your eyes on the watch.</p>
+
+<!-- ============================================================ -->
+<h2 id="stable"><span class="n">13</span>Stable frame cost</h2>
+<div class="rule"><b>R12.</b> Motion frames stay under ~80 % of the budget (≤ 27 ms work), so one busy frame doesn't break the cadence. Everything an animation touches is baked and allocated before it starts. Moving regions stay small, and damage is merged in row order.</div>
+<p>NOS already learned most of this on the board:</p>
+<ul>
+  <li>libm calls cost ~1000 cycles.</li>
+  <li>A per-pixel dim pass costs 17 ms.</li>
+  <li>First-use bakes made 50–500 ms frames.</li>
+  <li>Screens draw once per 16-row stripe, so per-item work is multiplied ~30×.</li>
+</ul>
+<p>Industry agrees. TouchGFX says invalidate less and replace computed graphics with images. LVGL users saw 40 fps fall to 4 by re-decoding per frame. PSRAM reads run at ~57 MB/s, against ~366 MB/s for internal RAM.</p>
+<p>The new rules in this document mostly <i>lower</i> cost: shorter travel means smaller damage, and crisp endings remove creep repaints. The ghost and fade techniques use dimmed ink, not blending.</p>
+
+<!-- ============================================================ -->
+<h2 id="budget"><span class="n">14</span>Motion budget by class</h2>
+<table>
+  <tr><th>Class</th><th>Examples</th><th>Step budget</th><th>Timing</th><th>Shape</th></tr>
+  <tr><td><b>Finger-driven</b></td><td>pager drag, sheets, list drag, sliders</td><td>1:1 with the finger (+ ≤ ½ frame prediction)</td><td>live; release → spring with release velocity</td><td>critically damped, 1 px snap</td></tr>
+  <tr><td><b>Momentum</b></td><td>list fling, pager settle</td><td>follows decay; snap spring ≤ 64 px/f peak</td><td>decay τ ≈ 0.5 s</td><td>ends by 1 px snap, ≤ 2 creep frames</td></tr>
+  <tr><td><b>Screen transitions</b></td><td>push, rise/drop open, iris, dissolve</td><td>shared axis ≤ 60 px travel; or cut; or steady push ≤ 64 px/f</td><td>7–12 frames</td><td>EASE_STEADY / table; fade via ink levels</td></tr>
+  <tr><td><b>Component moves</b></td><td>cards, banners, toasts, sheets settling</td><td>≤ 64 px/f, prefer ≤ 32</td><td>7–9 frames</td><td>EASE_STEADY in, constant or ACCEL out</td></tr>
+  <tr><td><b>Micro</b></td><td>toggles, pressed pills, chips, badges</td><td>≤ 16 px/f</td><td>3–6 frames</td><td>frame tables (60/90/100…)</td></tr>
+  <tr><td><b>Tracked continuous</b></td><td>scrolls, drifting art, second hands, marquees</td><td>≤ 16 px/f, whole px/f; dot fields &lt; ½ pitch</td><td>steady</td><td>linear; smear if faster</td></tr>
+  <tr><td><b>Discrete changes</b></td><td>digits, values, states, ring fills</td><td>no spatial step</td><td>4–10 frames</td><td>dot morph / flip / fill, 1-frame stagger</td></tr>
+  <tr><td><b>Decorative loops</b></td><td>breathing, pulses, idle sparkle</td><td>≤ 16 px/f</td><td>may run on twos</td><td>quantised</td></tr>
+  <tr><td><b>Fades</b></td><td>state swaps, overlays, AOD entry</td><td>no spatial step</td><td>3–9 frames</td><td>16 ink levels, perceptual spacing</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="audit"><span class="n">15</span>NOS audit and changes</h2>
+<p>What the engine and the apps do today, measured from the code (curve usage counted across <code>nos/</code>):</p>
+<table>
+  <tr><th>Principle</th><th>NOS today</th><th>Change</th><th>Owner</th></tr>
+  <tr><td>R1 cadence</td><td class="ok">Fixed 30 Hz deadline; dt quantised to whole periods, clamp 4</td><td>Add hitch ms/s + longest miss run to NOSPERF; start transition clocks at the first presented frame</td><td>engine</td></tr>
+  <tr><td>R2/R3 spacing</td><td class="warn">EASE_STANDARD ×37, EASE_DECEL ×11, EASE_MECH ×9, EASE_ACCEL ×9: peaks of 2.8–7× average; TX_PUSH frame 2 = 160 px</td><td>Add <code>EASE_STEADY</code> and frame tables; audit every tween's real pixel span; replace offenders</td><td>engine + every area</td></tr>
+  <tr><td>R4 far moves</td><td class="warn">Opens slide 466 px; closes constant 70 px/f; iris (reveal) is good</td><td>Engine push/rise/drop opens: shared-axis or cut variants; apps' in-place swaps: ≤ 60 px + ink fade</td><td>engine + areas</td></tr>
+  <tr><td>R5 endings</td><td class="warn">Spring eps = min(0.25, 1 %): 4–6 creep frames on page-sized moves</td><td>1 px snap for pixel springs (a unit-aware settle); tween final frame lands exactly</td><td>engine</td></tr>
+  <tr><td>R6 sub-pixel</td><td>AA prims take floats; text/sprites integer, mixed rounding</td><td>Round cumulative positions; whole-px scroll speeds for fine detail</td><td>areas</td></tr>
+  <tr><td>R7 smear</td><td class="dim">none</td><td>A ghost/stretch helper in ui.c; use on fast hands, spinners, bursts, cut frames</td><td>engine helper, areas use</td></tr>
+  <tr><td>R8 quantise</td><td class="ok">dot build-ins ×34, digit morphs ×23, ring dots</td><td>Keep; convert any sliding numerals to morphs or rolls</td><td>areas</td></tr>
+  <tr><td>R9 rhythm</td><td>m_stagger is continuous (fractional frames)</td><td>A whole-frame stagger helper; perceptual fade levels</td><td>engine helper, areas use</td></tr>
+  <tr><td>R10 latency</td><td class="warn">LSQ velocity ✔; touch read once per frame on device; no prediction</td><td>60–100 Hz timestamped touch sampling task; latch newest before tick; ≤ ½ frame drag prediction</td><td>engine (firmware host)</td></tr>
+  <tr><td>R11 tearing</td><td>row stripes ✔ (column bands rejected)</td><td>Prefer vertical/fade transitions; optional paced-RGB332 experiment, user-judged</td><td>engine (experiment), areas (direction)</td></tr>
+  <tr><td>R12 stable cost</td><td class="ok">0 late frames in every board bench</td><td>Hold the line: re-run the board suite after the changes</td><td>lead</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="measure"><span class="n">16</span>How we measure</h2>
+<ul>
+  <li><b>Motion audit (new, simulator).</b> Every tween and spring that drives a position reports its pixel span. The sim logs each frame's step per animated value and flags anything over the class budget, frames below 1.5 px (creep), and first frames below 15 %. Run it over the full tour and every app's motion scripts.</li>
+  <li><b>Cost model and damage check.</b> These are unchanged: p95 &lt; 30 ms in motion, 0 late frames idle, and <code>--damagecheck</code> byte-identical.</li>
+  <li><b>Board suite.</b> <code>gestures.py</code>, <code>survey.py</code>, <code>facecost2.py</code>, <code>slides.py</code> and <code>bootjank.py</code> must stay at 0 late frames. NOSPERF adds hitch ms/s.</li>
+  <li><b>Eyes on glass.</b> Tearing and "does this feel smooth" are judged on the watch, never by numbers alone.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="team"><span class="n">17</span>Team hand-off</h2>
+<p>The agent teams apply this document across the OS with the same ownership as the original build. Everyone works on <code>nothing-os</code>; nobody commits, switches branches or flashes the watch, and the lead benches on the board afterwards.</p>
+<table>
+  <tr><th>Team</th><th>Owns</th><th>Job</th></tr>
+  <tr><td><b>Engine</b></td><td><code>nos/motion.*</code>, <code>nos/nos.*</code>, <code>nos/ui.*</code>, <code>nos/dot.*</code>, <code>sim/</code>, <code>firmware/main/nos_main.c</code></td><td>
+    <ul style="margin:0;padding-left:18px">
+      <li><code>EASE_STEADY</code> and frame tables</li>
+      <li>unit-aware spring settle with a 1 px snap</li>
+      <li>whole-frame stagger</li>
+      <li>ghost/stretch helper</li>
+      <li>transition variants (shared axis, cut)</li>
+      <li>hitch metric</li>
+      <li>timestamped 60–100 Hz touch and ≤ ½ frame prediction</li>
+      <li>the sim motion audit</li>
+    </ul>Runs first.</td></tr>
+  <tr><td><b>Shell</b></td><td><code>sys_*</code> (home, control, notifs, launcher, faces picker, power, boot)</td><td>Audit and fix every tween, spring and stagger against §14; banners/sheets; launcher grid; pager snaps</td></tr>
+  <tr><td><b>Faces</b></td><td><code>nos/faces/*</code></td><td>Wake animations, hands and second sweeps (smear or whole steps), digit changes as morphs</td></tr>
+  <tr><td><b>Health & time</b></td><td><code>fit_*</code>, <code>time_*</code></td><td>Rings, counters, stopwatch, breathe pacing (decorative loop rules), list motion</td></tr>
+  <tr><td><b>Outdoor</b></td><td><code>out_*</code></td><td>Compass rose (tracked rotation: whole steps or smear), barometer graph, nav track, weather</td></tr>
+  <tr><td><b>Connect</b></td><td><code>con_*</code></td><td>Music (progress, track swaps), call screen, memo levels, find, torch</td></tr>
+  <tr><td><b>Settings</b></td><td><code>set_*</code>, <code>registry.c</code></td><td>Lists, toggles, sliders, diagnostics steps</td></tr>
+</table>
+<p>Each team uses the motion audit on its screens, fixes every flagged animation, re-shoots films, and keeps the cost model and damage check green. They report what changed, with before and after per-frame steps.</p>
+
+<!-- ============================================================ -->
+<h2 id="sources"><span class="n">18</span>Sources</h2>
+<div class="src">
+<h3>Pacing and timing</h3>
+<ul>
+  <li>Apple: <a href="https://developer.apple.com/videos/play/tech-talks/10855">Explore UI animation hitches and the render loop</a>; <a href="https://developer.apple.com/videos/play/wwdc2021/10147">Optimize for variable refresh rate displays</a> (WWDC21); <a href="https://developer.apple.com/documentation/quartzcore/cadisplaylink/targettimestamp">CADisplayLink.targetTimestamp</a>; <a href="https://developer.apple.com/videos/play/wwdc2023/10158/">Animate with springs</a>; <a href="https://developer.apple.com/design/human-interface-guidelines/motion">HIG: Motion</a></li>
+  <li>Android: <a href="https://developer.android.com/games/sdk/frame-pacing">Frame Pacing library</a>; <a href="https://developer.android.com/games/develop/gameloops">Game loops and Choreographer</a>; <a href="https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/animation/ValueAnimator.java">ValueAnimator source</a>; <a href="https://developer.android.com/topic/performance/jankstats">JankStats</a>; <a href="https://developer.android.com/training/wearables/watch-faces/performance">Wear OS watch face performance</a></li>
+  <li>Games: <a href="https://gafferongames.com/post/fix_your_timestep/">Fiedler, Fix Your Timestep</a>; <a href="https://unity.com/blog/engine-platform/fixing-time-deltatime-in-unity-2020-2-for-smoother-gameplay">Unity, fixing Time.deltaTime</a>; <a href="https://gdcvault.com/browse/gdc-18/play/1025031">Croteam, The Elusive Frame Timing</a>; <a href="https://developers.meta.com/horizon/blog/optimizing-vr-graphics-with-late-latching/">Meta, late latching</a></li>
+  <li>Embedded: <a href="https://github.com/google/pebble/blob/main/src/fw/applib/ui/animation.c">PebbleOS animation.c</a> and <a href="https://github.com/google/pebble/blob/main/src/fw/applib/ui/animation_interpolate.c">animation_interpolate.c (moook)</a>; <a href="https://github.com/lvgl/lvgl/blob/master/src/misc/lv_anim.c">LVGL lv_anim.c</a>; <a href="https://support.touchgfx.com/docs/basic-concepts/performance">TouchGFX performance</a></li>
+</ul>
+<h3>Perception</h3>
+<ul>
+  <li><a href="https://webdocs.cs.ualberta.ca/%7Ewfb/publications/J-1985-VR-Motion.pdf">Bischof &amp; Groner, short-range motion (d<sub>max</sub>)</a>; <a href="https://webdocs.cs.ualberta.ca/%7Ewfb/publications/J-1990-VR-Motion.pdf">Bischof &amp; Di Lollo, periodic patterns</a>; <a href="https://lavalle.pl/vr/node176.html">LaValle, Virtual Reality §6.2</a></li>
+  <li><a href="https://www.blurbusters.com/faq/oled-motion-blur">Blur Busters: OLED motion blur</a>; <a href="https://blurbusters.com/stroboscopic">stroboscopic effect</a>; <a href="https://www.red.com/red-101/camera-panning-speed">RED: camera panning speed</a>; <a href="https://community.adobe.com/t5/after-effects/avoiding-judder-in-motion-graphics-by-rick-gerard/m-p/11865336">Rick Gerard: avoiding judder</a></li>
+  <li><a href="https://doi.org/10.1016/0042-6989(86)90012-X">Burr, Ross &amp; Morrone 1986, smooth sampled motion</a>; <a href="https://ntrs.nasa.gov/citations/20130013545">Watson, window of visibility</a>; <a href="https://research-information.bris.ac.uk/en/publications/the-visibility-of-motion-artifacts-and-their-effect-on-motion-qua/">Mackin et al. 2016</a>; <a href="https://www.cl.cam.ac.uk/~gd355/publications/sg20_paper.pdf">Denes et al. 2020, judder and refresh</a>; <a href="https://arxiv.org/abs/2212.03854">BiPMAP</a>; <a href="https://www.jneurosci.org/content/jneuro/15/11/7472.full.pdf">Ferrera &amp; Lisberger 1995, pursuit latency</a></li>
+  <li><a href="https://web.cs.wpi.edu/~claypool/papers/frame-variation-chi-23/paper.pdf">Liu &amp; Claypool, CHI 2023, frame-time variation</a>; <a href="https://research.nvidia.com/publication/2024-08_variable-frame-timing-affects-perception-smoothness-first-person-gaming">NVIDIA 2024, variable frame timing</a>; <a href="https://www.rtings.com/tv/tests/motion/stutter">RTINGS, stutter vs response time</a>; <a href="https://blurbusters.com/faq/motion-blur-reduction/">Blur Busters, strobing at low fps</a></li>
+  <li><a href="https://arxiv.org/pdf/2408.02525">Touch latency perception (arXiv 2408.02525)</a>; <a href="https://webdocs.cs.ualberta.ca/~wfb/publications/C-2014-SIGCHI-Latency.pdf">Ng et al., direct-touch latency</a>; <a href="https://www.nngroup.com/articles/response-times-3-important-limits/">Nielsen response times</a>; <a href="https://people.csail.mit.edu/lavanya/PDF/sharanetal13_MIG.pdf">Sharan et al. 2013, synthetic blur at 30 fps</a>; <a href="https://www.reddigitalcinema.com/red-101/shutter-angle-tutorial">RED, shutter angle</a></li>
+</ul>
+<h3>Motion design and craft</h3>
+<ul>
+  <li>Material: <a href="https://github.com/material-components/material-components-android/blob/master/docs/theming/Motion.md">Motion tokens</a>; <a href="https://github.com/material-components/material-components-android/blob/master/lib/java/com/google/android/material/transition/res/values/dimens.xml">shared-axis 30 dp</a>; <a href="https://github.com/material-components/material-components-android/blob/master/lib/java/com/google/android/material/transition/MaterialFadeThrough.java">fade through</a>; <a href="https://m1.material.io/motion/duration-easing.html">M1 duration (wearables 30 % shorter)</a></li>
+  <li><a href="https://raw.githubusercontent.com/androidx/androidx/androidx-main/compose/animation/animation-core/src/commonMain/kotlin/androidx/compose/animation/core/VisibilityThresholds.kt">Compose visibility thresholds (1 px)</a>; <a href="https://developer.android.com/reference/kotlin/androidx/wear/compose/material3/MotionScheme">Wear Compose MotionScheme</a></li>
+  <li><a href="https://en.wikipedia.org/wiki/Smear_frame">Smear frames</a>; <a href="https://www.idtech.com/blog/what-does-animating-on-ones-twos-and-threes-mean">ones, twos, threes</a>; <a href="https://brianlemay.com/Pages/animationschool/animation/lipsyncbook/timingcharts.html">timing charts</a>; <a href="https://www.cgg.cs.tsukuba.ac.jp/projects/2013/motion_frame_omission/data/IWAIT.pdf">limited animation frame omission</a></li>
+  <li><a href="https://help.play.date/developer/designing-for-playdate/">Designing for Playdate</a>; <a href="https://dukope.itch.io/mars-after-midnight/devlog/285964/working-in-one-bit">Lucas Pope, working in one bit</a>; <a href="https://pic.hallikainen.org/techref/io/led/scrolling.htm">LED sign scrolling</a></li>
+</ul>
+<h3>Display pipeline</h3>
+<ul>
+  <li><a href="https://files.waveshare.com/wiki/common/Co5300_Datasheet.pdf">CO5300 datasheet</a>; <a href="https://files.waveshare.com/wiki/common/FT3168.pdf">FT3168 datasheet</a>; <a href="https://docs.espressif.com/projects/esp-iot-solution/en/latest/display/lcd/lcd_screen_tearing.html">Espressif: LCD screen tearing</a>; <a href="https://github.com/juj/fbcp-ili9341">fbcp-ili9341</a></li>
+  <li>Input: <a href="https://android.googlesource.com/platform/frameworks/native/+/android-16.0.0_r2/libs/input/InputConsumer.cpp">Android InputConsumer resampling</a>; <a href="https://android.googlesource.com/platform/frameworks/native/+/main/include/input/VelocityTracker.h">VelocityTracker</a>; <a href="https://blog.google/chromium/smoother-scrolling-how-we-halved-scroll-jank-in-chrome-on-android/">Chrome: halving scroll jank</a></li>
+</ul>
+</div>
+</main>
+<script>
+/* ================= NOS motion, ported 1:1 from nos/motion.c ================= */
+const BZ = {
+  STANDARD: [0.2, 0, 0, 1], DECEL: [0.05, 0.7, 0.1, 1], ACCEL: [0.3, 0, 0.8, 0.15],
+  INOUT: [0.65, 0, 0.35, 1], MECH: [0.7, 0, 0.2, 1],
+  STEADY: [0.61, 1, 0.88, 1],          /* proposed: ease-out sine, peak step 1.6x the average */
+  LINEAR: [0, 0, 1, 1],
+};
+const bz = (a, b, t) => { const u = 1 - t; return 3 * u * u * t * a + 3 * u * t * t * b + t * t * t; };
+const bzd = (a, b, t) => { const u = 1 - t; return 3 * u * u * a + 6 * u * t * (b - a) + 3 * t * t * (1 - b); };
+function ease(c, x) {                       /* bezier_ease(): Newton then bisection polish */
+  if (x <= 0) return 0; if (x >= 1) return 1;
+  let t = x;
+  for (let i = 0; i < 6; i++) { const d = bzd(c[0], c[2], t); if (Math.abs(d) < 1e-5) break; t -= (bz(c[0], c[2], t) - x) / d; t = Math.min(1, Math.max(0, t)); }
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 8; i++) { const xt = bz(c[0], c[2], t); if (Math.abs(xt - x) < 1e-4) break; if (xt < x) lo = t; else hi = t; t = (lo + hi) / 2; }
+  return bz(c[1], c[3], t);
+}
+const SPRINGS = { SNAPPY: [0.26, 1], PAGE: [0.38, 1], SHEET: [0.42, 1], BOUNCY: [0.50, 0.78], SOFT: [0.70, 1] };
+function springRun(resp, damp, dist, v0 = 0, epsAbs = null, maxF = 90) {   /* msp_step(), exact solution per step */
+  const w0 = 2 * Math.PI / resp, dt = 1 / 30;
+  const eps = epsAbs != null ? epsAbs : Math.max(0.0005, Math.min(0.25, Math.abs(dist) * 0.01));
+  let x = -dist, v = v0; const pos = [0];
+  for (let f = 0; f < maxF; f++) {
+    let nx, nv;
+    if (damp < 0.999) {
+      const wd = w0 * Math.sqrt(1 - damp * damp), e = Math.exp(-damp * w0 * dt), c = Math.cos(wd * dt), s = Math.sin(wd * dt);
+      const B = (v + damp * w0 * x) / wd;
+      nx = e * (x * c + B * s); nv = -damp * w0 * nx + e * (-x * wd * s + B * wd * c);
+    } else {
+      const e = Math.exp(-w0 * dt), B = v + w0 * x;
+      nx = (x + B * dt) * e; nv = (B - w0 * (x + B * dt)) * e;
+    }
+    x = nx; v = nv;
+    if (Math.abs(x) < eps && Math.abs(v) < eps * 20) { pos.push(dist); return pos; }
+    pos.push(dist + x);
+  }
+  pos.push(dist); return pos;
+}
+/* Pebble's "moook": nudge, lead-in, one hard cut to 4 px past the target, settle 4-2-1-0 (absolute px) */
+function moookRun(dist) { return [0, 1, Math.min(20, dist * 0.2), dist + 4, dist + 2, dist + 1, dist]; }
+/* positions (px) of a tween at 30 fps, frame 0 = start; startIn = NOS tx_begin's "t0 -= nos_dt" */
+function tweenRun(curve, dist, durS, startIn) {
+  const N = Math.max(1, Math.round(durS * 30)), pos = [0];
+  for (let f = 1; f <= N + 1; f++) { const p = Math.min(1, (f - 1 + (startIn ? 1 : 0)) / (durS * 30)); pos.push(dist * ease(curve, p)); if (p >= 1) break; }
+  return pos;
+}
+
+/* ================= budgets (R2) ================= */
+const LIMIT_COMFORT = 16, LIMIT_HARD = 64;      /* px per frame: edge of continuous motion; ~1 deg, the most a short transition may step */
+
+/* ================= watch geometry ================= */
+const W = 466, C = 233;
+const PX_PER_DEG = 67.2;                   /* 466 px over 36.3 mm, viewed at 30 cm */
+function hash01(a, b) {                    /* m_hash01() */
+  let h = (Math.imul(a, 0x9E3779B1) ^ Math.imul(b + 0x7F4A7C15, 0x85EBCA77)) >>> 0;
+  h ^= h >>> 15; h = Math.imul(h, 0x2C1B3C6D) >>> 0; h ^= h >>> 12; h = Math.imul(h, 0x297A2D39) >>> 0; h ^= h >>> 15;
+  return (h >>> 8) / 16777216;
+}
+function watch(canvas) {
+  canvas.width = W; canvas.height = W;
+  const ctx = canvas.getContext('2d');
+  return {
+    ctx,
+    begin() { ctx.save(); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, W); ctx.beginPath(); ctx.arc(C, C, C, 0, Math.PI * 2); ctx.clip(); },
+    end() { ctx.restore(); ctx.save(); ctx.strokeStyle = '#2a2d38'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(C, C, C - 3, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); },
+  };
+}
+const ink = (k) => { const v = Math.round(255 * k); return `rgb(${v},${v},${v})`; };
+function pill(ctx, x, y, w, h, col) { const r = h / 2; ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.arc(x + w - r, y + r, r, -Math.PI / 2, Math.PI / 2); ctx.lineTo(x + r, y + h); ctx.arc(x + r, y + r, r, Math.PI / 2, Math.PI * 1.5); ctx.fill(); }
+function dot(ctx, x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+function label(ctx, text, x, y, col = '#9a9caa', size = 15, align = 'left') { ctx.fillStyle = col; ctx.font = `600 ${size}px ui-monospace,Consolas,monospace`; ctx.textAlign = align; ctx.fillText(text, x, y); ctx.textAlign = 'left'; }
+/* 5x7 dot-matrix digits */
+const GLYPH = {
+  0: ['01110', '10001', '10011', '10101', '11001', '10001', '01110'], 1: ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  2: ['01110', '10001', '00001', '00010', '00100', '01000', '11111'], 3: ['11111', '00010', '00100', '00010', '00001', '10001', '01110'],
+  4: ['00010', '00110', '01010', '10010', '11111', '00010', '00010'], 5: ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  6: ['00110', '01000', '10000', '11110', '10001', '10001', '01110'], 7: ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  8: ['01110', '10001', '10001', '01110', '10001', '10001', '01110'], 9: ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+};
+function digitDots(ch) { const g = GLYPH[ch], out = []; for (let r = 0; r < 7; r++) for (let c = 0; c < 5; c++) if (g[r][c] === '1') out.push([c, r]); return out; }
+function drawNumber(ctx, str, cx, cy, pitch, col, dotR) {
+  const wch = 6 * pitch, x0 = cx - (str.length * wch - pitch) / 2, y0 = cy - 3 * pitch;
+  [...str].forEach((ch, i) => { for (const [c, r] of digitDots(ch)) dot(ctx, x0 + i * wch + c * pitch, y0 + r * pitch, dotR ?? pitch * 0.38, col); });
+}
+function card(ctx, x, y, w, h, k = 1) {
+  ctx.fillStyle = ink(0.16 * k); ctx.beginPath(); ctx.roundRect(x, y, w, h, 22); ctx.fill();
+  pill(ctx, x + 18, y + 18, w * 0.55, 14, ink(0.92 * k)); pill(ctx, x + 18, y + 44, w * 0.75, 10, ink(0.45 * k)); pill(ctx, x + 18, y + 62, w * 0.4, 10, ink(0.45 * k));
+}
+
+/* ================= 30 fps clock ================= */
+const demos = [];
+let monitorHz = 60;
+{ const ds = []; let last = 0;
+  const probe = (t) => { if (last) ds.push(t - last); last = t; if (ds.length < 90) requestAnimationFrame(probe); else { ds.sort((a, b) => a - b); monitorHz = Math.round(1000 / ds[45]); document.querySelectorAll('.hz').forEach(e => { const mult = Math.round(monitorHz / 30), ok = mult >= 1 && Math.abs(monitorHz - mult * 30) <= 3; if (ok) monitorHz = mult * 30; e.innerHTML = `Your screen refreshes at <b>${monitorHz} Hz</b>: ` + (ok ? 'the 30 fps demos run on an exact, even cadence.' : 'not a multiple of 30, so the browser itself adds uneven frame holds; judge the 30 fps demos on a 60 or 120 Hz screen.'); }); } };
+  requestAnimationFrame(probe); }
+function demo(el, fn) { const d = { el, fn, visible: false }; demos.push(d); new IntersectionObserver(es => { d.visible = es[0].isIntersecting; }).observe(el); return d; }
+function loop(now) { for (const d of demos) if (d.visible) d.fn(now / 1000); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+const $ = (id) => document.getElementById(id);
+const val = (id) => +$(id).value;
+function bindOut(id, fmt = (v) => v) { const i = $(id), o = $(id + '_v'); const up = () => { if (o) o.textContent = fmt(+i.value); }; i.addEventListener('input', up); up(); }
+
+/* ================= 1. cadence ================= */
+{
+  const wv = watch($('cv_pace')), ctx = wv.ctx;
+  bindOut('pace_v', v => v + ' px/s'); bindOut('pace_drop', v => v + ' %');
+  let lastN = -1, shown = 0, count = 0, t0 = null;
+  const lanes = [['60 fps', 128], ['30', 196], ['30 skip', 264], ['30 slow', 332]];
+  const pp = (t, v) => { const span = 210, d = (t * v) % (2 * span); return 160 + (d < span ? d : 2 * span - d); };
+  demo($('cv_pace'), (t) => {
+    if (t0 == null) t0 = t; const tt = t - t0, v = val('pace_v'), p = val('pace_drop') / 100;
+    const n = Math.floor(tt * 30);
+    for (let m = lastN + 1; m <= n; m++) { if (hash01(m, 7) >= p) { shown = m; count++; } }
+    lastN = n;
+    wv.begin();
+    const xs = [pp(Math.floor(tt * 60) / 60, v), pp(n / 30, v), pp(shown / 30, v), pp(count / 30, v)];
+    lanes.forEach(([name, y], i) => { label(ctx, name, 34, y + 7, '#8a8d9b', 19); pill(ctx, xs[i], y - 16, 64, 32, i ? '#fff' : '#8fd3ff'); });
+    wv.end();
+  });
+}
+
+/* ================= 2. spacing charts ================= */
+{
+  const wv = watch($('cv_space')), ctx = wv.ctx, ch = $('cv_chart'), cc = ch.getContext('2d');
+  ch.width = 560; ch.height = 220;
+  bindOut('sp_dist', v => v + ' px'); bindOut('sp_dur', v => v + ' ms');
+  let run = [], t0 = 0;
+  function compute() {
+    const kind = $('sp_curve').value, D = val('sp_dist'), dur = val('sp_dur') / 1000, startIn = $('sp_startin').checked;
+    run = kind.startsWith('spring:') ? springRun(...SPRINGS[kind.slice(7)], D) : kind === 'table:MOOOK' ? moookRun(D) : tweenRun(BZ[kind], D, dur, startIn);
+    $('sp_dur').disabled = kind.startsWith('spring:') || kind.startsWith('table:');
+    const st = run.slice(1).map((x, i) => x - run[i]);
+    const N = st.length, mx = Math.max(...st.map(Math.abs)), im = st.map(Math.abs).indexOf(mx), avg = D / N;
+    const creep = st.filter(s => Math.abs(s) > 0 && Math.abs(s) < 1.5).length;
+    const over = st.filter(s => Math.abs(s) > LIMIT_HARD).length, overC = st.filter(s => Math.abs(s) > LIMIT_COMFORT).length;
+    $('sp_stats').innerHTML = `<b>${N}</b> frames (${Math.round(N * 33.3)} ms) · first step <b>${st[0].toFixed(0)} px</b> · biggest step <b class="${mx > LIMIT_HARD ? 'bad' : mx > LIMIT_COMFORT ? 'warn' : 'ok'}">${mx.toFixed(0)} px</b> on frame ${im + 1} (${(mx / PX_PER_DEG).toFixed(1)}°, ${(mx / avg).toFixed(1)}× the average) · ` +
+      `frames over ${LIMIT_COMFORT} px: <b>${overC}</b>, over ${LIMIT_HARD} px: <b>${over}</b> · creep frames (&lt;1.5 px): <b class="${creep > 2 ? 'warn' : 'ok'}">${creep}</b>` + (kind.startsWith('table:') ? '<br><span class="dim">A deliberate cut: the one big frame is the jump the eye never tracks; every other frame is ≤ 20 px.</span>' : '');
+    /* chart */
+    cc.fillStyle = '#0e0f13'; cc.fillRect(0, 0, 560, 220);
+    const top = Math.max(LIMIT_HARD * 1.15, mx * 1.1), bw = Math.min(40, 520 / N);
+    const y = (v) => 200 - v / top * 185;
+    st.forEach((s, i) => { const a = Math.abs(s); cc.fillStyle = a > LIMIT_HARD ? '#ff6b6b' : a > LIMIT_COMFORT ? '#f2b84b' : a < 1.5 ? '#6c6f7d' : '#4fd18b'; cc.fillRect(30 + i * bw, y(a), bw - 2, 200 - y(a)); });
+    for (const [lim, col, name] of [[LIMIT_COMFORT, '#f2b84b', 'comfort'], [LIMIT_HARD, '#ff6b6b', 'hard cap']]) { cc.strokeStyle = col; cc.setLineDash([4, 4]); cc.beginPath(); cc.moveTo(28, y(lim)); cc.lineTo(556, y(lim)); cc.stroke(); cc.setLineDash([]); cc.fillStyle = col; cc.font = '11px system-ui'; cc.fillText(`${name} ${lim} px/frame`, 440, y(lim) - 4); }
+    cc.fillStyle = '#9a9caa'; cc.font = '11px system-ui'; cc.fillText('px moved in each frame →', 30, 214);
+    t0 = performance.now() / 1000;
+  }
+  for (const id of ['sp_curve', 'sp_dist', 'sp_dur', 'sp_startin']) $(id).addEventListener('input', compute);
+  document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => { const [c, d, ms, si] = b.dataset.preset.split(','); $('sp_curve').value = c; $('sp_dist').value = d; $('sp_dur').value = ms; $('sp_startin').checked = si === '1'; $('sp_dist').dispatchEvent(new Event('input')); compute(); });
+  compute();
+  demo($('cv_space'), (t) => {
+    const f = Math.floor((t - t0) * 30) % (run.length + 18), i = Math.min(f, run.length - 1);
+    wv.begin();
+    const D = val('sp_dist'), x0 = C - D / 2;
+    for (let k = 0; k < run.length; k++) { ctx.fillStyle = '#3a3d48'; ctx.fillRect(x0 + run[k] - 1, 280, 2, 40); }
+    pill(ctx, x0 + run[i] - 34, 170, 68, 68, '#fff');
+    label(ctx, `frame ${i}/${run.length - 1}`, C, 380, '#6c6f7d', 15, 'center');
+    wv.end();
+  });
+}
+
+/* ================= 3. speed and strobing ================= */
+{
+  const wv = watch($('cv_speed')), ctx = wv.ctx;
+  bindOut('spd_v', v => v + ' px/s');
+  demo($('cv_speed'), (t) => {
+    const v = val('spd_v'), n = Math.floor(t * 30), tt = n / 30, span = 300;
+    const d = (tt * v) % (2 * span), off = d < span ? d : 2 * span - d;
+    const pf = v / 30;
+    wv.begin();
+    dot(ctx, 83 + off, 120, 12, '#fff');
+    drawNumber(ctx, '12', 103 + off - 20, 220, 11, '#fff', 4.2);
+    card(ctx, 50 + off * 0.83, 290, 160, 84);
+    wv.end();
+    const deg = pf / PX_PER_DEG, zone = pf <= LIMIT_COMFORT ? ['ok', 'reads as continuous motion'] : pf <= LIMIT_HARD ? ['warn', 'visible stepping: fine for a short transition, not for anything the eye tracks'] : ['bad', 'strobing: the eye sees separate copies'];
+    $('spd_stats').innerHTML = `<b>${pf.toFixed(1)} px</b> per frame = <b>${deg.toFixed(2)}°</b> per frame (${(deg * 30).toFixed(0)}°/s) · a tracking eye smears it over <b>${pf.toFixed(0)} px</b> at 30 fps (${(v / 60).toFixed(0)} px at 60) · <span class="${zone[0]}">${zone[1]}</span>`;
+  });
+}
+
+/* ================= 4. move less, fade more ================= */
+{
+  const keys = ['mv_a', 'mv_b', 'mv_c', 'mv_d'], ws = keys.map(k => watch($(k)));
+  const screenA = (ctx, k = 1) => { for (let i = 0; i < 4; i++) { ctx.fillStyle = ink(0.13 * k); ctx.beginPath(); ctx.roundRect(70, 92 + i * 74, 326, 62, 31); ctx.fill(); pill(ctx, 100, 116 + i * 74, 120 + (i % 2) * 50, 14, ink(0.9 * k)); dot(ctx, 362, 123 + i * 74, 5, ink(0.55 * k)); } };
+  const screenB = (ctx, k = 1) => { drawNumber(ctx, '72', C, 210, 16, ink(k), 6); pill(ctx, C - 50, 300, 100, 12, ink(0.5 * k)); dot(ctx, C + 92, 160, 9, k > 0.5 ? '#d71921' : ink(0)); };
+  function layer(ctx, dx, k, fn) { ctx.save(); ctx.translate(dx, 0); fn(ctx, k); ctx.restore(); }
+  const q16 = (k) => Math.round(k * 16) / 16;   /* NOS quantises fades to 16 steps */
+  demo($('mv_a'), (t) => {
+    const n = Math.floor(t * 30), cyc = 60, f = n % cyc, fwd = Math.floor(n / cyc) % 2 === 0;
+    const runs = [tweenRun(BZ.STANDARD, 1, 0.34, true), tweenRun(BZ.STEADY, 1, 0.40, true), tweenRun(BZ.STEADY, 1, 0.30, true), moookRun(W).map(x => x / W)];
+    ws.forEach((wv, i) => {
+      const r = runs[i], q = r[Math.min(f, r.length - 1)], p = fwd ? q : 1 - q;   /* p = how far the detail screen is in */
+      const ctx = wv.ctx;
+      wv.begin();
+      if (i !== 2) {          /* push: old parallaxes 30% and dims, new slides the full width */
+        layer(ctx, -W * 0.3 * p, 1 - 0.6 * Math.min(1, p), screenA);
+        ctx.fillStyle = '#000'; ctx.fillRect(W - W * p, 0, W, W);
+        layer(ctx, W - W * p, 1, screenB);
+      } else {                /* shared axis: 40 px of travel, out over the first 35 %, in over the rest */
+        const out = q16(Math.max(0, 1 - p / 0.35)), inn = q16(Math.max(0, (p - 0.35) / 0.65));
+        if (out > 0) layer(ctx, -40 * p, out, screenA);
+        if (inn > 0) layer(ctx, 40 * (1 - p), inn, screenB);
+      }
+      wv.end();
+    });
+  });
+}
+
+/* ================= 5. smear and ghosts ================= */
+{
+  const wv = watch($('cv_smear')), ctx = wv.ctx;
+  bindOut('sm_v', v => v + ' °/s');
+  demo($('cv_smear'), (t) => {
+    const n = Math.floor(t * 30), mode = $('sm_mode').value, w = val('sm_v') * Math.PI / 180, R = 180;
+    const a = (k) => (n - k) / 30 * w;
+    const P = (k) => [C + R * Math.sin(a(k)), C - R * Math.cos(a(k))];
+    wv.begin();
+    for (let i = 0; i < 60; i++) { const th = i / 60 * Math.PI * 2; dot(ctx, C + 200 * Math.sin(th), C - 200 * Math.cos(th), i % 5 ? 2 : 4, '#2c2f3a'); }
+    if (mode === 'ghost1' || mode === 'ghost2') { if (mode === 'ghost2') dot(ctx, ...P(2), 13, ink(0.18)); dot(ctx, ...P(1), 13, ink(0.42)); }
+    if (mode === 'stretch') {             /* a capsule from last frame's position to this one, thin at the tail */
+      const [x0, y0] = P(1), [x1, y1] = P(0), steps = 8;
+      for (let s = 0; s <= steps; s++) { const u = s / steps; dot(ctx, x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, 6 + 7 * u, ink(0.35 + 0.65 * u)); }
+    }
+    if (mode === 'dots') {                /* the NOS way: the trail is lit dots of the bezel ring, decaying */
+      for (let k = 3; k >= 1; k--) { const ang = a(k); const i = Math.round(ang / (Math.PI * 2) * 60); const th = i / 60 * Math.PI * 2; dot(ctx, C + 200 * Math.sin(th), C - 200 * Math.cos(th), 5, ink(0.75 - k * 0.2)); }
+    }
+    dot(ctx, ...P(0), 13, '#fff');
+    const step = R * w / 30;
+    label(ctx, `${step.toFixed(0)} px / frame`, C, C + 6, '#9a9caa', 18, 'center');
+    wv.end();
+  });
+}
+
+/* ================= 6. quantised motion as style ================= */
+{
+  const keys = ['qz_a', 'qz_b', 'qz_c'], ws = keys.map(k => watch($(k)));
+  demo($('qz_a'), (t) => {
+    const n = Math.floor(t * 30), per = 30, k = Math.floor(n / per), f = n % per;
+    const from = String(40 + (k % 50)).padStart(2, '0'), to = String(40 + ((k + 1) % 50)).padStart(2, '0');
+    ws.forEach((wv, i) => {
+      const ctx = wv.ctx; wv.begin();
+      if (i === 0) {             /* continuous slide, EASE_STANDARD over 9 frames */
+        const p = ease(BZ.STANDARD, Math.min(1, f / 9)), dy = 150 * p;
+        ctx.save(); ctx.beginPath(); ctx.rect(0, 150, W, 150); ctx.clip();
+        drawNumber(ctx, from, C, 225 - dy, 16, '#fff', 6); drawNumber(ctx, to, C, 375 - dy, 16, '#fff', 6); ctx.restore();
+      } else if (i === 1) {      /* dot morph: each dot flips on its own frame (m_hash01 order) over 6 frames */
+        const A = new Set(), B = new Set(), pitch = 16, wch = 6 * pitch, x0 = C - (2 * wch - pitch) / 2, y0 = 225 - 3 * pitch;
+        [...from].forEach((c, j) => digitDots(c).forEach(([cx, cy]) => A.add(`${j},${cx},${cy}`)));
+        [...to].forEach((c, j) => digitDots(c).forEach(([cx, cy]) => B.add(`${j},${cx},${cy}`)));
+        for (let j = 0; j < 2; j++) for (let cy = 0; cy < 7; cy++) for (let cx = 0; cx < 5; cx++) {
+          const key = `${j},${cx},${cy}`, a = A.has(key), b = B.has(key); dot(ctx, x0 + j * wch + cx * pitch, y0 + cy * pitch, 6, '#1a1b20');
+          const flip = Math.floor(hash01(j * 64 + cy * 8 + cx, k) * 6);
+          if (f >= flip ? b : a) dot(ctx, x0 + j * wch + cx * pitch, y0 + cy * pitch, 6, '#fff');
+        }
+      } else {                   /* mechanical: the slide in 3 held steps, on twos */
+        const step = Math.min(3, Math.floor(f / 2)), dy = 150 * step / 3;
+        ctx.save(); ctx.beginPath(); ctx.rect(0, 150, W, 150); ctx.clip();
+        drawNumber(ctx, from, C, 225 - dy, 16, '#fff', 6); drawNumber(ctx, to, C, 375 - dy, 16, '#fff', 6); ctx.restore();
+      }
+      wv.end();
+    });
+  });
+}
+
+/* ================= 7. sub-pixel steps and settling ================= */
+{
+  const wv = watch($('cv_sub')), ctx = wv.ctx;
+  bindOut('sub_v', v => v.toFixed(2) + ' px/frame');
+  let t0 = null;
+  demo($('cv_sub'), (t) => {
+    if (t0 == null) t0 = t;
+    const n = Math.floor((t - t0) * 30), v = val('sub_v'), span = 200;
+    const d = (n * v) % (2 * span), off = d < span ? d : 2 * span - d;
+    wv.begin();
+    label(ctx, 'rounded', 70, 118, '#8a8d9b', 20); label(ctx, 'sub-pixel', 70, 198, '#8a8d9b', 20);
+    pill(ctx, 133 + Math.round(off), 136, 40, 8, '#fff');
+    dot(ctx, 153 + off, 220, 7, '#fff');
+    /* settle: a 120 px spring move, default eps vs snap at 1 px */
+    const cyc = 75, f = n % cyc;
+    const a = springRun(...SPRINGS.PAGE, 120), b = springRun(...SPRINGS.PAGE, 120, 0, 1.0);
+    const xa = a[Math.min(f, a.length - 1)], xb = b[Math.min(f, b.length - 1)];
+    label(ctx, `eps today: ${a.length - 1} frames`, 92, 296, '#8a8d9b', 19); label(ctx, `1 px snap: ${b.length - 1} frames`, 92, 362, '#8a8d9b', 19);
+    pill(ctx, 120 + Math.round(xa), 306, 90, 28, f < a.length - 1 && f > 0 ? '#f2b84b' : '#fff');
+    pill(ctx, 120 + Math.round(xb), 372, 90, 28, f < b.length - 1 && f > 0 ? '#f2b84b' : '#fff');
+    wv.end();
+  });
+}
+
+/* ================= 8. latency and prediction ================= */
+{
+  const cv = $('cv_lat'), wv = watch(cv), ctx = wv.ctx;
+  bindOut('lat_ms', v => v + ' ms');
+  const hist = []; let finger = null, down = false;
+  const toLocal = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * W]; };
+  cv.addEventListener('pointerdown', e => { down = true; cv.setPointerCapture(e.pointerId); finger = toLocal(e); hist.length = 0; });
+  cv.addEventListener('pointermove', e => { const p = toLocal(e); finger = p; hist.push([performance.now(), ...p]); while (hist.length > 64) hist.shift(); });
+  cv.addEventListener('pointerup', () => { down = false; });
+  const at = (tm) => { for (let i = hist.length - 1; i >= 0; i--) if (hist[i][0] <= tm) return [hist[i][1], hist[i][2]]; return hist.length ? [hist[0][1], hist[0][2]] : [C, C]; };
+  function vel(tm) {   /* least-squares slope over the last 60 ms of samples before tm */
+    const s = hist.filter(h => h[0] <= tm && h[0] > tm - 60); if (s.length < 3) return [0, 0];
+    const mt = s.reduce((a, h) => a + h[0], 0) / s.length, mx = s.reduce((a, h) => a + h[1], 0) / s.length, my = s.reduce((a, h) => a + h[2], 0) / s.length;
+    let num = 0, numy = 0, den = 0; for (const h of s) { num += (h[0] - mt) * (h[1] - mx); numy += (h[0] - mt) * (h[2] - my); den += (h[0] - mt) ** 2; }
+    return den ? [num / den, numy / den] : [0, 0];   /* px per ms */
+  }
+  let lastN = -1, shownA = [C, C], shownB = [C, C];
+  demo(cv, (t) => {
+    const now = performance.now(), n = Math.floor(now / 33.333), L = val('lat_ms'), pred = $('lat_pred').checked;
+    if (n !== lastN) {   /* a new 30 fps frame: the touch sample is L ms old by the time it is on the glass */
+      lastN = n; const sampleT = now - L;
+      shownA = at(sampleT);
+      const [vx, vy] = vel(sampleT); let px = vx * L, py = vy * L; const m = Math.hypot(px, py), cap = 48; if (m > cap) { px *= cap / m; py *= cap / m; }
+      shownB = [shownA[0] + (pred ? px : 0), shownA[1] + (pred ? py : 0)];
+    }
+    wv.begin();
+    card(ctx, shownB[0] - 80, shownB[1] - 42, 160, 84);
+    if (finger) { ctx.strokeStyle = '#8fd3ff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(finger[0], finger[1], 24, 0, Math.PI * 2); ctx.stroke(); }
+    if (!down && !finger) label(ctx, 'drag here', C, C + 6, '#6c6f7d', 18, 'center');
+    if (finger) { const lag = Math.hypot(finger[0] - shownB[0], finger[1] - shownB[1]); label(ctx, `${lag.toFixed(0)} px behind`, C, 440, '#9a9caa', 15, 'center'); }
+    wv.end();
+  });
+}
+
+/* ================= 9. tearing: an unsynchronised writer against the panel scan ================= */
+{
+  const wv = watch($('cv_tear')), ctx = wv.ctx;
+  bindOut('te_v', v => v + ' px/s'); bindOut('te_eps', v => (v > 0 ? '+' : '') + v.toFixed(1) + ' %');
+  const TF = 1000 / 30;
+  demo($('cv_tear'), (t) => {
+    const ms = t * 1000, v = val('te_v'), Wms = +$('te_w').value, P = 1000 / (60 * (1 + val('te_eps') / 100)), span = 270;
+    const pos = (m) => { const d = (m / 30 * v) % (2 * span); return d < span ? d : 2 * span - d; };
+    const k = Math.floor(ms / P) - 1;            /* the last complete panel scan */
+    wv.begin();
+    let tears = 0, prev = null;
+    for (let y = 0; y < W; y += 2) {
+      const tr = k * P + (y / W) * P;            /* when the scan read this row */
+      const m = Math.floor((tr - (y / W) * Wms) / TF);   /* the newest frame the writer had finished for this row */
+      if (prev !== null && m !== prev) tears++;
+      prev = m;
+      const x = 70 + pos(m);
+      if (y > 40 && y < 426) { ctx.fillStyle = '#fff'; ctx.fillRect(x, y, 24, 2); }
+      const yy = 100 + pos(m) * 0.95;
+      if (y >= yy && y < yy + 24) { ctx.fillStyle = '#8fd3ff'; ctx.fillRect(320, y, 80, 2); }
+    }
+    label(ctx, tears ? `${tears} seam${tears > 1 ? 's' : ''} this scan` : 'clean scan', C, 452, tears ? '#f2b84b' : '#4fd18b', 15, 'center');
+    wv.end();
+  });
+}
+
+/* ================= curve table (generated from the same functions) ================= */
+{
+  const rows = [['EASE_STANDARD', 'STANDARD'], ['EASE_DECEL', 'DECEL'], ['EASE_ACCEL', 'ACCEL'], ['EASE_INOUT', 'INOUT'], ['EASE_MECH', 'MECH'], ['EASE_STEADY (proposed)', 'STEADY'], ['linear', 'LINEAR']];
+  const line = (name, run) => {
+    const st = run.slice(1).map((x, i) => x - run[i]), D = run[run.length - 1], N = st.length, mx = Math.max(...st.map(Math.abs)), im = st.map(Math.abs).indexOf(mx);
+    const creep = st.filter(s => Math.abs(s) > 0 && Math.abs(s) < 1.5).length, over = st.filter(s => Math.abs(s) > LIMIT_HARD).length;
+    const cls = name.startsWith('cut') ? 'dim' : mx > LIMIT_HARD ? 'bad' : mx > LIMIT_COMFORT ? 'warn' : 'ok';
+    return `<tr><td>${name}</td><td class="n">${N}</td><td class="n">${st[0].toFixed(0)}</td><td class="n ${cls}">${mx.toFixed(0)} (f${im + 1})</td><td class="n">${(mx / (D / N)).toFixed(1)}×</td><td class="n">${over}</td><td class="n">${creep}</td><td class="n">${st[N - 1].toFixed(1)}</td></tr>`;
+  };
+  $('curve_table').innerHTML = '<table><tr><th>Curve</th><th class="n">frames</th><th class="n">first px</th><th class="n">biggest px</th><th class="n">peak/avg</th><th class="n">&gt; 64 px</th><th class="n">creep</th><th class="n">last px</th></tr>' +
+    rows.map(([n, k]) => line(n, tweenRun(BZ[k], 466, 0.34, true))).join('') +
+    line('SPRING_PAGE (466 px)', springRun(...SPRINGS.PAGE, 466)) + line('SPRING_SNAPPY (466 px)', springRun(...SPRINGS.SNAPPY, 466)) + line('cut: moook (466 px)', moookRun(466)) + '</table>';
+}
+
+</script>
+</body>
+</html>

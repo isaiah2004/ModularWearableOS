@@ -1,13 +1,36 @@
 /build/
+/.worktrees/
 /dist/
 /reference/
 /firmware/build/
 /firmware/managed_components/
 /firmware/sdkconfig
 /firmware/sdkconfig.old
+/firmware/build_c143/
+/firmware/sdkconfig.c143
+/firmware/sdkconfig.c143.old
 __pycache__/
 *.pyc
 /shot_*.bmp
 /diag_*.bmp
 /store_*.dat
 /build-*.log
+firmware/build_ext/
+firmware/build_svc/
+firmware/build_*/
+.env
+
+# Local API credentials
+/.env
+/.env.*
+!/.env.example
+
+# Playwright CLI / MCP browser snapshots, logs and screenshots
+.playwright-cli/
+.playwright-mcp/
+/output/playwright/
+
+# NOS map: regenerable outputs of docs/os-map/canvas-tools/build_canvas.py
+/docs/os-map/preview/
+/docs/os-map/canvas-tools/build_report.json
+/docs/os-map/canvas-tools/__pycache__/

@@ -8,6 +8,7 @@ if (-not $compiler) {
 if (-not $compiler) { throw 'Install GCC or WinLibs first' }
 $outDir = Join-Path $projectRoot 'build\tests'
 New-Item -ItemType Directory -Force $outDir | Out-Null
+& (Join-Path $PSScriptRoot 'test_optimizations.ps1')
 & $compiler -std=c99 -O2 -Wall -Wextra -Werror `
     "-I$projectRoot\core" "-I$projectRoot\firmware\main" `
     "$projectRoot\tests\board_protocol_test.c" "$projectRoot\firmware\main\board_protocol.c" `
@@ -15,6 +16,13 @@ New-Item -ItemType Directory -Force $outDir | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed' }
 & "$outDir\board_protocol_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Board protocol test failed' }
+& $compiler -std=c99 -O2 -Wall -Wextra -Werror -DCONFIG_WATCH_BOARD_143C=1 `
+    "-I$projectRoot\core" "-I$projectRoot\firmware\main" `
+    "$projectRoot\tests\board_protocol_test.c" "$projectRoot\firmware\main\board_protocol.c" `
+    -o "$outDir\board_protocol_test_c143.exe"
+if ($LASTEXITCODE -ne 0) { throw '1.43C board protocol test compilation failed' }
+& "$outDir\board_protocol_test_c143.exe"
+if ($LASTEXITCODE -ne 0) { throw '1.43C board protocol test failed' }
 & $compiler -std=c99 -O2 -Wall -Wextra -Werror `
     "-I$projectRoot\tests\stubs" "-I$projectRoot\firmware\main" `
     "$projectRoot\tests\display_perf_test.c" "$projectRoot\firmware\main\display_perf.c" `
@@ -27,7 +35,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Display performance test failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Pip test compilation failed' }
 & "$outDir\pip_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Pip test failed' }
-foreach ($module in @('pip_care', 'walk', 'notif', 'battery', 'motion_wake')) {
+foreach ($module in @('pip_care', 'walk', 'notif', 'battery', 'motion_wake', 'knock', 'ephem')) {
     & $compiler -std=c99 -O2 -Wall -Wextra -Werror "-I$projectRoot\core" `
         "$projectRoot\tests\${module}_test.c" "$projectRoot\core\${module}.c" -lm -o "$outDir\${module}_test.exe"
     if ($LASTEXITCODE -ne 0) { throw "$module test compilation failed" }

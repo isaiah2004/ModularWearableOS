@@ -1,0 +1,87 @@
+# Persistent coloured copies: all home pages, drawer, cold transitions, rest.
+set mblur 2
+face 8
+notify Messages|Ana|See you at 7? Bring the charger please
+notify Calendar|Standup|10:30 in Room 4
+notify Slack|Hardware|New boards arrived
+wait 10000
+mark warm
+expect blurbaked 127
+wait 1000
+expect bluridle
+expect nolate
+mark page1
+slide 430 380 70 380 400 100
+wait 1700
+expect blurlive
+expect nolate
+expect home_page 1
+shot page1
+# Return from Apps to Face before walking the original widgets toward the left.
+press
+wait 1000
+expect home_page 0
+mark page2
+slide 70 380 430 380 400 100
+wait 1700
+expect blurlive
+expect nolate
+expect home_page 6
+shot page2
+mark page3
+slide 70 380 430 380 400 100
+wait 1700
+expect blurlive
+expect nolate
+expect home_page 5
+shot page3
+mark page4
+slide 70 380 430 380 400 100
+wait 1700
+expect blurlive
+expect nolate
+expect home_page 4
+shot page4
+mark page5
+slide 70 380 430 380 400 100
+wait 1700
+expect blurlive
+expect nolate
+expect home_page 3
+shot page5
+mark page6
+slide 70 380 430 380 400 100
+wait 1700
+expect blurlive
+expect nolate
+expect home_page 2
+shot page6
+press
+wait 1000
+expect home_page 0
+mark drawer
+drag 233 8 233 360 300
+wait 1000
+expect top CONTROL
+shot drawer
+home
+wait 700
+expect blurlive
+expect nolate
+mark immediate_notifs
+open notifs
+flick 233 400 233 80 160
+wait 1000
+expect nolate
+home_now
+mark immediate_settings
+open settings
+flick 233 400 233 80 160
+wait 1000
+expect nolate
+home_now
+wait 2000
+mark rest
+wait 10000
+expect bluridle
+expect nolate

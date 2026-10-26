@@ -1,0 +1,30 @@
+face 8
+wait 2500
+hold 300 300 1700
+wait 1000
+mark events_open
+tap 233 380
+wait 1000
+expect top ORRERY EVENTS
+shot events_top
+expect idle
+expect nolate
+mark events_scroll
+film events_scroll 30 10 2
+drag 220 350 220 160 700
+wait 1500
+shot events_scrolled
+expect idle
+expect nolate
+mark events_flick
+flick 220 350 220 170 160
+wait 3000
+shot events_later
+expect idle
+expect nolate
+mark events_back
+flick 10 233 220 233 180
+wait 1000
+expect top HOME
+expect idle
+expect nolate

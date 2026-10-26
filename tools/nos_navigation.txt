@@ -1,0 +1,118 @@
+# Physical order: Activity Heart Weather Music Timer Face Apps; face starts selected.
+# Actual touch path, default renderer and blur; no production quality overrides.
+time 10:09:30
+skipboot
+face 1
+home_now
+wait 800
+expect home_page 0
+expect home_offset 0 0
+expect depth 1
+mark face_to_apps_left
+flick 380 233 110 233 240
+wait 800
+expect top HOME
+expect home_page 1
+expect home_offset 466 466
+expect depth 1
+mark apps_end_limit
+flick 350 233 110 233 160
+wait 800
+expect home_page 1
+expect home_offset 466 466
+mark apps_vertical
+drag 233 360 233 110 700
+wait 1000
+expect home_page 1
+expect launcher_scroll 100 500
+expect depth 1
+mark apps_face_return_right
+flick 110 233 380 233 240
+wait 800
+expect home_page 0
+press
+wait 600
+expect home_page 1
+expect launcher_scroll 100 500
+press
+wait 600
+expect home_page 0
+mark widgets_original_order
+flick 110 233 380 233 200
+wait 800
+expect home_page 6
+expect home_offset -466 -466
+expect depth 1
+flick 110 233 380 233 200
+wait 800
+expect home_page 5
+expect home_offset -932 -932
+expect depth 1
+flick 110 233 380 233 200
+wait 800
+expect home_page 4
+expect home_offset -1398 -1398
+expect depth 1
+flick 110 233 380 233 200
+wait 800
+expect home_page 3
+expect home_offset -1864 -1864
+expect depth 1
+flick 110 233 380 233 200
+wait 800
+expect home_page 2
+expect home_offset -2330 -2330
+expect depth 1
+mark activity_end_limit
+flick 110 233 380 233 160
+wait 800
+expect home_page 2
+expect home_offset -2330 -2330
+mark button_alias_return
+press
+wait 600
+expect home_page 0
+expect home_offset 0 0
+press
+wait 600
+expect home_page 1
+mark aod
+set aod 1
+wait 400
+expect home_page 0
+expect home_dragging 0
+set aod 0
+wait 600
+expect home_page 0
+expect depth 1
+mark sheets
+drag 233 20 233 330 350
+wait 700
+expect top CONTROL
+home
+wait 700
+expect top HOME
+expect home_page 0
+mark app_return
+press
+wait 700
+expect home_page 1
+tap 250 233
+wait 800
+expect depth 2
+pop
+wait 800
+expect top HOME
+expect home_page 1
+expect launcher_scroll 100 500
+mark double_button
+press
+wait 600
+expect home_page 0
+doublepress
+wait 1000
+expect depth 2
+home
+wait 800
+expect top HOME
+expect memfailures 0

@@ -1,0 +1,146 @@
+# Actual controller sample timing, widget routing, cancellation, Orrery ownership.
+time 10:09:30
+skipboot
+face 1
+home_now
+wait 800
+mark short_cancel
+drag 140 233 220 233 900
+wait 900
+expect home_page 0
+mark sampled_left_to_apps
+board_swipe 390 233 100 233 350 28
+wait 900
+expect home_page 1
+expect depth 1
+mark diagonal_vertical
+board_swipe 220 360 245 130 600 38
+wait 1200
+expect home_page 1
+expect launcher_scroll 100 500
+mark horizontal_cancels_row
+touch 100 233 1
+wait 100
+touch 130 233 1
+wait 25
+touch 230 233 1
+wait 25
+touch 330 233 1
+wait 25
+touch 430 233 1
+wait 25
+touch 430 233 0
+wait 900
+expect home_page 0
+expect depth 1
+board_swipe 100 233 390 233 350 28
+wait 900
+expect home_page 6
+tap 233 90
+wait 800
+expect top TIMER
+pop
+wait 800
+expect top HOME
+expect home_page 6
+board_swipe 100 233 390 233 350 28
+wait 900
+expect home_page 5
+tap 233 90
+wait 800
+expect top MUSIC
+pop
+wait 800
+expect top HOME
+expect home_page 5
+board_swipe 100 233 390 233 350 28
+wait 900
+expect home_page 4
+tap 233 90
+wait 800
+expect top WEATHER
+pop
+wait 800
+expect top HOME
+expect home_page 4
+board_swipe 100 233 390 233 350 28
+wait 900
+expect home_page 3
+tap 233 90
+wait 800
+expect top HEART RATE
+pop
+wait 800
+expect top HOME
+expect home_page 3
+board_swipe 100 233 390 233 350 28
+wait 900
+expect home_page 2
+tap 233 90
+wait 800
+expect top ACTIVITY
+pop
+wait 800
+expect top HOME
+expect home_page 2
+mark air_physical_order
+air LEFT
+wait 900
+expect home_page 2
+air RIGHT
+wait 900
+expect home_page 3
+press
+wait 700
+expect home_page 0
+air RIGHT
+wait 900
+expect home_page 1
+air RIGHT
+wait 900
+expect home_page 1
+air LEFT
+wait 900
+expect home_page 0
+air LEFT
+wait 900
+expect home_page 6
+mark partial_aod
+press
+wait 700
+expect home_page 0
+touch 120 233 1
+wait 25
+touch 240 233 1
+wait 25
+set aod 1
+wait 300
+expect home_page 0
+expect home_dragging 0
+touch 240 233 0
+set aod 0
+wait 600
+expect home_page 0
+mark orrery_locked
+face 8
+wait 1000
+board_swipe 380 233 110 233 350 25
+wait 1000
+expect home_page 1
+press
+wait 700
+expect home_page 0
+mark orrery_unlocked
+hold 233 233 1700
+wait 500
+board_swipe 380 233 130 233 350 25
+wait 1000
+expect home_page 0
+expect depth 1
+press
+wait 600
+expect home_page 0
+press
+wait 700
+expect home_page 1
+expect memfailures 0

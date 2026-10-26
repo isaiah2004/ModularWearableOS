@@ -41,7 +41,57 @@ typedef struct {
                        thin change repaints a thin column, not a full row-band.
                        0..GFX_W means "no clip" (whole width). */
     gfx_rec *rec;   /* non-NULL => record commands instead of rasterizing */
+    /* Column-band buffers (device scan-order flush): the buffer holds only buffer
+     * columns [x_base, x_base+stride) of each row, packed `stride` apart. Both 0
+     * (the default for every positional initializer) = full GFX_W-wide rows. All
+     * column clipping stays in screen columns (cx0/cx1), so only row addressing
+     * changes - always go through gfx_row(). */
+    int stride, x_base;
+    /* Ink dim for transition backdrops: 0 = none, else every colour drawn keeps
+     * (32 - dim)/32 of each channel. Applied once per primitive (dimming is
+     * linear, so AA blends against an already-dimmed backdrop agree), which makes
+     * a dimmed screen cost the same as a bright one. Writers call gfx_ink(). */
+    int dim;
+    /* Panel output may use invisible corner pixels as scratch. Subviews retain
+     * this permission, but writers must still preserve every visible pixel
+     * outside their clip. Sprite/packed destinations leave this zero. */
+    int glass_only;
+#ifdef GFX_COST_MODEL
+    int cost_psram; /* destination pixels in external RAM; set by sprite_fb */
+#endif
 } gfx_fb;
+
+/* Pointer such that gfx_row(fb, r)[bx] is buffer row r, buffer column bx (screen
+ * column + ox). With a column band this points before the band's first pixel
+ * (bx < x_base is never written: every writer clips to cx0/cx1 inside the band). */
+#ifdef GFX_COST_MODEL
+void gfx_cost_target(int psram);
+#endif
+static inline uint16_t *gfx_row(const gfx_fb *fb, int r)
+{
+#ifdef GFX_COST_MODEL
+    gfx_cost_target(fb->cost_psram);
+#endif
+    return fb->px + (r * (fb->stride ? fb->stride : GFX_W) - fb->x_base);
+}
+
+/* The colour a primitive actually writes into `fb` (see gfx_fb.dim). Truncating
+ * and dropping green's low bit keeps neutral greys neutral (g6 = 2 * r5). */
+static inline uint16_t gfx_ink(const gfx_fb *fb, uint16_t c)
+{
+    if (!fb->dim) return c;
+    uint32_t k = 32u - (uint32_t)fb->dim;
+    uint32_t r5 = c >> 11, g6 = (c >> 5) & 63u, b5 = c & 31u;
+    if (r5 == b5 && (g6 >> 1) == r5) {
+        /* once per primitive, so a branch is free: a neutral grey dims to the nearest
+         * neutral grey (green 2x below level 16, 2x + 1 from 16), never a tint */
+        uint32_t l = (r5 * k + 16u) >> 5;
+        return (uint16_t)(l << 11 | (l * 2u + (l >= 16u)) << 5 | l);
+    }
+    uint32_t d = (c | ((uint32_t)c << 16)) & 0x07E0F81Fu;
+    d = ((d * k + 0x02008010u) >> 5) & 0x07E0F81Fu;
+    return (uint16_t)(d | (d >> 16));
+}
 
 /* Record a primitive's screen bbox + a hash of its visual parameters. Returns
  * 1 if the fb is in record mode (caller must then return without drawing),
@@ -83,6 +133,10 @@ void gfx_px_blend(gfx_fb *fb, int x, int y, uint16_t color, uint8_t alpha);
 /* Anti-aliased primitives. Coordinates are float so hands/ticks can sit
  * at exact angles; angles are radians, 0 = 12 o'clock, clockwise. */
 void gfx_fill_circle(gfx_fb *fb, float cx, float cy, float r, uint16_t color);
+/* Horizontal capsule of radius r: round caps centred (xa, cy) and (xb, cy), fully
+ * anti-aliased. Solid spans are word-filled; only the cap rims and the two
+ * fractional edge rows pay per-pixel coverage math. */
+void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t color);
 void gfx_ring(gfx_fb *fb, float cx, float cy, float r_mid, float thickness, uint16_t color);
 void gfx_arc(gfx_fb *fb, float cx, float cy, float r_mid, float thickness,
              float a0, float a1, uint16_t color);

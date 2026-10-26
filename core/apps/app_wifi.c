@@ -128,14 +128,12 @@ static void draw_channels(gfx_fb *fb)
     font_draw_centered(fb, &font_small, (int)GFX_CX, (int)GFX_S(30), "CHANNELS", GFX_GREY);
 
     int cur = hal_wifi_air_channel(), busiest = 0, quietest = 0;
-    long tot = 0;
     for (int c = 0; c < HAL_AIR_NCH; c++) {
-        tot += s_air[c].pkts;
         if (s_air[c].util > s_air[busiest].util)  busiest = c;
         if (s_air[c].util < s_air[quietest].util) quietest = c;
     }
     char hdr[36];
-    if (!hal_wifi_air_running()) snprintf(hdr, sizeof hdr, "starting monitor...");
+    if (!hal_wifi_air_running()) snprintf(hdr, sizeof hdr, "monitor unavailable");
     else snprintf(hdr, sizeof hdr, "listening ch %d", cur);
     font_draw_centered(fb, &font_small, (int)GFX_CX, (int)GFX_S(52), hdr, GFX_ACCENT);
 

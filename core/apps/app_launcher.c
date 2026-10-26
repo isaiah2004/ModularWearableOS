@@ -134,7 +134,7 @@ static void prepare_label(const char *s, float R, float a_mid, uint16_t col)
     if (!s_label.stage) s_label.stage = hal_big_alloc((uint32_t)GFX_W * (uint32_t)LABEL_MAX_H * 2u);
     if (!s_label.alpha || !s_label.stage) return;
     memset(s_label.stage, 0, (size_t)GFX_W * h * 2u);
-    gfx_fb stage = { s_label.stage, 0, 0, y0, h, x0, x1, 0 };
+    gfx_fb stage = { s_label.stage, 0, 0, y0, h, x0, x1, 0, 0, 0 };
     launcher_label_dbg_renders++;
     pathtext_arc(&stage, PATHTEXT_CONDENSED, s, R, a_mid, LABEL_SIZE, GFX_WHITE);
     for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
@@ -203,7 +203,7 @@ static const disc_sprite *sprite_for(uint16_t accent, int icon, float r)
     }
     uint16_t *px = hal_big_alloc((uint32_t)size * size * 2u);
     if (!px) return NULL;
-    gfx_fb st = { s_spr_stage, 0, 0, 0, size, 0, size, 0 };
+    gfx_fb st = { s_spr_stage, 0, 0, 0, size, 0, size, 0, 0, 0 };
     gfx_clear(&st, GFX_BLACK);
     float c = size * 0.5f;
     gfx_fill_circle(&st, c, c, r, accent);
@@ -228,7 +228,7 @@ static void blit_sprite(gfx_fb *fb, const disc_sprite *s, float cx, float cy)
     if (by0 < 0) { sy0 = -by0; }
     if (by0 + sy1 > fb->h) sy1 = fb->h - by0;
     for (int sy = sy0; sy < sy1; sy++)
-        memcpy(&fb->px[(by0 + sy) * GFX_W + bx0], &s->px[sy * S + sx0], (size_t)(bx1 - bx0) * 2u);
+        memcpy(&gfx_row(fb, by0 + sy)[bx0], &s->px[sy * S + sx0], (size_t)(bx1 - bx0) * 2u);
 }
 
 static void draw_disc(gfx_fb *fb, float cx, float cy, float r, uint16_t accent, int icon, float alpha)

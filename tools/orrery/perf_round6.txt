@@ -1,0 +1,35 @@
+# App entry from a warm home; centre and off-centre iris, then pan/inertia.
+face 8
+wait 2500
+mark settings_open
+open settings
+wait 1000
+expect nolate
+mark settings_close
+pop
+wait 1000
+expect nolate
+mark notifs_open
+open notifs 380 100
+wait 1000
+expect nolate
+mark notifs_close
+pop
+wait 1000
+expect nolate
+mark unlock
+hold 300 300 1700
+wait 700
+mark pan
+drag 300 300 360 340 500
+wait 200
+expect nolate
+mark pan_settle
+wait 1200
+expect idle 500
+mark pan_fling
+flick 300 300 380 350 300
+wait 1500
+expect nolate
+mark pan_rest
+expect idle 500

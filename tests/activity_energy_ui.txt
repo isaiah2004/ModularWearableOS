@@ -1,0 +1,17 @@
+# Activity today (ACTIVE + TOTAL incl. rest) and the Energy screen.
+wait 100
+set step_rate 60
+open activity
+wait 900
+shot activity_today
+slide 233 380 233 120 600 100
+wait 900
+shot activity_page2
+slide 233 380 233 120 600 100
+wait 900
+shot activity_page3
+home
+wait 700
+open energy
+wait 2500
+shot energy_screen

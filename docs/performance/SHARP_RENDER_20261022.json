@@ -1,0 +1,1401 @@
+{
+  "meta": {
+    "firmware_bundle": "5a4435cefcbac730fa060e4a11c30aa0749bbe0f138d3a2412acc993fbf546d3",
+    "source_sha256": "ed5f0540893fd04600c98baa51c998ec2c580438959fb9465d16dd2bfe5da1cb",
+    "elf_sha256": "ea3f0457ca6e9fb6678999928c6b109a03909a9fbc9796b7788d46e4cde727eb",
+    "windows": 32,
+    "quiet_windows": 24,
+    "instrumented_windows": 8,
+    "preferences_hash": "fac571ef",
+    "preferences_preserved": true,
+    "history_bytes_removed": 490232,
+    "diagnostics_restored": true,
+    "new_faults": [],
+    "host_update": {
+      "firmware_source_unchanged": true,
+      "host_only_changes": [
+        "tests/test_sharp_benchmark.py",
+        "tools/benchmark_sharp.py"
+      ],
+      "host_tree_sha256": "d4019cc8f1d87f39e4d7ce8fa73ff0346e448d38769b8fdf4e0a542847b4b1bc",
+      "script_sha256": "e23a6bb290d878bac4264ee517eee641e7ca6fbcbdb8e40e93082ac8e6eef346"
+    },
+    "evidence": {
+      "build\\sharp-20261022\\measurements\\results.json": "5053ccc2401a6fa05bbd6aed1e32d677046c7403a4c2741bca6e30422003001e",
+      "build\\sharp-20261022\\measurements-guarded\\results.json": "2f0c66ef8bc738197a2a095639f6fdb70592fd915ffb6966094485c3f025fcfe"
+    },
+    "scope": "18 valid windows retained from an incomplete first run; verified-cleanup guarded run completed only its 14 unattempted windows. Percentiles remain per-window. Timings are elapsed wall durations; display completion is DMA/GRAM, not optical.",
+    "nvs_preserved": true,
+    "quiet_intervals": 2540,
+    "quiet_floor_violations": 0,
+    "quiet_worst_ms": 28.16
+  },
+  "quiet": [
+    {
+      "app": "apps",
+      "rotation_mode": 1,
+      "windows": 4,
+      "intervals": 386,
+      "over_33_333333ms": 0,
+      "max_ms": 20.437,
+      "typical_window_p50_ms": [
+        19,
+        19,
+        19,
+        19
+      ],
+      "typical_window_p95_ms": [
+        20,
+        21,
+        21,
+        20
+      ],
+      "earlier_blurred_typical": {
+        "p50_ms": 31,
+        "p95_ms": 38,
+        "p99_ms": 40,
+        "max_ms": 39.139,
+        "intervals": 57,
+        "over_33_333333ms": 9,
+        "quantile_resolution_us": 1000
+      },
+      "by_workload": {
+        "typical": {
+          "p50_ms": [
+            19,
+            19,
+            19,
+            19
+          ],
+          "max_ms": 20.437
+        }
+      }
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 2,
+      "windows": 8,
+      "intervals": 862,
+      "over_33_333333ms": 0,
+      "max_ms": 21.184,
+      "typical_window_p50_ms": [
+        19,
+        19,
+        19,
+        20
+      ],
+      "typical_window_p95_ms": [
+        21,
+        21,
+        20,
+        21
+      ],
+      "earlier_blurred_typical": {
+        "p50_ms": 31,
+        "p95_ms": 38,
+        "p99_ms": 40,
+        "max_ms": 39.139,
+        "intervals": 57,
+        "over_33_333333ms": 9,
+        "quantile_resolution_us": 1000
+      },
+      "by_workload": {
+        "fling": {
+          "p50_ms": [
+            17,
+            18
+          ],
+          "max_ms": 20.945
+        },
+        "slow": {
+          "p50_ms": [
+            19,
+            19
+          ],
+          "max_ms": 21.184
+        },
+        "typical": {
+          "p50_ms": [
+            19,
+            19,
+            19,
+            20
+          ],
+          "max_ms": 20.95
+        }
+      }
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 1,
+      "windows": 4,
+      "intervals": 391,
+      "over_33_333333ms": 0,
+      "max_ms": 19.869,
+      "typical_window_p50_ms": [
+        16,
+        16,
+        16,
+        17
+      ],
+      "typical_window_p95_ms": [
+        18,
+        18,
+        18,
+        18
+      ],
+      "earlier_blurred_typical": {
+        "p50_ms": 26,
+        "p95_ms": 35,
+        "p99_ms": 36,
+        "max_ms": 35.939,
+        "intervals": 61,
+        "over_33_333333ms": 6,
+        "quantile_resolution_us": 1000
+      },
+      "by_workload": {
+        "typical": {
+          "p50_ms": [
+            16,
+            16,
+            16,
+            17
+          ],
+          "max_ms": 19.869
+        }
+      }
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 2,
+      "windows": 8,
+      "intervals": 901,
+      "over_33_333333ms": 0,
+      "max_ms": 28.16,
+      "typical_window_p50_ms": [
+        16,
+        17,
+        16,
+        17
+      ],
+      "typical_window_p95_ms": [
+        19,
+        18,
+        18,
+        18
+      ],
+      "earlier_blurred_typical": {
+        "p50_ms": 26,
+        "p95_ms": 35,
+        "p99_ms": 36,
+        "max_ms": 35.939,
+        "intervals": 61,
+        "over_33_333333ms": 6,
+        "quantile_resolution_us": 1000
+      },
+      "by_workload": {
+        "fling": {
+          "p50_ms": [
+            17,
+            17
+          ],
+          "max_ms": 28.16
+        },
+        "slow": {
+          "p50_ms": [
+            16,
+            17
+          ],
+          "max_ms": 18.053
+        },
+        "typical": {
+          "p50_ms": [
+            16,
+            17,
+            16,
+            17
+          ],
+          "max_ms": 20.081
+        }
+      }
+    }
+  ],
+  "rotation": [
+    {
+      "width": 466,
+      "height": 8,
+      "samples_us_per_call": {
+        "1": [
+          113.5546875,
+          110.8359375,
+          113.3046875,
+          109.8203125
+        ],
+        "2": [
+          112.390625,
+          96.5234375,
+          100.015625,
+          97.75
+        ]
+      },
+      "paired_mean_us": 111.87890625,
+      "columns_mean_us": 101.669921875,
+      "saved_percent": 9.12503055060927,
+      "pixels_identical": true,
+      "scope": "Four ABBA arms per case across two sessions, 128 calls/arm, UI core; elapsed wall time includes interruptions."
+    },
+    {
+      "width": 320,
+      "height": 8,
+      "samples_us_per_call": {
+        "1": [
+          76.125,
+          75.2734375,
+          75.3359375,
+          75.09375
+        ],
+        "2": [
+          70.3671875,
+          71.34375,
+          67.609375,
+          66.4921875
+        ]
+      },
+      "paired_mean_us": 75.45703125,
+      "columns_mean_us": 68.953125,
+      "saved_percent": 8.619350830874362,
+      "pixels_identical": true,
+      "scope": "Four ABBA arms per case across two sessions, 128 calls/arm, UI core; elapsed wall time includes interruptions."
+    },
+    {
+      "width": 232,
+      "height": 8,
+      "samples_us_per_call": {
+        "1": [
+          54.9140625,
+          55.46875,
+          54.9765625,
+          56.28125
+        ],
+        "2": [
+          51.5859375,
+          62.1484375,
+          50.2734375,
+          48.2421875
+        ]
+      },
+      "paired_mean_us": 55.41015625,
+      "columns_mean_us": 53.0625,
+      "saved_percent": 4.236869933027842,
+      "pixels_identical": true,
+      "scope": "Four ABBA arms per case across two sessions, 128 calls/arm, UI core; elapsed wall time includes interruptions."
+    },
+    {
+      "width": 231,
+      "height": 8,
+      "samples_us_per_call": {
+        "1": [
+          54.90625,
+          54.7109375,
+          56.734375,
+          54.6015625
+        ],
+        "2": [
+          47.625,
+          47.484375,
+          49.8984375,
+          48.6875
+        ]
+      },
+      "paired_mean_us": 55.23828125,
+      "columns_mean_us": 48.423828125,
+      "saved_percent": 12.336468425146741,
+      "pixels_identical": true,
+      "scope": "Four ABBA arms per case across two sessions, 128 calls/arm, UI core; elapsed wall time includes interruptions."
+    }
+  ],
+  "instrumented": [
+    {
+      "app": "apps",
+      "rotation_mode": 1,
+      "painted": 191,
+      "scene_mean_ms": 6.768319371727749,
+      "exclusive_mean_ms": {
+        "scene_other": 3.1624869109947644,
+        "clear": 0.5740471204188482,
+        "sprite8": 2.582,
+        "sprite565": 0.0,
+        "text": 0.0,
+        "shape": 0.44978534031413614
+      },
+      "worker_rotation_mean_ms": 4.277502617801048,
+      "worker_api_mean_ms": 10.94980104712042,
+      "rotation_ns_per_pixel": 30.641862526332403,
+      "worker_rotation_ms_per_150k_pixels": 4.59627937894986,
+      "worker": {
+        "rotation_sum_us": 817003,
+        "api_sum_us": 2091412,
+        "dmawait_sum_us": 24727,
+        "queuewait_sum_us": 121177,
+        "bytes": 53325936,
+        "chunks": 11252
+      },
+      "cost_buckets": {
+        "scene_other": {
+          "inclusive_us": 1292749,
+          "exclusive_us": 604035,
+          "calls": 5713
+        },
+        "clear": {
+          "inclusive_us": 109643,
+          "exclusive_us": 109643,
+          "calls": 5713
+        },
+        "sprite8": {
+          "inclusive_us": 493162,
+          "exclusive_us": 493162,
+          "calls": 14428
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 85909,
+          "exclusive_us": 85909,
+          "calls": 39991
+        }
+      }
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 2,
+      "painted": 192,
+      "scene_mean_ms": 6.641890625,
+      "exclusive_mean_ms": {
+        "scene_other": 3.1160364583333333,
+        "clear": 0.5393125,
+        "sprite8": 2.54671875,
+        "sprite565": 0.0,
+        "text": 0.0,
+        "shape": 0.4398229166666667
+      },
+      "worker_rotation_mean_ms": 3.7957291666666664,
+      "worker_api_mean_ms": 11.416666666666666,
+      "rotation_ns_per_pixel": 27.21848708864148,
+      "worker_rotation_ms_per_150k_pixels": 4.082773063296223,
+      "worker": {
+        "rotation_sum_us": 728780,
+        "api_sum_us": 2192000,
+        "dmawait_sum_us": 24950,
+        "queuewait_sum_us": 110757,
+        "bytes": 53550368,
+        "chunks": 11308
+      },
+      "cost_buckets": {
+        "scene_other": {
+          "inclusive_us": 1275243,
+          "exclusive_us": 598279,
+          "calls": 5740
+        },
+        "clear": {
+          "inclusive_us": 103548,
+          "exclusive_us": 103548,
+          "calls": 5740
+        },
+        "sprite8": {
+          "inclusive_us": 488970,
+          "exclusive_us": 488970,
+          "calls": 14473
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 84446,
+          "exclusive_us": 84446,
+          "calls": 40180
+        }
+      }
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 1,
+      "painted": 196,
+      "scene_mean_ms": 4.970158163265306,
+      "exclusive_mean_ms": {
+        "scene_other": 1.541091836734694,
+        "clear": 0.3911887755102041,
+        "sprite8": 1.4334132653061225,
+        "sprite565": 0.0,
+        "text": 0.0,
+        "shape": 1.6044642857142857
+      },
+      "worker_rotation_mean_ms": 1.666765306122449,
+      "worker_api_mean_ms": 8.40411224489796,
+      "rotation_ns_per_pixel": 32.36613202301849,
+      "worker_rotation_ms_per_150k_pixels": 4.854919803452773,
+      "worker": {
+        "rotation_sum_us": 326686,
+        "api_sum_us": 1647206,
+        "dmawait_sum_us": 23914,
+        "queuewait_sum_us": 43397,
+        "bytes": 20186904,
+        "chunks": 10458
+      },
+      "cost_buckets": {
+        "scene_other": {
+          "inclusive_us": 974151,
+          "exclusive_us": 302054,
+          "calls": 5236
+        },
+        "clear": {
+          "inclusive_us": 76673,
+          "exclusive_us": 76673,
+          "calls": 5236
+        },
+        "sprite8": {
+          "inclusive_us": 280949,
+          "exclusive_us": 280949,
+          "calls": 31928
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 314475,
+          "exclusive_us": 314475,
+          "calls": 10472
+        }
+      }
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 2,
+      "painted": 196,
+      "scene_mean_ms": 5.024943877551021,
+      "exclusive_mean_ms": {
+        "scene_other": 1.6083928571428572,
+        "clear": 0.40234183673469387,
+        "sprite8": 1.4137704081632654,
+        "sprite565": 0.0,
+        "text": 0.0,
+        "shape": 1.600438775510204
+      },
+      "worker_rotation_mean_ms": 1.5175,
+      "worker_api_mean_ms": 8.569122448979591,
+      "rotation_ns_per_pixel": 29.281211863936235,
+      "worker_rotation_ms_per_150k_pixels": 4.392181779590436,
+      "worker": {
+        "rotation_sum_us": 297430,
+        "api_sum_us": 1679548,
+        "dmawait_sum_us": 24107,
+        "queuewait_sum_us": 41447,
+        "bytes": 20315416,
+        "chunks": 10438
+      },
+      "cost_buckets": {
+        "scene_other": {
+          "inclusive_us": 984889,
+          "exclusive_us": 315245,
+          "calls": 5226
+        },
+        "clear": {
+          "inclusive_us": 78859,
+          "exclusive_us": 78859,
+          "calls": 5226
+        },
+        "sprite8": {
+          "inclusive_us": 277099,
+          "exclusive_us": 277099,
+          "calls": 31905
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 313686,
+          "exclusive_us": 313686,
+          "calls": 10452
+        }
+      }
+    }
+  ],
+  "slow_frames": [
+    {
+      "app": "apps",
+      "rotation_mode": 1,
+      "direction": "up",
+      "frame_id": 26618,
+      "role": "previous",
+      "raster_us": 15675,
+      "render_return_us": 18731,
+      "e2e_us": 19423,
+      "tick_us": 2184,
+      "record_us": 408,
+      "compare_us": 97,
+      "stripe_wait_us": 7537,
+      "submit_us": 104,
+      "other_raster_us": 314,
+      "scene_us": 7623,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 7623,
+          "exclusive_us": 3511,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 646,
+          "exclusive_us": 646,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 3023,
+          "exclusive_us": 3023,
+          "calls": 72
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 443,
+          "exclusive_us": 443,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4146,
+      "worker_api_us": 10645,
+      "pixels": 131732,
+      "final_tail_us": 692
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 1,
+      "direction": "up",
+      "frame_id": 26619,
+      "role": "current",
+      "raster_us": 18079,
+      "render_return_us": 20900,
+      "e2e_us": 21955,
+      "tick_us": 1936,
+      "record_us": 401,
+      "compare_us": 153,
+      "stripe_wait_us": 4799,
+      "submit_us": 186,
+      "other_raster_us": 772,
+      "scene_us": 12169,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 12169,
+          "exclusive_us": 5314,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 1634,
+          "exclusive_us": 1634,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 4556,
+          "exclusive_us": 4556,
+          "calls": 67
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 665,
+          "exclusive_us": 665,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4361,
+      "worker_api_us": 10480,
+      "pixels": 132564,
+      "final_tail_us": 1055
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 1,
+      "direction": "down",
+      "frame_id": 26996,
+      "role": "previous",
+      "raster_us": 16367,
+      "render_return_us": 19030,
+      "e2e_us": 19657,
+      "tick_us": 1591,
+      "record_us": 551,
+      "compare_us": 59,
+      "stripe_wait_us": 8330,
+      "submit_us": 287,
+      "other_raster_us": 324,
+      "scene_us": 7367,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 7367,
+          "exclusive_us": 3397,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 877,
+          "exclusive_us": 877,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 2583,
+          "exclusive_us": 2583,
+          "calls": 84
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 510,
+          "exclusive_us": 510,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4656,
+      "worker_api_us": 10940,
+      "pixels": 148596,
+      "final_tail_us": 627
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 1,
+      "direction": "down",
+      "frame_id": 26997,
+      "role": "current",
+      "raster_us": 17133,
+      "render_return_us": 20089,
+      "e2e_us": 20747,
+      "tick_us": 1764,
+      "record_us": 648,
+      "compare_us": 136,
+      "stripe_wait_us": 8412,
+      "submit_us": 113,
+      "other_raster_us": 376,
+      "scene_us": 8096,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 8096,
+          "exclusive_us": 4135,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 870,
+          "exclusive_us": 870,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 2602,
+          "exclusive_us": 2602,
+          "calls": 66
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 489,
+          "exclusive_us": 489,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4806,
+      "worker_api_us": 11062,
+      "pixels": 152628,
+      "final_tail_us": 658
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 2,
+      "direction": "up",
+      "frame_id": 29472,
+      "role": "previous",
+      "raster_us": 16981,
+      "render_return_us": 19406,
+      "e2e_us": 19897,
+      "tick_us": 1546,
+      "record_us": 403,
+      "compare_us": 81,
+      "stripe_wait_us": 8379,
+      "submit_us": 116,
+      "other_raster_us": 379,
+      "scene_us": 8026,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 8026,
+          "exclusive_us": 3828,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 641,
+          "exclusive_us": 641,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 3117,
+          "exclusive_us": 3117,
+          "calls": 84
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 440,
+          "exclusive_us": 440,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4210,
+      "worker_api_us": 11310,
+      "pixels": 148596,
+      "final_tail_us": 491
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 2,
+      "direction": "up",
+      "frame_id": 29473,
+      "role": "current",
+      "raster_us": 17334,
+      "render_return_us": 20728,
+      "e2e_us": 21182,
+      "tick_us": 2439,
+      "record_us": 446,
+      "compare_us": 69,
+      "stripe_wait_us": 7926,
+      "submit_us": 103,
+      "other_raster_us": 362,
+      "scene_us": 8874,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 8874,
+          "exclusive_us": 4280,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 536,
+          "exclusive_us": 536,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 3624,
+          "exclusive_us": 3624,
+          "calls": 85
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 434,
+          "exclusive_us": 434,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4096,
+      "worker_api_us": 11376,
+      "pixels": 146484,
+      "final_tail_us": 454
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 2,
+      "direction": "down",
+      "frame_id": 29849,
+      "role": "previous",
+      "raster_us": 17273,
+      "render_return_us": 19353,
+      "e2e_us": 20174,
+      "tick_us": 1181,
+      "record_us": 312,
+      "compare_us": 113,
+      "stripe_wait_us": 8536,
+      "submit_us": 114,
+      "other_raster_us": 400,
+      "scene_us": 8110,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 8110,
+          "exclusive_us": 4530,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 621,
+          "exclusive_us": 621,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 2477,
+          "exclusive_us": 2477,
+          "calls": 80
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 482,
+          "exclusive_us": 482,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4446,
+      "worker_api_us": 11654,
+      "pixels": 157972,
+      "final_tail_us": 821
+    },
+    {
+      "app": "apps",
+      "rotation_mode": 2,
+      "direction": "down",
+      "frame_id": 29850,
+      "role": "current",
+      "raster_us": 17446,
+      "render_return_us": 19947,
+      "e2e_us": 21046,
+      "tick_us": 1566,
+      "record_us": 398,
+      "compare_us": 70,
+      "stripe_wait_us": 8419,
+      "submit_us": 100,
+      "other_raster_us": 526,
+      "scene_us": 8331,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 8331,
+          "exclusive_us": 3558,
+          "calls": 30
+        },
+        "clear": {
+          "inclusive_us": 631,
+          "exclusive_us": 631,
+          "calls": 30
+        },
+        "sprite8": {
+          "inclusive_us": 3146,
+          "exclusive_us": 3146,
+          "calls": 86
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 996,
+          "exclusive_us": 996,
+          "calls": 210
+        }
+      },
+      "worker_rotation_us": 4391,
+      "worker_api_us": 11734,
+      "pixels": 157972,
+      "final_tail_us": 1099
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 1,
+      "direction": "up",
+      "frame_id": 28226,
+      "role": "previous",
+      "raster_us": 14487,
+      "render_return_us": 16784,
+      "e2e_us": 17754,
+      "tick_us": 1524,
+      "record_us": 351,
+      "compare_us": 80,
+      "stripe_wait_us": 5926,
+      "submit_us": 133,
+      "other_raster_us": 494,
+      "scene_us": 7854,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 7854,
+          "exclusive_us": 2154,
+          "calls": 37
+        },
+        "clear": {
+          "inclusive_us": 558,
+          "exclusive_us": 558,
+          "calls": 37
+        },
+        "sprite8": {
+          "inclusive_us": 1641,
+          "exclusive_us": 1641,
+          "calls": 220
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 3501,
+          "exclusive_us": 3501,
+          "calls": 74
+        }
+      },
+      "worker_rotation_us": 2661,
+      "worker_api_us": 11628,
+      "pixels": 81760,
+      "final_tail_us": 970
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 1,
+      "direction": "up",
+      "frame_id": 28227,
+      "role": "current",
+      "raster_us": 14395,
+      "render_return_us": 18520,
+      "e2e_us": 19650,
+      "tick_us": 3321,
+      "record_us": 381,
+      "compare_us": 123,
+      "stripe_wait_us": 6890,
+      "submit_us": 80,
+      "other_raster_us": 469,
+      "scene_us": 6833,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 6833,
+          "exclusive_us": 1682,
+          "calls": 26
+        },
+        "clear": {
+          "inclusive_us": 628,
+          "exclusive_us": 628,
+          "calls": 26
+        },
+        "sprite8": {
+          "inclusive_us": 1840,
+          "exclusive_us": 1840,
+          "calls": 179
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 2683,
+          "exclusive_us": 2683,
+          "calls": 52
+        }
+      },
+      "worker_rotation_us": 4554,
+      "worker_api_us": 10117,
+      "pixels": 146880,
+      "final_tail_us": 1130
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 1,
+      "direction": "down",
+      "frame_id": 28851,
+      "role": "previous",
+      "raster_us": 16415,
+      "render_return_us": 18758,
+      "e2e_us": 19397,
+      "tick_us": 1554,
+      "record_us": 357,
+      "compare_us": 122,
+      "stripe_wait_us": 8001,
+      "submit_us": 163,
+      "other_raster_us": 486,
+      "scene_us": 7643,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 7643,
+          "exclusive_us": 2761,
+          "calls": 42
+        },
+        "clear": {
+          "inclusive_us": 637,
+          "exclusive_us": 637,
+          "calls": 42
+        },
+        "sprite8": {
+          "inclusive_us": 1204,
+          "exclusive_us": 1204,
+          "calls": 256
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 3041,
+          "exclusive_us": 3041,
+          "calls": 84
+        }
+      },
+      "worker_rotation_us": 2833,
+      "worker_api_us": 13244,
+      "pixels": 86464,
+      "final_tail_us": 639
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 1,
+      "direction": "down",
+      "frame_id": 28852,
+      "role": "current",
+      "raster_us": 14702,
+      "render_return_us": 17510,
+      "e2e_us": 18255,
+      "tick_us": 1855,
+      "record_us": 511,
+      "compare_us": 106,
+      "stripe_wait_us": 6666,
+      "submit_us": 145,
+      "other_raster_us": 471,
+      "scene_us": 7314,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 7314,
+          "exclusive_us": 2766,
+          "calls": 37
+        },
+        "clear": {
+          "inclusive_us": 493,
+          "exclusive_us": 493,
+          "calls": 37
+        },
+        "sprite8": {
+          "inclusive_us": 965,
+          "exclusive_us": 965,
+          "calls": 225
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 3090,
+          "exclusive_us": 3090,
+          "calls": 74
+        }
+      },
+      "worker_rotation_us": 2699,
+      "worker_api_us": 11766,
+      "pixels": 82144,
+      "final_tail_us": 745
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 2,
+      "direction": "up",
+      "frame_id": 31144,
+      "role": "previous",
+      "raster_us": 16440,
+      "render_return_us": 19107,
+      "e2e_us": 19889,
+      "tick_us": 1532,
+      "record_us": 518,
+      "compare_us": 155,
+      "stripe_wait_us": 7149,
+      "submit_us": 260,
+      "other_raster_us": 501,
+      "scene_us": 8375,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 8375,
+          "exclusive_us": 2620,
+          "calls": 31
+        },
+        "clear": {
+          "inclusive_us": 643,
+          "exclusive_us": 643,
+          "calls": 31
+        },
+        "sprite8": {
+          "inclusive_us": 2013,
+          "exclusive_us": 2013,
+          "calls": 184
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 3099,
+          "exclusive_us": 3099,
+          "calls": 62
+        }
+      },
+      "worker_rotation_us": 4348,
+      "worker_api_us": 11609,
+      "pixels": 149460,
+      "final_tail_us": 782
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 2,
+      "direction": "up",
+      "frame_id": 31145,
+      "role": "current",
+      "raster_us": 15776,
+      "render_return_us": 21021,
+      "e2e_us": 22100,
+      "tick_us": 3902,
+      "record_us": 764,
+      "compare_us": 189,
+      "stripe_wait_us": 5431,
+      "submit_us": 137,
+      "other_raster_us": 392,
+      "scene_us": 9627,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 9627,
+          "exclusive_us": 2619,
+          "calls": 28
+        },
+        "clear": {
+          "inclusive_us": 1364,
+          "exclusive_us": 1364,
+          "calls": 28
+        },
+        "sprite8": {
+          "inclusive_us": 1947,
+          "exclusive_us": 1947,
+          "calls": 193
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 3697,
+          "exclusive_us": 3697,
+          "calls": 56
+        }
+      },
+      "worker_rotation_us": 4311,
+      "worker_api_us": 10738,
+      "pixels": 147712,
+      "final_tail_us": 1079
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 2,
+      "direction": "down",
+      "frame_id": 31784,
+      "role": "previous",
+      "raster_us": 17148,
+      "render_return_us": 19771,
+      "e2e_us": 20301,
+      "tick_us": 1715,
+      "record_us": 357,
+      "compare_us": 120,
+      "stripe_wait_us": 6378,
+      "submit_us": 178,
+      "other_raster_us": 700,
+      "scene_us": 9772,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 9772,
+          "exclusive_us": 4364,
+          "calls": 42
+        },
+        "clear": {
+          "inclusive_us": 493,
+          "exclusive_us": 493,
+          "calls": 42
+        },
+        "sprite8": {
+          "inclusive_us": 1342,
+          "exclusive_us": 1342,
+          "calls": 254
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 3573,
+          "exclusive_us": 3573,
+          "calls": 84
+        }
+      },
+      "worker_rotation_us": 2665,
+      "worker_api_us": 13252,
+      "pixels": 86464,
+      "final_tail_us": 530
+    },
+    {
+      "app": "settings",
+      "rotation_mode": 2,
+      "direction": "down",
+      "frame_id": 31785,
+      "role": "current",
+      "raster_us": 15879,
+      "render_return_us": 18532,
+      "e2e_us": 19225,
+      "tick_us": 1666,
+      "record_us": 431,
+      "compare_us": 117,
+      "stripe_wait_us": 5651,
+      "submit_us": 141,
+      "other_raster_us": 558,
+      "scene_us": 9412,
+      "scene_exclusive": {
+        "scene_other": {
+          "inclusive_us": 9412,
+          "exclusive_us": 3767,
+          "calls": 40
+        },
+        "clear": {
+          "inclusive_us": 548,
+          "exclusive_us": 548,
+          "calls": 40
+        },
+        "sprite8": {
+          "inclusive_us": 1488,
+          "exclusive_us": 1488,
+          "calls": 284
+        },
+        "sprite565": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "text": {
+          "inclusive_us": 0,
+          "exclusive_us": 0,
+          "calls": 0
+        },
+        "shape": {
+          "inclusive_us": 3609,
+          "exclusive_us": 3609,
+          "calls": 80
+        }
+      },
+      "worker_rotation_us": 2617,
+      "worker_api_us": 12667,
+      "pixels": 86848,
+      "final_tail_us": 693
+    }
+  ]
+}

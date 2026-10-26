@@ -1,0 +1,1507 @@
+# Every catalog row must be reachable and start its own stable profile.
+wait 100
+present 0
+set step_rate 0
+open workout
+wait 700
+
+# Catalog stable ID 0
+tap 312 338
+wait 700
+expect top ALL SPORTS
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top BODY MASS
+tap 233 372
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 0
+workout info catalog_0
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 1
+tap 312 338
+wait 700
+expect top ALL SPORTS
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 1
+workout info catalog_1
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 2
+tap 312 338
+wait 700
+expect top ALL SPORTS
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 2
+workout info catalog_2
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 3
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 3
+workout info catalog_3
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 4
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 4
+workout info catalog_4
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 5
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 5
+workout info catalog_5
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 6
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 6
+workout info catalog_6
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 7
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 7
+workout info catalog_7
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 8
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 8
+workout info catalog_8
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 9
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 9
+workout info catalog_9
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 10
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 10
+workout info catalog_10
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 11
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 11
+workout info catalog_11
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 12
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 12
+workout info catalog_12
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 13
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 13
+workout info catalog_13
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 14
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 14
+workout info catalog_14
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 15
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 15
+workout info catalog_15
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 16
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 16
+workout info catalog_16
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 17
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 17
+workout info catalog_17
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 18
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 18
+workout info catalog_18
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 19
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 19
+workout info catalog_19
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 20
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 20
+workout info catalog_20
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 21
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 21
+workout info catalog_21
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 22
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 22
+workout info catalog_22
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 23
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 23
+workout info catalog_23
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 24
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 24
+workout info catalog_24
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 25
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 25
+workout info catalog_25
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 26
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 26
+workout info catalog_26
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 27
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 27
+workout info catalog_27
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 28
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 28
+workout info catalog_28
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 29
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 29
+workout info catalog_29
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 30
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 30
+workout info catalog_30
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 31
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 31
+workout info catalog_31
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 32
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 32
+workout info catalog_32
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 33
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 33
+workout info catalog_33
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 34
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 34
+workout info catalog_34
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 35
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 35
+workout info catalog_35
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 36
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 155
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 36
+workout info catalog_36
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 37
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 233
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 37
+workout info catalog_37
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 38
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+tap 233 311
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 38
+workout info catalog_38
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+
+# Catalog stable ID 39
+tap 312 338
+wait 700
+expect top ALL SPORTS
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 146 700 100
+wait 250
+slide 233 380 233 328 700 100
+wait 250
+tap 233 337
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 700
+expect top SPORTS
+expect workout state 1
+expect workout sport 39
+workout info catalog_39
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+tap 312 372
+wait 700
+expect top SPORTS
+expect motionok

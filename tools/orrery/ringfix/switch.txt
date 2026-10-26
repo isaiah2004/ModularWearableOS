@@ -1,0 +1,33 @@
+# Runtime A/B switch while travelled; both return controls use real input.
+face 8
+ringstyle 5
+ringplate A
+date 2026-10-11
+time 10:08:15
+wait 2500
+hold 300 300 1700
+wait 700
+tap 380 75
+wait 600
+tap 42 122
+wait 1200
+shot switch_A
+ringplate B
+frames 1
+shot switch_B
+ringplate A
+frames 1
+shot switch_A_again
+tap 283 432
+wait 2200
+shot switch_A_returned
+ringplate B
+tap 42 122
+wait 1200
+shot switch_B_negative
+tap 171 425
+wait 2200
+shot switch_B_returned
+mark idle
+expect idle
+expect nolate

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NOS · Watch setup</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#080808;color:#f2f2f2}
+*{box-sizing:border-box}body{max-width:620px;margin:auto;padding:30px 22px 60px}
+header{border-bottom:1px solid #333;padding-bottom:24px}small,.muted{color:#aaa}
+h1{font-size:38px;letter-spacing:-1.6px;margin:12px 0}h2{font-size:21px}
+.dot{display:inline-block;width:9px;height:9px;background:#eb403c;border-radius:50%;margin-right:9px}
+section{margin-top:28px;padding:22px;background:#151515;border:1px solid #292929;border-radius:24px}
+input,select,button{font:inherit;width:100%;min-height:48px;border-radius:12px;padding:12px;margin:7px 0 15px;border:1px solid #444;background:#222;color:inherit}
+button{cursor:pointer;background:#eee;color:#111;font-weight:650;border:0;margin-bottom:0}
+button.secondary{background:#292929;color:#eee}button:disabled{opacity:.5}
+label{display:block;font-size:14px}label.check{display:flex;gap:12px;align-items:center;margin:16px 0}
+input[type=checkbox]{width:22px;min-height:22px;margin:0;accent-color:#eee}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:20px}.stats b{display:block;font-size:24px;margin-top:6px}
+p{line-height:1.5}.status{color:#c8dfcb;overflow-wrap:anywhere;min-height:24px}
+footer{padding-top:24px;color:#888;font-size:13px}
+</style>
+<header><small><span class="dot"></span> NOS / DEVICE SETUP</small><h1>Your watch.<br>Your connections.</h1><p class="muted">Add Wi-Fi, adjust the essentials, and see how your watch is doing.</p></header>
+<p id="connection" class="status" role="status">Connecting to watch…</p>
+<section><h2>Wi-Fi</h2><p class="muted">Choose a 2.4 GHz network or type its name. The setup hotspot stays open while the watch connects.</p>
+<button class="secondary" id="scan">Find networks</button>
+<label for="networks">Nearby networks</label><select id="networks"><option value="">Choose a network…</option></select>
+<form id="wifi"><label for="ssid">Network name</label><input id="ssid" name="ssid" maxlength="32" required autocomplete="off">
+<label for="pass">Password</label><input id="pass" name="pass" type="password" maxlength="63" autocomplete="new-password" aria-describedby="passhint">
+<small id="passhint">Leave empty only for an open network.</small>
+<label class="check"><input id="show" type="checkbox">Show password</label>
+<button>Connect watch</button></form><p id="wifiMessage" class="status" role="status"></p></section>
+<section><h2>At a glance</h2><div class="stats">
+<div><small>Battery estimate</small><b id="battery">—</b></div>
+<div><small>Uptime</small><b id="uptime">—</b></div>
+<div><small>Free memory</small><b id="memory">—</b></div>
+<div><small>Phone link</small><b id="phone">—</b></div>
+</div><p id="storage" class="muted"></p><p id="saved" class="muted"></p></section>
+<section><h2>Watch settings</h2><form id="settings">
+<label for="brightness">Brightness <output id="level"></output></label><input id="brightness" type="range" min="1" max="100" value="50">
+<label class="check"><input id="auto" type="checkbox">Automatic brightness</label>
+<label class="check"><input id="dnd" type="checkbox">Do not disturb</label>
+<label class="check"><input id="aod" type="checkbox">Always-on display</label>
+<button>Save settings</button></form><p id="settingsMessage" class="status" role="status"></p></section>
+<footer>Settings are checkpointed to the watch’s SD card. Setup closes after 10 minutes. You can stop or restart it on the watch under Wi-Fi → Phone setup.</footer>
+<script>
+const $=id=>document.getElementById(id);let initialized=false;
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});if(!r.ok)throw Error(await r.text());return r.json()}
+async function stats(){try{const s=await api('/api/status');$('connection').textContent=s.wifi;$('battery').textContent=s.battery+'%'+(s.external_power===1?' · USB':'');$('uptime').textContent=Math.floor(s.uptime/60)+' min';$('memory').textContent=(s.psram_free/1048576).toFixed(1)+' MB';$('phone').textContent=s.phone?'Connected':'Not linked';$('storage').textContent=s.sd?'SD card mounted':'SD card unavailable — saves will retry';$('saved').textContent=s.settings_pending||s.credentials_pending?'Changes waiting for SD checkpoint; retries are automatic':s.sd?'Settings saved on SD':'SD card needed for a durable checkpoint';if(!initialized){$('brightness').value=s.brightness;$('level').value=s.brightness+'%';$('auto').checked=!!s.auto_bright;$('dnd').checked=!!s.dnd;$('aod').checked=!!s.aod;initialized=true}}catch(e){$('connection').textContent='Watch unavailable. Rejoin its hotspot and reload this page.'}}
+$('brightness').oninput=()=>{$('level').value=$('brightness').value+'%'};
+$('show').onchange=()=>{$('pass').type=$('show').checked?'text':'password'};
+$('networks').onchange=()=>{$('ssid').value=$('networks').value};
+$('scan').onclick=async()=>{const b=$('scan');b.disabled=true;b.textContent='Scanning…';try{for(let i=0;i<5;i++){const s=await api('/api/networks');$('networks').replaceChildren(new Option('Choose a network…',''));for(const n of s.networks){if(n.ssid!=='(hidden)')$('networks').add(new Option(n.ssid+' · '+n.rssi+' dBm',n.ssid))}if(s.networks.length&&!s.scanning)break;await new Promise(r=>setTimeout(r,1500))}$('wifiMessage').textContent=$('networks').length>1?'Select a network above.':'No networks found. Try again or enter the name.'}catch(e){$('wifiMessage').textContent=e.message}finally{b.disabled=false;b.textContent='Find networks'}};
+$('wifi').onsubmit=async e=>{e.preventDefault();const p=$('pass').value;if(p.length&&p.length<8){$('wifiMessage').textContent='Password must have 8–63 characters.';return}try{await api('/wifi',{ssid:$('ssid').value,pass:p});$('pass').value='';$('wifiMessage').textContent='Connection requested. Watch status above shows the result.'}catch(e){$('wifiMessage').textContent=e.message}};
+$('settings').onsubmit=async e=>{e.preventDefault();try{await api('/api/settings',{brightness:+$('brightness').value,auto_bright:$('auto').checked,dnd:$('dnd').checked,aod:$('aod').checked});$('settingsMessage').textContent='Settings queued on the watch; SD save follows automatically.'}catch(e){$('settingsMessage').textContent=e.message}};
+stats();setInterval(stats,3000);
+</script></html>

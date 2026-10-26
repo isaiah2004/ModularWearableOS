@@ -1,7 +1,17 @@
 #include "font.h"
+#include "gfx_cost.h"
 
 static const font_glyph *find_glyph(const font_t *f, unsigned code)
 {
+    /* Direct contiguous-code hit; duplicate neighbours retain the original
+     * sorted-table binary-search selection, including differing metrics. */
+    if (f->nglyphs > 0 && code >= f->glyphs[0].code) {
+        unsigned index = code - f->glyphs[0].code;
+        if (index < (unsigned)f->nglyphs && f->glyphs[index].code == code &&
+            (!index || f->glyphs[index - 1].code != code) &&
+            (index + 1 >= (unsigned)f->nglyphs || f->glyphs[index + 1].code != code))
+            return &f->glyphs[index];
+    }
     int lo = 0, hi = f->nglyphs - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -25,6 +35,7 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
                     y + (f->line_height - f->ascent) + 1, hh);
         return x + w;
     }
+    color = gfx_ink(fb, color);
     /* 2D dirty-rect x-window: skip glyphs (and clip columns) outside it, so text
      * isn't rasterized when the dirty rect is elsewhere (e.g. a face's clock is
      * not redrawn while only the globe's rect repaints). */
@@ -32,6 +43,7 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
     if (cc1 <= cc0) { cc0 = 0; cc1 = GFX_W; }
     if (cc0 < 0) cc0 = 0;
     if (cc1 > GFX_W) cc1 = GFX_W;
+    unsigned n = 0;   /* pixels written (cost model only) */
     for (const unsigned char *c = (const unsigned char *)text; *c; c++) {
         const font_glyph *g = find_glyph(f, *c);
         if (!g) { x += f->line_height / 3; continue; }
@@ -46,7 +58,7 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
         int row0 = by0 < 0 ? -by0 : 0;
         int row1 = by0 + g->h > fb->h ? fb->h - by0 : g->h;
         for (int row = row0; row < row1; row++) {
-            uint16_t *dst = &fb->px[(by0 + row) * GFX_W];
+            uint16_t *dst = gfx_row(fb, by0 + row);
             const uint8_t *brow = &bm[row * g->w];
             for (int col = col0; col < col1; col++) {
                 uint8_t a = brow[col];
@@ -54,10 +66,13 @@ int font_draw(gfx_fb *fb, const font_t *f, int x, int y, const char *text, uint1
                 unsigned bx = (unsigned)(gx + col);
                 if (bx >= GFX_W) continue;
                 dst[bx] = a >= 255 ? color : gfx_blend565(dst[bx], color, a);
+                n++;
             }
         }
         x += g->xadv;
     }
+    /* big display digits measured 146 ns/px, small/medium text 260-320 */
+    GFX_COST(f->line_height >= 96 ? GFX_COST_GLYPH : GFX_COST_TEXT, n);
     return x;
 }
 

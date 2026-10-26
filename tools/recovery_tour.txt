@@ -1,0 +1,49 @@
+time 12:30:00
+face 8
+home
+wait 2500
+shot recovered_solar
+flick 380 233 110 233 160
+wait 1000
+expect home_page 1
+shot recovered_apps
+press
+wait 700
+expect home_page 0
+flick 110 233 380 233 160
+wait 900
+expect home_page 6
+shot recovered_tiles
+press
+wait 700
+expect home_page 0
+hold 233 233 1700
+wait 700
+shot recovered_dials
+press
+wait 700
+open! developer
+wait 700
+shot recovered_developer
+home
+wait 700
+open control
+wait 1000
+drag 380 220 70 220 500
+wait 700
+shot recovered_quick_tools
+tap 233 130
+wait 700
+shot recovered_report
+home
+open energy
+wait 700
+shot recovered_energy
+home
+open battery
+wait 700
+shot recovered_battery
+home
+open tuning
+wait 700
+shot recovered_tuning

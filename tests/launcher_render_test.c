@@ -10,7 +10,8 @@
 extern const wos_app app_launcher_ref, app_launcher;
 extern const wos_app app_applist_ref, app_applist;
 extern int launcher_label_dbg_renders;
-extern int launcher_sprites;   /* sprite path rounds positions; compare the exact vector path */
+extern int launcher_sprites;
+extern int applist_pills;   /* sprite path rounds positions; compare the exact vector path */
 
 uint32_t wos_frame_id = 1;
 static uint32_t now_ms;
@@ -57,7 +58,7 @@ static void compare_dirty(const char *which,const char *phase) {
 }
 static void raster_one(const wos_app *app,uint16_t *px,int ox,int oy,int ybase,int h,int cx0,int cx1) {
     size_t n=(size_t)GFX_W*h; for(size_t i=0;i<n;i++) px[i]=(uint16_t)(0x39E7u+(i*17u)%997u);
-    gfx_fb fb={px,ox,oy,ybase,h,cx0,cx1,0}; app->on_draw(&fb);
+    gfx_fb fb={px,ox,oy,ybase,h,cx0,cx1,0,0,0}; app->on_draw(&fb);
 }
 static void check_pixels(const char *which,const char *phase,const wos_app *ref,const wos_app *cur,
                          int ox,int oy,int ybase,int h,int cx0,int cx1) {
@@ -71,11 +72,39 @@ static void check_pixels(const char *which,const char *phase,const wos_app *ref,
     }
     checks++;
 }
+/* The app list no longer freezes its icons for the focus-change frame, so its damage
+ * differs from the reference by design. Check what matters instead: replaying the
+ * declared rects through wos' even-aligned 16-row stripe pipeline onto the previous
+ * screen must reproduce a fresh full render exactly (nothing stale, nothing missed). */
+static uint16_t *scr, *full, stripe_buf[GFX_W*16];
+static void applist_screen_check(const char *phase,const wos_app *cur) {
+    for(int i=0;i<ndirty[1];i++) {
+        rect_t d=dirty[1][i];
+        d.x0=d.x0<0?0:d.x0; d.y0=d.y0<0?0:d.y0; d.x1=d.x1>GFX_W?GFX_W:d.x1; d.y1=d.y1>GFX_H?GFX_H:d.y1;
+        if(d.x1<=d.x0||d.y1<=d.y0) continue;
+        d.x0&=~1; d.x1=(d.x1+1)&~1; d.x1=d.x1>GFX_W?GFX_W:d.x1;
+        d.y0&=~1; d.y1=(d.y1+1)&~1; d.y1=d.y1>GFX_H?GFX_H:d.y1;
+        for(int y=d.y0;y<d.y1;y+=16) {
+            int h=d.y1-y<16?d.y1-y:16;
+            for(int k=0;k<GFX_W*h;k++) stripe_buf[k]=(uint16_t)(0x39E7u+(k*17u)%997u);
+            gfx_fb fb={stripe_buf,0,0,y,h,d.x0,d.x1,0,0,0}; cur->on_draw(&fb);
+            for(int r=0;r<h;r++) memcpy(&scr[(y+r)*GFX_W+d.x0],&stripe_buf[r*GFX_W+d.x0],(size_t)(d.x1-d.x0)*2);
+        }
+    }
+    gfx_fb ff={full,0,0,0,GFX_H,0,GFX_W,0,0,0}; cur->on_draw(&ff);
+    for(int i=0;i<GFX_W*GFX_H;i++) {
+        float px=i%GFX_W+0.5f-GFX_W*0.5f, py=i/GFX_W+0.5f-GFX_H*0.5f;
+        if(px*px+py*py>GFX_W*GFX_W*0.25f) continue;          /* outside the round glass */
+        if(scr[i]!=full[i]) fail("applist",phase,"stale screen pixel",i);
+    }
+    checks++;
+}
 static void frame(const char *which,const char *phase,const wos_app *ref,const wos_app *cur,uint32_t ms) {
     now_ms=ms; wos_frame_id++;
-    gfx_rec rr={0},rc={0}; gfx_fb fr={0,0,0,0,GFX_H,0,GFX_W,&rr},fc={0,0,0,0,GFX_H,0,GFX_W,&rc};
+    gfx_rec rr={0},rc={0}; gfx_fb fr={0,0,0,0,GFX_H,0,GFX_W,&rr,0,0},fc={0,0,0,0,GFX_H,0,GFX_W,&rc,0,0};
     ndirty[0]=ndirty[1]=0; dirty_side=0; ref->on_draw(&fr); dirty_side=1; cur->on_draw(&fc);
-    compare_dirty(which,phase);
+    if(!strcmp(which,"applist")) applist_screen_check(phase,cur);
+    else compare_dirty(which,phase);
     check_pixels(which,phase,ref,cur,0,0,0,GFX_H,0,GFX_W);
     /* Same logical frame is rendered repeatedly by the real stripe/rect pipeline. */
     check_pixels(which,phase,ref,cur,0,0,0,37,0,GFX_W);
@@ -91,7 +120,7 @@ static void event_one(const wos_app *app,wos_event_type t,int x,int y) {
 }
 static void current_shot(uint16_t *out,uint32_t ms) {
     now_ms=ms; wos_frame_id++;
-    gfx_fb fb={out,0,0,0,GFX_H,0,GFX_W,0}; app_launcher.on_draw(&fb);
+    gfx_fb fb={out,0,0,0,GFX_H,0,GFX_W,0,0,0}; app_launcher.on_draw(&fb);
 }
 static void require_same(const char *phase,const uint16_t *x,const uint16_t *y) {
     size_t n=(size_t)GFX_W*GFX_H;
@@ -169,10 +198,10 @@ static void launcher_label_cache_case(void) {
     memset(a,0x29,(size_t)GFX_W*GFX_H*sizeof *a);
     memset(b,0x29,(size_t)GFX_W*GFX_H*sizeof *b);
     int renders=launcher_label_dbg_renders;
-    gfx_fb full={a,-19,-11,0,GFX_H,0,GFX_W,0}; app_launcher.on_draw(&full);
+    gfx_fb full={a,-19,-11,0,GFX_H,0,GFX_W,0,0,0}; app_launcher.on_draw(&full);
     for(int y=0;y<GFX_H;y+=37) {
         int h=GFX_H-y<37?GFX_H-y:37;
-        gfx_fb stripe={b+(size_t)y*GFX_W,-19,-11,y,h,0,GFX_W,0};
+        gfx_fb stripe={b+(size_t)y*GFX_W,-19,-11,y,h,0,GFX_W,0,0,0};
         app_launcher.on_draw(&stripe);
     }
     if(memcmp(a,b,(size_t)GFX_W*GFX_H*sizeof *a)) fail("launcher","label stripes","full/stripe mismatch",0);
@@ -186,7 +215,7 @@ static void launcher_label_cache_case(void) {
     current_shot(a,41716); /* cache focused Connect */
     event_one(&app_launcher,WOS_EV_TOUCH_DOWN,cx+90,cy+120);
     now_ms=41732; event_one(&app_launcher,WOS_EV_TOUCH_MOVE,cx,cy-150);
-    gfx_rec rec={0}; gfx_fb record={0,0,0,0,GFX_H,0,GFX_W,&rec};
+    gfx_rec rec={0}; gfx_fb record={0,0,0,0,GFX_H,0,GFX_W,&rec,0,0};
     ndirty[1]=0;dirty_side=1;wos_frame_id++;app_launcher.on_draw(&record);
     if(ndirty[1]!=1) fail("launcher","long-short cleanup","dirty count",ndirty[1]);
     int ax0,ay0,ax1,ay1,bx0,by0,bx1,by1; rect_t d=dirty[1][0];
@@ -256,11 +285,34 @@ static void applist_case(void) {
     start_pair(r,c,23000); frame("applist","reopen",r,c,23700);
 }
 
+/* Pills style: no reference exists, so only the screen-consistency property applies. */
+static void pills_frame(const char *phase,uint32_t ms) {
+    now_ms=ms; wos_frame_id++;
+    gfx_rec rc={0}; gfx_fb fc={0,0,0,0,GFX_H,0,GFX_W,&rc,0,0};
+    ndirty[1]=0; dirty_side=1; app_applist.on_draw(&fc);
+    applist_screen_check(phase,&app_applist);
+}
+static void applist_pills_case(void) {
+    const wos_app *c=&app_applist; applist_pills=1;
+    memset(scr,0,(size_t)GFX_W*GFX_H*sizeof *scr);
+    now_ms=30000; dirty_side=1; c->on_start();
+    const uint32_t enter[]={30000,30069,30122,30280,30550,31000,31100};
+    for(unsigned i=0;i<sizeof enter/sizeof enter[0];i++) pills_frame("pills entrance",enter[i]);
+    event_one(c,WOS_EV_TOUCH_DOWN,200,360);
+    for(int i=0;i<10;i++){now_ms=31116+i*16;event_one(c,WOS_EV_TOUCH_MOVE,200,330-i*38);pills_frame("pills drag",now_ms);}
+    event_one(c,WOS_EV_TOUCH_UP,200,0);
+    for(int i=0;i<60;i++){event_one(c,WOS_EV_TICK,16,0);pills_frame("pills fling/snap",31300+i*16);}
+    event_one(c,WOS_EV_TOUCH_DOWN,200,100);
+    for(int i=0;i<6;i++){now_ms=33000+i*16;event_one(c,WOS_EV_TOUCH_MOVE,200,100+i*70);pills_frame("pills fast drag",now_ms);}
+    applist_pills=0;
+}
+
 int main(void) {
-    launcher_sprites = 0;
+    launcher_sprites = 0; applist_pills = 0;   /* baseline is the classic list; pills has its own case */
     a=(uint16_t*)malloc((size_t)GFX_W*GFX_H*sizeof *a); b=(uint16_t*)malloc((size_t)GFX_W*GFX_H*sizeof *b);
-    if(!a||!b) return 2;
-    launcher_label_bounds_case(); launcher_label_cache_case(); launcher_case(); applist_case(); angular_input_case();
+    scr=(uint16_t*)calloc((size_t)GFX_W*GFX_H,sizeof *scr); full=(uint16_t*)malloc((size_t)GFX_W*GFX_H*sizeof *full);
+    if(!a||!b||!scr||!full) return 2;
+    launcher_label_bounds_case(); launcher_label_cache_case(); launcher_case(); applist_case(); applist_pills_case(); angular_input_case();
     printf("launcher renders: %u baseline/current pixel+dirty comparisons passed; angular drag/wrap/deadzone/release/tap passed (reference 7b5c1b3)\n",checks);
     free(a);free(b); return 0;
 }

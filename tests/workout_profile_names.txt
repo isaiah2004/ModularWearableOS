@@ -1,0 +1,380 @@
+# Numeric IDs 0..39 plus normalized case-insensitive labels.
+wait 100
+present 0
+set step_rate 0
+workout start 0
+wait 100
+expect workout sport 0
+workout info numeric_0
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 1
+wait 100
+expect workout sport 1
+workout info numeric_1
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 2
+wait 100
+expect workout sport 2
+workout info numeric_2
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 3
+wait 100
+expect workout sport 3
+workout info numeric_3
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 4
+wait 100
+expect workout sport 4
+workout info numeric_4
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 5
+wait 100
+expect workout sport 5
+workout info numeric_5
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 6
+wait 100
+expect workout sport 6
+workout info numeric_6
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 7
+wait 100
+expect workout sport 7
+workout info numeric_7
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 8
+wait 100
+expect workout sport 8
+workout info numeric_8
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 9
+wait 100
+expect workout sport 9
+workout info numeric_9
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 10
+wait 100
+expect workout sport 10
+workout info numeric_10
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 11
+wait 100
+expect workout sport 11
+workout info numeric_11
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 12
+wait 100
+expect workout sport 12
+workout info numeric_12
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 13
+wait 100
+expect workout sport 13
+workout info numeric_13
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 14
+wait 100
+expect workout sport 14
+workout info numeric_14
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 15
+wait 100
+expect workout sport 15
+workout info numeric_15
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 16
+wait 100
+expect workout sport 16
+workout info numeric_16
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 17
+wait 100
+expect workout sport 17
+workout info numeric_17
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 18
+wait 100
+expect workout sport 18
+workout info numeric_18
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 19
+wait 100
+expect workout sport 19
+workout info numeric_19
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 20
+wait 100
+expect workout sport 20
+workout info numeric_20
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 21
+wait 100
+expect workout sport 21
+workout info numeric_21
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 22
+wait 100
+expect workout sport 22
+workout info numeric_22
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 23
+wait 100
+expect workout sport 23
+workout info numeric_23
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 24
+wait 100
+expect workout sport 24
+workout info numeric_24
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 25
+wait 100
+expect workout sport 25
+workout info numeric_25
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 26
+wait 100
+expect workout sport 26
+workout info numeric_26
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 27
+wait 100
+expect workout sport 27
+workout info numeric_27
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 28
+wait 100
+expect workout sport 28
+workout info numeric_28
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 29
+wait 100
+expect workout sport 29
+workout info numeric_29
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 30
+wait 100
+expect workout sport 30
+workout info numeric_30
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 31
+wait 100
+expect workout sport 31
+workout info numeric_31
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 32
+wait 100
+expect workout sport 32
+workout info numeric_32
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 33
+wait 100
+expect workout sport 33
+workout info numeric_33
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 34
+wait 100
+expect workout sport 34
+workout info numeric_34
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 35
+wait 100
+expect workout sport 35
+workout info numeric_35
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 36
+wait 100
+expect workout sport 36
+workout info numeric_36
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 37
+wait 100
+expect workout sport 37
+workout info numeric_37
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 38
+wait 100
+expect workout sport 38
+workout info numeric_38
+workout finish
+wait 100
+workout discard
+wait 100
+workout start 39
+wait 100
+expect workout sport 39
+workout info numeric_39
+workout finish
+wait 100
+workout discard
+wait 100
+workout start gEnErAl
+wait 100
+expect workout sport 5
+workout info alias_0
+workout finish
+wait 100
+workout discard
+wait 100
+workout start INDOOR
+wait 100
+expect workout sport 5
+workout info alias_1
+workout finish
+wait 100
+workout discard
+wait 100
+workout start trail-run
+wait 100
+expect workout sport 9
+workout info alias_2
+workout finish
+wait 100
+workout discard
+wait 100
+workout start table_tennis
+wait 100
+expect workout sport 19
+workout info alias_3
+workout finish
+wait 100
+workout discard
+wait 100
+workout start FIELD-HOCKEY
+wait 100
+expect workout sport 26
+workout info alias_4
+workout finish
+wait 100
+workout discard
+wait 100
+workout start BOXINGfitness
+wait 100
+expect workout sport 34
+workout info alias_5
+workout finish
+wait 100
+workout discard
+wait 100
+workout start kAyAk
+wait 100
+expect workout sport 39
+workout info alias_6
+workout finish
+wait 100
+workout discard
+wait 100

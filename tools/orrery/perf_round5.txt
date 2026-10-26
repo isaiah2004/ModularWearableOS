@@ -1,0 +1,40 @@
+# Round 5 performance sweep. Run --force-full separately; idle assertions require damage mode.
+face 8
+wait 2500
+mark locked
+wait 1000
+shot locked
+mark unlock
+hold 300 300 1700
+wait 700
+mark unlocked
+wait 1000
+shot unlocked
+mark pan
+drag 300 300 360 340 500
+wait 200
+mark pan_settle
+wait 1200
+expect idle 500
+mark zoom
+drag 176 445 308 440 600
+wait 300
+mark rings_open
+tap 380 75
+wait 600
+mark scrub
+drag 403 135 135 63 700
+wait 300
+mark rest
+wait 1500
+
+mark settled
+expect idle 1000
+mark aod_entry
+set aod 1
+wait 1000
+mark wake
+set aod 0
+wait 1000
+mark wake_rest
+expect idle 1000

@@ -1,0 +1,309 @@
+{
+  "schema": 1,
+  "entrypoint": "python tools/validate.py",
+  "python": "3.12.8",
+  "ci_host_gcc": "12.2.0",
+  "host_tests": [
+    "tests/test_host_transport.py",
+    "tests/test_watchctl.py",
+    "tests/test_sdsync.py",
+    "tests/test_host_sd_contract.py",
+    "tests/test_flash_watch.py",
+    "tests/test_hardware_qa_import.py",
+    "tests/test_sim_store.py",
+    "tests/test_build_sim.py",
+    "tests/test_build_identity.py",
+    "tests/test_validation_gate.py",
+    "tests/test_host_json.py",
+    "tests/test_backup_flash.py",
+    "tests/test_imu_audit.py",
+    "tests/test_watch_power_analysis.py",
+    "tests/test_workouts_export.py",
+    "tests/test_nos_perf_report.py",
+    "tests/test_display_perf.py",
+    "tests/test_display_perf_report.py",
+    "tests/test_display_soak_report.py"
+  ],
+  "offline_python_tests": {
+    "include": "tests/test_*.py",
+    "coverage": "Every matching module is executed separately; zero tests and missing prerequisites fail. Per-test skips are included in report.json."
+  },
+  "native_tests": [
+    {
+      "name": "blur_cache",
+      "sources": [
+        "tests/blur_cache_test.c",
+        "nos/blur_cache.c"
+      ]
+    },
+    {
+      "name": "ui_blur_cache",
+      "sources": [
+        "tests/ui_blur_cache_test.c",
+        "nos/ui_blur.c",
+        "nos/blur_cache.c",
+        "core/gfx.c",
+        "core/sprite.c"
+      ],
+      "runs": [
+        [],
+        [
+          "--allocation-failure"
+        ]
+      ]
+    },
+    {
+      "name": "ui_blur_raster",
+      "sources": [
+        "tests/ui_blur_raster_test.c",
+        "nos/blur_cache.c",
+        "core/gfx.c",
+        "core/sprite.c",
+        "core/font.c",
+        "core/fonts/font_small.c"
+      ]
+    },
+    {
+      "name": "dot_mask_race",
+      "sources": [
+        "tests/dot_mask_race_test.c",
+        "nos/dot_glyphs.c",
+        "core/gfx.c"
+      ]
+    },
+    {
+      "name": "nos_frame_perf",
+      "sources": [
+        "tests/nos_frame_perf_test.c"
+      ]
+    },
+    {
+      "name": "nos_frame_pacer",
+      "sources": [
+        "tests/nos_frame_pacer_test.c"
+      ]
+    },
+    {
+      "name": "nos_button_pulse",
+      "sources": [
+        "tests/nos_button_pulse_test.c"
+      ]
+    },
+    {
+      "name": "nos_prefs",
+      "sources": [
+        "tests/nos_prefs_test.c",
+        "nos/prefs.c"
+      ]
+    },
+    {
+      "name": "nos_render_bounds",
+      "sources": [
+        "tests/nos_render_bounds_test.c",
+        "core/gfx.c"
+      ]
+    },
+    {
+      "name": "board_protocol",
+      "sources": [
+        "tests/board_protocol_test.c",
+        "firmware/main/board_protocol.c"
+      ]
+    },
+    {
+      "name": "pedometer",
+      "sources": [
+        "tests/pedometer_test.c",
+        "core/pedometer.c",
+        "core/walk.c"
+      ]
+    },
+    {
+      "name": "wake_service",
+      "sources": [
+        "tests/wake_service_test.c",
+        "core/wake_service.c",
+        "core/motion_wake.c"
+      ]
+    },
+    {
+      "name": "pip_eye_shape",
+      "sources": [
+        "tests/pip_eye_shape_test.c",
+        "core/gfx.c"
+      ]
+    },
+    {
+      "name": "pip_eye_lid",
+      "sources": [
+        "tests/pip_eye_lid_test.c",
+        "core/gfx.c"
+      ]
+    },
+    {
+      "name": "workout",
+      "sources": [
+        "tests/workout_test.c"
+      ]
+    },
+    {
+      "name": "pip",
+      "sources": [
+        "tests/pip_test.c",
+        "core/pip.c"
+      ]
+    },
+    {
+      "name": "pip_care",
+      "sources": [
+        "tests/pip_care_test.c",
+        "core/pip_care.c"
+      ]
+    },
+    {
+      "name": "walk",
+      "sources": [
+        "tests/walk_test.c",
+        "core/walk.c"
+      ]
+    },
+    {
+      "name": "notif",
+      "sources": [
+        "tests/notif_test.c",
+        "core/notif.c"
+      ]
+    },
+    {
+      "name": "battery",
+      "sources": [
+        "tests/battery_test.c",
+        "core/battery.c"
+      ]
+    },
+    {
+      "name": "motion_wake",
+      "sources": [
+        "tests/motion_wake_test.c",
+        "core/motion_wake.c"
+      ]
+    },
+    {
+      "name": "knock",
+      "sources": [
+        "tests/knock_test.c",
+        "core/knock.c"
+      ]
+    },
+    {
+      "name": "ephem",
+      "sources": [
+        "tests/ephem_test.c",
+        "core/ephem.c"
+      ]
+    },
+    {
+      "name": "prefs_disk",
+      "sources": [
+        "tests/prefs_disk_test.c",
+        "nos/prefs_disk.c"
+      ],
+      "directory": true
+    },
+    {
+      "name": "nos_power",
+      "sources": [
+        "tests/nos_power_test.c",
+        "firmware/main/nos_power.c"
+      ],
+      "flags": [
+        "-I{root}/tests/stubs/nos_power"
+      ],
+      "runs": [
+        [
+          "normal"
+        ],
+        [
+          "config-fail"
+        ],
+        [
+          "dfs-fail"
+        ],
+        [
+          "create-fail"
+        ],
+        [
+          "second-create-fail"
+        ],
+        [
+          "acquire-fail"
+        ],
+        [
+          "runtime-acquire-fail"
+        ],
+        [
+          "runtime-release-fail"
+        ]
+      ]
+    },
+    {
+      "name": "display_perf",
+      "sources": [
+        "tests/display_perf_test.c",
+        "firmware/main/display_perf.c"
+      ],
+      "flags": [
+        "-I{root}/tests/stubs"
+      ]
+    },
+    {
+      "name": "board_protocol_c143",
+      "sources": [
+        "tests/board_protocol_test.c",
+        "firmware/main/board_protocol.c"
+      ],
+      "flags": [
+        "-DCONFIG_WATCH_BOARD_143C=1"
+      ]
+    },
+    {
+      "name": "weather_parse",
+      "sources": [
+        "tests/weather_parse_test.c",
+        "firmware/main/weather_parse.c",
+        "{cjson}/cJSON.c"
+      ],
+      "flags": [
+        "-I{cjson}"
+      ],
+      "runs": [
+        [
+          "{root}/tests/fixtures/weather.json"
+        ]
+      ]
+    }
+  ],
+  "simulator_groups": [
+    "tools/test_sim_script_io.py",
+    "tools/test_workout_sim.py --no-media"
+  ],
+  "hardware_profile": {
+    "tool": "tools/check_connectivity_device.py",
+    "required": [
+      "--port",
+      "--expected-elf-sha256",
+      "--run-hardware"
+    ],
+    "default": "dry-run only; no serial imports or mutations"
+  },
+  "budgets": {
+    "flash_bytes": 16777216,
+    "psram_bytes": 8388608,
+    "application_limit": "actual app partition from flashed partition-table.bin",
+    "headroom": "actual app partition bytes minus exact image bytes; over-limit fails"
+  },
+  "legacy": "sim/build.ps1 is archived core/apps; optional legacy coverage remains available through tools/test.ps1.",
+  "offline_dependencies": {
+    "cjson": "ESP-IDF components/json/cJSON, or --cjson-dir; CI pins DaveGamble/cJSON v1.7.19; both source/header hashes are included in reports."
+  }
+}

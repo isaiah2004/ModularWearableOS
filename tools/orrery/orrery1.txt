@@ -1,0 +1,56 @@
+# Orrery face, phase 1: locked face, holds (3D / unlock / picker), pan, zoom dial, cost
+face 8
+wait 1500
+mark locked_idle
+shot 01_locked
+wait 1000
+expect idle
+expect nolate
+mark tilt
+hold 300 300 950
+film tilt_in 14 7
+wait 600
+shot 02_tilted
+hold 300 300 950
+wait 600
+shot 03_flat_again
+mark locked_swipe_is_home
+flick 400 233 100 233 150
+wait 900
+log after-swipe
+shot 04_after_swipe
+flick 60 233 400 233 150
+wait 900
+expect top HOME
+mark unlock
+hold 300 300 1700
+wait 600
+shot 05_unlocked
+expect top HOME
+mark pan
+drag 300 300 360 340 500
+wait 200
+shot 06_panned
+flick 360 340 260 280 120
+wait 900
+shot 07_glided
+mark zoom
+drag 176 445 308 440 600
+wait 300
+shot 08_zoomed_in
+tap 233 453
+wait 300
+shot 09_dial_tap
+mark tap_planet
+tap 233 117
+wait 200
+shot 10_tap
+mark lock_with_button
+press
+wait 600
+shot 11_relocked
+mark picker
+hold 300 300 3300
+wait 900
+shot 12_picker
+log top-after-3s-hold

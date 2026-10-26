@@ -1,0 +1,21 @@
+# AOD/home navigation must leave the background recorder alive.
+wait 100
+set step_rate 120
+set gps_motion 2
+workout start 0
+wait 10000
+set aod 1
+home_now
+wait 10000
+workout info display_off
+expect workout state 1
+expect workout elapsed 19900 20100
+expect workout steps 38 41
+expect workout distance 25 35
+set aod 0
+open workout
+wait 500
+expect workout state 1
+workout finish
+wait 200
+expect workout save 2

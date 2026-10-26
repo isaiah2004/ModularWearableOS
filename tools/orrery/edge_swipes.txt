@@ -1,0 +1,37 @@
+# Current edge-only controls. State/ownership assertions also live in
+# tests/orrery_edge_swipe_test.c; this fixture compares actual damaged/full output.
+skipboot
+face 8
+home_now
+wait 600
+hold 300 300 1700
+wait 400
+mark menu_tap_rejected
+tap 458 233
+wait 200
+mark menu_edge_open
+drag 458 233 338 233 600
+wait 400
+shot edge_menu
+tap 233 233
+wait 400
+mark time_tap_rejected
+tap 386 68
+wait 200
+mark time_edge_open
+drag 386 68 306 158 600
+wait 500
+shot edge_time
+mark time_owns_menu_area
+drag 448 233 438 193 500
+wait 400
+shot dial_scrub
+tap 380 76
+wait 400
+mark interior_menu_rejected
+drag 433 233 333 233 600
+wait 400
+expect top HOME
+expect home_page 0
+expect depth 1
+expect memfailures 0

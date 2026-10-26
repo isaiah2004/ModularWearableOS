@@ -1,0 +1,362 @@
+#include "sports.h"
+/* ext_gps.c — HGLRC M100 Mini (u-blox M10) on UART1: IO7 = ESP RX, IO17 = ESP TX.
+ *
+ * Boot probe (asynchronous, inside the ext task): install the UART, send a few
+ * 0xFF bytes (wakes an M10 left in backup mode by a previous session), then
+ * listen for one checksum-valid NMEA sentence at 9600, 38400 and 115200 baud
+ * (1.5 s each, two rounds). Found -> EXT_GPS present and the module is put back
+ * to sleep. hal_gps_enable(1) on an absent GPS re-runs the probe once.
+ *
+ * Power: there is no power-gate wire, so "off" is u-blox backup mode via
+ * UBX-RXM-PMREQ (duration 0 = until woken, wake source = UART RX activity).
+ * The UART driver (and its internal ring buffer) is deleted while off.
+ * Enabled streams auto-stop when hal_gps_get() has not been called for
+ * NOS_EXT_IDLE_MS.
+ *
+ * Parser: GGA (fix quality, sats used, HDOP, altitude), RMC (validity, speed,
+ * course, UTC), GSA (2D/3D), GSV (sats in view + SNR per satellite, merged
+ * across GP/GL/GA/GB/GQ talkers). Any talker prefix is accepted.
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "ext_priv.h"
+#include "driver/uart.h"
+
+#define GPS_UART      UART_NUM_1
+#define GPS_RXBUF     512
+#define LISTEN_MS     1500
+#define STALE_MS      3000
+
+enum { G_PROBE_START, G_PROBE_WAKE, G_PROBE_LISTEN, G_IDLE, G_RUN, G_ABSENT };
+static const int BAUDS[3] = { 9600, 38400, 115200 };
+#define NTALK 6
+
+typedef struct {
+    int state, enabled, baud_i, round, installed, sentences, bad_sum, shutdown_pending;
+    uint32_t t_state, last_get, last_fix, last_rx;
+    uint32_t rx_bytes,line_overflows,pump_last,pump_gap_max;
+    char line[100]; int len;
+    hal_gps fix;                         /* published sample (guarded by ext_lock) */
+    uint8_t gsv_snr[NTALK][16]; uint8_t gsv_el[NTALK][16]; uint16_t gsv_az[NTALK][16]; uint8_t gsv_n[NTALK]; uint8_t gsv_view[NTALK];
+    float speed_mps;
+} gps_state;
+static gps_state *G;
+
+/* ---------------------------------------------------------------- UART */
+static int uart_on(int baud)
+{
+    if (G->installed) { uart_set_baudrate(GPS_UART, baud); uart_flush_input(GPS_UART); return 1; }
+    uart_config_t c = { .baud_rate = baud, .data_bits = UART_DATA_8_BITS, .parity = UART_PARITY_DISABLE,
+                        .stop_bits = UART_STOP_BITS_1, .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+                        .source_clk = UART_SCLK_DEFAULT };
+    if (uart_driver_install(GPS_UART, GPS_RXBUF, 0, 0, NULL, 0) != ESP_OK) return 0;
+    uart_param_config(GPS_UART, &c);
+    uart_set_pin(GPS_UART, EXT_PIN_GPS_TX, EXT_PIN_GPS_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    G->installed = 1;
+    G->pump_last=0;
+    return 1;
+}
+static int uart_off(void)
+{
+    if (!G->installed) return 1;
+    if(uart_driver_delete(GPS_UART)!=ESP_OK)return 0;
+    G->installed = 0;
+    G->pump_last=0;
+    return 1;
+}
+static void send_wake(void)
+{
+    static const uint8_t ff[8] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    uart_write_bytes(GPS_UART, ff, sizeof ff);
+}
+/* UBX-RXM-PMREQ: backup until UART RX activity. */
+static int send_sleep(void)
+{
+    uint8_t m[8 + 16] = { 0xb5, 0x62, 0x02, 0x41, 16, 0 };
+    uint8_t *p = m + 6;
+    memset(p, 0, 16);
+    p[8] = 0x02;                         /* flags: backup */
+    p[12] = 0x08;                        /* wakeupSources: uartrx */
+    uint8_t a = 0, b = 0;
+    for (int i = 2; i < 6 + 16; i++) { a += m[i]; b += a; }
+    m[22] = a; m[23] = b;
+    if(uart_write_bytes(GPS_UART, m, sizeof m)!=(int)sizeof m)return 0;
+    return uart_wait_tx_done(GPS_UART, pdMS_TO_TICKS(60))==ESP_OK;
+}
+
+/* ---------------------------------------------------------------- NMEA */
+static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; }
+
+static double nmea_deg(const char *v, const char *h)
+{
+    if (!*v) return 0;
+    double x = atof(v);
+    int deg = (int)(x / 100);
+    double d = deg + (x - deg * 100) / 60.0;
+    return (*h == 'S' || *h == 'W') ? -d : d;
+}
+static int talker_idx(const char *t)
+{
+    static const char T[NTALK][3] = { "GP", "GL", "GA", "GB", "GQ", "GN" };
+    for (int i = 0; i < NTALK; i++) if (t[0] == T[i][0] && t[1] == T[i][1]) return i;
+    return NTALK - 1;
+}
+static void publish_snr(hal_gps *f)
+{
+    uint8_t all[NTALK * 16], el[NTALK * 16]; uint16_t az[NTALK * 16]; int n = 0, view = 0;
+    for (int t = 0; t < NTALK; t++) {
+        view += G->gsv_view[t];
+        for (int i = 0; i < G->gsv_n[t]; i++) { all[n] = G->gsv_snr[t][i]; el[n] = G->gsv_el[t][i]; az[n] = G->gsv_az[t][i]; n++; }
+    }
+    for (int i = 1; i < n; i++) {                /* insertion sort, strongest first */
+        uint8_t v = all[i], e = el[i]; uint16_t a = az[i]; int j = i - 1;
+        while (j >= 0 && all[j] < v) { all[j + 1] = all[j]; el[j + 1] = el[j]; az[j + 1] = az[j]; j--; }
+        all[j + 1] = v; el[j + 1] = e; az[j + 1] = a;
+    }
+    if (n > 16) n = 16;
+    memset(f->snr, 0, sizeof f->snr); memset(f->el, 0, sizeof f->el); memset(f->az, 0, sizeof f->az);
+    memcpy(f->snr, all, (size_t)n); memcpy(f->el, el, (size_t)n); memcpy(f->az, az, sizeof(uint16_t) * (size_t)n);
+    f->nsnr = n; f->sats_view = view;
+}
+static void utc_from(hal_gps *f, const char *t)
+{
+    if (strlen(t) < 6) return;
+    f->utc_h = (t[0] - '0') * 10 + t[1] - '0';
+    f->utc_m = (t[2] - '0') * 10 + t[3] - '0';
+    f->utc_s = (t[4] - '0') * 10 + t[5] - '0';
+    f->utc_valid = 1;
+}
+
+static void sentence(char *s)
+{
+    /* s = "GPGGA,....*hh" without the '$' */
+    char *star = strchr(s, '*');
+    if (!star || hexv(star[1]) < 0 || hexv(star[2]) < 0) { G->bad_sum++; return; }
+    uint8_t sum = 0;
+    for (char *p = s; p < star; p++) sum ^= (uint8_t)*p;
+    if (sum != (uint8_t)(hexv(star[1]) * 16 + hexv(star[2]))) { G->bad_sum++; return; }
+    *star = 0;
+    char *f[24]; int nf = 0;
+    for (char *p = s; nf < 24;) {
+        f[nf++] = p;
+        char *c = strchr(p, ',');
+        if (!c) break;
+        *c = 0; p = c + 1;
+    }
+    if (strlen(f[0]) < 5) return;
+    G->sentences++;
+    G->last_rx = ext_ms();
+    const char *type = f[0] + 2;
+    uint32_t now = ext_ms();
+    portENTER_CRITICAL(&ext_lock);
+    hal_gps *x = &G->fix;
+    if (!strcmp(type, "GGA") && nf >= 10) {
+        int q = atoi(f[6]);
+        utc_from(x, f[1]);
+        x->sats_used = atoi(f[7]);
+        if (*f[8]) x->hdop = (float)atof(f[8]);
+        if (q > 0 && *f[2] && *f[4]) {
+            x->lat = nmea_deg(f[2], f[3]); x->lon = nmea_deg(f[4], f[5]);
+            x->alt_m = (float)atof(f[9]);
+            x->valid = 1; G->last_fix = now;
+        } else x->valid = 0;
+        publish_snr(x);
+    } else if (!strcmp(type, "RMC") && nf >= 9) {
+        utc_from(x, f[1]);
+        if (*f[2] == 'A' && *f[3] && *f[5]) {
+            x->lat = nmea_deg(f[3], f[4]); x->lon = nmea_deg(f[5], f[6]);
+            x->speed_mps = (float)(atof(f[7]) * 0.514444);
+            if (*f[8] && x->speed_mps > 0.5f) x->course_deg = (float)atof(f[8]);
+            x->valid = 1; G->last_fix = now;
+        }
+    } else if (!strcmp(type, "GSA") && nf >= 3) {
+        int t = atoi(f[2]);
+        x->fix3d = t == 3;
+        if (nf >= 17 && *f[16]) x->hdop = (float)atof(f[16]);
+    } else if (!strcmp(type, "GSV") && nf >= 4) {
+        int ti = talker_idx(f[0]);
+        int num = atoi(f[2]);
+        if (num == 1) G->gsv_n[ti] = 0;
+        G->gsv_view[ti] = (uint8_t)atoi(f[3]);
+        for (int i = 4; i + 3 < nf; i += 4) {      /* prn, elev, az, snr; NMEA 4.11 signal id ignored */
+            if (!*f[i]) continue;
+            if (G->gsv_n[ti] < 16) {
+                int k = G->gsv_n[ti]++;
+                G->gsv_snr[ti][k] = (uint8_t)atoi(f[i + 3]);
+                G->gsv_el[ti][k] = (uint8_t)atoi(f[i + 1]);
+                G->gsv_az[ti][k] = (uint16_t)atoi(f[i + 2]);
+            }
+        }
+    }
+    hal_gps observed=*x;
+    portEXIT_CRITICAL(&ext_lock);
+    float sv[]={(float)observed.valid,(float)observed.lat,(float)observed.lon,observed.alt_m,observed.speed_mps,observed.hdop,(float)observed.sats_used};
+    sports_emit(SP_GPS,sv,7);
+}
+
+static int pump(void)
+{
+    uint32_t now=ext_ms();
+    if(G->installed){uint32_t gap=G->pump_last?ext_elapsed(now,G->pump_last):0;
+        if(gap>G->pump_gap_max)G->pump_gap_max=gap;
+        G->pump_last=now;}
+    uint8_t buf[128];
+    int total = 0, n;
+    while (G->installed && (n = uart_read_bytes(GPS_UART, buf, sizeof buf, 0)) > 0) {
+        total += n;
+        G->rx_bytes+=(uint32_t)n;
+        for (int i = 0; i < n; i++) {
+            char c = (char)buf[i];
+            if (c == '$') { G->len = 0; continue; }
+            if (c == '\r' || c == '\n') {
+                if (G->len > 6) { G->line[G->len] = 0; sentence(G->line); }
+                G->len = 0;
+                continue;
+            }
+            if (c < 0x20 || c > 0x7e) { G->len = 0; continue; }
+            if (G->len < (int)sizeof G->line - 1) G->line[G->len++] = c;
+            else {G->line_overflows++;G->len=0;}
+        }
+    }
+    return total;
+}
+
+static void go(int st) { G->state = st; G->t_state = ext_ms(); }
+
+/* ---------------------------------------------------------------- service */
+uint32_t gps_service(uint32_t now)
+{
+    if (!G) return 1000;
+    if(G->shutdown_pending) {
+        if(!uart_off())return 100;
+        G->shutdown_pending=0;go(G_IDLE); /* a future request must explicitly wake it */
+    }
+    switch (G->state) {
+    case G_PROBE_START:
+        G->sentences = 0;
+        if (!uart_on(BAUDS[G->baud_i])) { go(G_ABSENT); return 1000; }
+        send_wake();
+        go(G_PROBE_WAKE);
+        return 100;
+    case G_PROBE_WAKE:
+        if ((uint32_t)(now - G->t_state) < 600) return 100;
+        uart_flush_input(GPS_UART); G->len = 0; G->sentences = 0;
+        go(G_PROBE_LISTEN);
+        return 100;
+    case G_PROBE_LISTEN:
+        pump();
+        now=ext_ms();
+        if (G->sentences > 0) {
+            ext_present_bits |= EXT_GPS;
+            if (G->enabled) go(G_RUN);
+            else { if(!send_sleep()||!uart_off())return 100;go(G_IDLE); }
+            return 100;
+        }
+        if ((uint32_t)(now - G->t_state) < LISTEN_MS) return 100;
+        if (++G->baud_i >= 3) { G->baud_i = 0; G->round++; }
+        if (G->round >= 2) { uart_off(); go(G_ABSENT); G->enabled = 0; return 1000; }
+        uart_on(BAUDS[G->baud_i]);
+        send_wake();
+        go(G_PROBE_WAKE);
+        return 100;
+    case G_RUN:
+        pump();
+        now=ext_ms();                   /* parser may publish a newer acquisition */
+        portENTER_CRITICAL(&ext_lock);
+        int enabled=G->enabled;uint32_t last_get=G->last_get;
+        portEXIT_CRITICAL(&ext_lock);
+        if (!enabled || ext_idle(now, last_get)) {
+            G->enabled = 0;
+            if(!send_sleep()||!uart_off())return 100;
+            portENTER_CRITICAL(&ext_lock);
+            G->fix.valid = 0; G->fix.fix3d = 0;
+            portEXIT_CRITICAL(&ext_lock);
+            go(G_IDLE);
+            return 500;
+        }
+        if (G->fix.valid && ext_elapsed(now,G->last_fix) > STALE_MS) {
+            portENTER_CRITICAL(&ext_lock);
+            G->fix.valid = 0; G->fix.fix3d = 0;
+            portEXIT_CRITICAL(&ext_lock);
+        }
+        /* 512 B ring at 115200 baud fills in ~44 ms */
+        return BAUDS[G->baud_i] > 40000 ? 25 : 80;
+    case G_IDLE:
+        if (G->enabled) {
+            if (!uart_on(BAUDS[G->baud_i])) return 1000;
+            send_wake();
+            G->last_fix = now - STALE_MS;
+            go(G_RUN);
+            return 100;
+        }
+        return 1000;
+    default:  /* absent */
+        if (G->enabled) { G->round = 0; G->baud_i = 0; go(G_PROBE_START); return 10; }
+        return 1000;
+    }
+}
+
+void gps_init(void)
+{
+    G = ext_psram_calloc(sizeof *G);
+    if (!G) return;
+    G->last_get = ext_ms() - NOS_EXT_IDLE_MS - 1;
+    go(G_PROBE_START);
+}
+
+void hal_gps_enable(int on)
+{
+    if (!G || (on && ext_shutdown_requested())) return;
+    portENTER_CRITICAL(&ext_lock);
+    G->last_get = ext_ms();
+    G->enabled = on ? 1 : 0;
+    portEXIT_CRITICAL(&ext_lock);
+}
+
+int hal_gps_get(hal_gps *out)
+{
+    if (!G || !(ext_present_bits & EXT_GPS)) { if (out) memset(out, 0, sizeof *out); return 0; }
+    uint32_t now = ext_ms();
+    portENTER_CRITICAL(&ext_lock);
+    if(!ext_shutdown_requested())G->last_get = now;
+    uint32_t last_fix=G->last_fix;
+    portEXIT_CRITICAL(&ext_lock);
+    if (out) {
+        portENTER_CRITICAL(&ext_lock);
+        *out = G->fix;
+        portEXIT_CRITICAL(&ext_lock);
+        out->age_ms = last_fix ? ext_elapsed(now,last_fix) : 0xffffffffu;
+        if(out->age_ms>STALE_MS)out->valid=out->fix3d=0;
+        out->sentences = (uint32_t)G->sentences;
+    }
+    return 1;
+}
+int gps_shutdown_poll(uint32_t now)
+{
+    (void)now;
+    if(!G)return 1;
+    if(G->installed)G->shutdown_pending=1;
+    portENTER_CRITICAL(&ext_lock);G->enabled=0;G->fix.valid=G->fix.fix3d=0;portEXIT_CRITICAL(&ext_lock);
+    if(G->installed && (!send_sleep()||!uart_off()))return -1;
+    G->shutdown_pending=0;
+    go(G_IDLE);
+    return 1; /* backup command TX-drained; physical rail/sleep current is unmeasured */
+}
+
+void gps_debug(void)
+{
+    if (!G) return;
+    hal_gps f;
+    portENTER_CRITICAL(&ext_lock);
+    f = G->fix;
+    portEXIT_CRITICAL(&ext_lock);
+    static const char *const S[] = { "probe", "wake", "listen", "sleep", "run", "absent" };
+    printf("EXT gps state=%s baud=%d en=%d nmea=%d badsum=%d valid=%d 3d=%d sats=%d/%d hdop=%.1f"
+           " lat=%.6f lon=%.6f alt=%.1f spd=%.1f crs=%.0f utc=%02d:%02d:%02d\n",
+           S[G->state], BAUDS[G->baud_i], G->enabled, G->sentences, G->bad_sum, f.valid, f.fix3d,
+           f.sats_used, f.sats_view, (double)f.hdop, f.lat, f.lon, (double)f.alt_m,
+           (double)f.speed_mps, (double)f.course_deg, f.utc_h, f.utc_m, f.utc_s);
+    printf("EXT gps rx_bytes=%u line_overflows=%u pump_gap_max_ms=%u (parser counters, UART loss unmeasured)\n",
+           (unsigned)G->rx_bytes,(unsigned)G->line_overflows,(unsigned)G->pump_gap_max);
+}

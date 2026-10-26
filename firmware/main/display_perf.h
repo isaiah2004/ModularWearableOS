@@ -86,6 +86,8 @@ void display_perf_complete_isr(uint32_t bytes, uint64_t now_us);
  * timing that was not measured; missing measurements remain invalid/null. */
 void display_perf_add_stage(display_perf_stage stage, uint32_t us);
 void display_perf_queue_depth(uint32_t depth);
+/* Wall time above this counts as a deadline miss (the main loop frame period). */
+void display_perf_set_frame_deadline(uint32_t us);
 void display_perf_frame(uint32_t dirty_pixels, uint16_t rects, bool atomic,
                         uint32_t record_us, uint32_t raster_us,
                         uint32_t present_us, uint32_t wall_us);

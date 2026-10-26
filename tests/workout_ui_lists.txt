@@ -1,0 +1,69 @@
+# Reach five priority profiles and the full catalog and browse a saved result through the actual UI.
+wait 100
+present 0
+set step_rate 0
+workout start 5
+wait 1000
+workout finish
+wait 200
+workout discard
+open workout
+wait 700
+shot sport_all_profiles
+tap 154 150
+wait 700
+expect top SPORT READY
+shot sport_football_ready
+pop
+wait 700
+tap 312 150
+wait 700
+expect top SPORT READY
+shot sport_cricket_ready
+pop
+wait 700
+tap 154 244
+wait 700
+expect top SPORT READY
+shot sport_badminton_ready
+pop
+wait 700
+tap 312 244
+wait 700
+expect top SPORT READY
+shot sport_run_ready
+pop
+wait 700
+tap 154 338
+wait 700
+expect top SPORT READY
+shot sport_hike_ready
+pop
+wait 700
+tap 312 338
+wait 700
+expect top ALL SPORTS
+shot sport_all_catalog
+pop
+wait 700
+tap 233 420
+wait 700
+expect top WORKOUT HISTORY
+shot sport_history
+tap 233 155
+wait 700
+expect top SESSION DETAILS
+shot sport_history_details
+wait 6000
+mark sports_scroll
+slide 233 380 233 140 700 100
+wait 700
+slide 233 360 233 180 700 100
+wait 700
+shot sport_history_details_scrolled
+slide 233 160 233 380 700 100
+wait 700
+expect workout state 0
+expect workout history 1
+expect motionok
+workout info history_browse

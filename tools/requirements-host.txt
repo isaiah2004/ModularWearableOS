@@ -1,0 +1,4 @@
+# Host/offline plot artifacts and host serial tools; SDK esptool stays SDK-managed.
+matplotlib>=3.8,<4
+Pillow>=10.1,<13
+pyserial>=3.5,<4

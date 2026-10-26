@@ -1,0 +1,16 @@
+# Built-in steps do not become invented treadmill kilometres.
+wait 100
+present 0
+set step_rate 150
+workout start 4
+wait 10000
+workout info treadmill
+expect workout steps 24 26
+expect workout gps_status 0
+expect workout distance 0
+expect workout distance_valid 0
+expect workout pace_valid 0
+workout finish
+wait 200
+expect workout save 2
+

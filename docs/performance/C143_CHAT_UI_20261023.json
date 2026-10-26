@@ -1,0 +1,409 @@
+{
+  "schema": 1,
+  "date": "2026-10-23",
+  "status": "implemented_flashed_verified",
+  "board": "ESP32-S3-Touch-AMOLED-1.43C",
+  "port": "COM4",
+  "features": {
+    "chat_ui": [
+      "larger scrollable transcript",
+      "animated mic level",
+      "recording countdown",
+      "real upload progress",
+      "indeterminate waiting animation",
+      "known-length playback progress",
+      "four stage indicators",
+      "Recents",
+      "stable-ID resume/delete with confirmation",
+      "speaker slider and +/-",
+      "mute with previous-level restore",
+      "live mic sensitivity",
+      "spoken reply switch"
+    ],
+    "history": {
+      "slots": 4,
+      "recent_turns_per_slot": 2,
+      "checkpoint_bytes": 3892,
+      "input_bytes_per_saved_turn": 128,
+      "reply_bytes_per_saved_turn": 320,
+      "storage": "C-board NVS voice_hist; text only",
+      "checksum": "FNV-1a over fixed versioned payload",
+      "verified_readback": true,
+      "failed_save_retains_dirty": true,
+      "retry_ms": 5000,
+      "unknown_checkpoint_protected": true,
+      "full_store": "reject new chat until explicit deletion",
+      "new_chat_preserves_saved_chats": true,
+      "old_ram_only_firmware_history_not_recoverable_after_update": true
+    },
+    "audio": {
+      "volume": "existing saved watch preference, 0..100",
+      "mic_gain_db": [
+        24,
+        30,
+        36
+      ],
+      "default_mic_gain_db": 30,
+      "changes_applied_by_exclusive_codec_worker": true,
+      "preferences_deferred_while_voice_active": true,
+      "audio_subpage_does_not_cancel_turn": true,
+      "muted_or_text_only_skips_new_tts": true,
+      "strap_module_detection_unchanged": true
+    }
+  },
+  "builds": {
+    "c": {
+      "bundle_id": "e2918ddb63c48dd88c80244dadead6150218b836b9ae39550244583972eabbdb",
+      "source_tree_sha256": "2765b505133cc539f1ac2aca99c7f1f1950f420cdfd2c1d49776941a4b0bf46a",
+      "firmware_elf_sha256": "1458b3dfb6fa64f8a72e82f09c0c4e9297db9259641f6ec06e9483960f9ee111",
+      "budget": {
+        "app_bytes": 7751664,
+        "app_headroom_bytes": 505872,
+        "app_limit_bytes": 8257536,
+        "app_offset": 65536,
+        "app_partition": "factory",
+        "flash_bytes": 8388608,
+        "nvs_preserved": true
+      },
+      "features": {
+        "Background jobs": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/sys_background.c",
+          "symbol": "scr_background"
+        },
+        "Developer tools": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/set_developer.c",
+          "symbol": "scr_developer"
+        },
+        "Energy": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/fit_energy.c",
+          "symbol": "scr_energy"
+        },
+        "Integrated home pager": {
+          "linked": true,
+          "registry": "nos/apps/sys_home.c",
+          "source": "nos/apps/sys_home.c",
+          "symbol": "scr_home"
+        },
+        "Sensor logs": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/fit_energy.c",
+          "symbol": "scr_sports_logs"
+        },
+        "Solar/Orrery": {
+          "linked": true,
+          "registry": "nos/faces/faces.c",
+          "source": "nos/faces/face_orrery.c",
+          "symbol": "face_orrery"
+        },
+        "Sports": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/fit_workout.c",
+          "symbol": "scr_workout"
+        },
+        "Voice chat": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/con_chat.c",
+          "symbol": "scr_chat"
+        }
+      }
+    },
+    "b": {
+      "bundle_id": "5d208d353bd8fc5cbd69054a33d7a33a8f3a060d7a59c30f1e6d37e949a5d547",
+      "source_tree_sha256": "2765b505133cc539f1ac2aca99c7f1f1950f420cdfd2c1d49776941a4b0bf46a",
+      "budget": {
+        "app_bytes": 7837568,
+        "app_headroom_bytes": 26752,
+        "app_limit_bytes": 7864320,
+        "app_offset": 131072,
+        "app_partition": "ota_0",
+        "flash_bytes": 16777216,
+        "nvs_preserved": true
+      }
+    }
+  },
+  "validation": {
+    "host_tests_passed": 54,
+    "host_tests_failed": 0,
+    "identical_damage_reference_frames": 1704,
+    "simulator_touch_flow": "passed",
+    "visual_layout_reviewed": true,
+    "device_checks": {
+      "all_existing_preference_bytes_preserved": true,
+      "api_key_preserved": true,
+      "bounded_history_size": true,
+      "audio_page": true,
+      "plus_button": true,
+      "mute_button": true,
+      "unmute_restores_previous_volume": true,
+      "volume_slider": true,
+      "mic_high": true,
+      "mic_normal": true,
+      "text_reply_switch": true,
+      "voice_reply_switch": true,
+      "local_mic_speaker_test": true,
+      "audio_page_keeps_capture_and_playback_alive": true,
+      "local_audio_uses_no_api_charge": true,
+      "history_has_test_capacity": true,
+      "live_model_and_speech": true,
+      "test_owns_new_chat": true,
+      "honest_wait_or_playback_progress": true,
+      "chat_checkpoint_verified": true,
+      "saved_chat_survives_reset": true,
+      "audio_options_survive_reset": true,
+      "recents_page": true,
+      "select_saved_chat": true,
+      "delete_confirmation": true,
+      "keep_preserves_saved_chat": true,
+      "delete_removes_only_selected_chat": true,
+      "deletion_survives_reset": true,
+      "te_remains_disabled": true,
+      "all_preference_bytes_restored": true,
+      "current_workspace_firmware_running": true,
+      "no_display_fault": true,
+      "no_allocation_failures": true
+    },
+    "local_audio": {
+      "available": "1",
+      "configured": "1",
+      "tier": "0",
+      "state": "6",
+      "busy": "0",
+      "turns": "0",
+      "input_ms": "3000",
+      "output_ms": "0",
+      "record_ms": "3000",
+      "peak": "184",
+      "nonzero": "14704",
+      "cost_usd": "0.00000000",
+      "last_usd": "0.00000000",
+      "estimated": "0",
+      "http": "0",
+      "generation": "6",
+      "stack_free": "7056",
+      "selftest": "0",
+      "volume": "60",
+      "speak": "1",
+      "mic_gain": "30",
+      "chat_id": "0",
+      "saved": "0",
+      "history_dirty": "0",
+      "history_error": "0",
+      "phase": "0",
+      "progress": "0",
+      "total": "0"
+    },
+    "live_model_and_tts": {
+      "available": "1",
+      "configured": "1",
+      "tier": "0",
+      "state": "6",
+      "busy": "0",
+      "turns": "1",
+      "input_ms": "0",
+      "output_ms": "1100",
+      "record_ms": "0",
+      "peak": "0",
+      "nonzero": "0",
+      "cost_usd": "0.00003615",
+      "last_usd": "0.00003615",
+      "estimated": "1",
+      "http": "200",
+      "generation": "70",
+      "stack_free": "4192",
+      "selftest": "0",
+      "volume": "60",
+      "speak": "1",
+      "mic_gain": "30",
+      "chat_id": "1",
+      "saved": "1",
+      "history_dirty": "0",
+      "history_error": "0",
+      "phase": "0",
+      "progress": "0",
+      "total": "0"
+    },
+    "physical_acoustic_loop_measured_this_run": false,
+    "history_persistence": "verified checkpoint, read-only esptool ROM reset, live select; confirmed deletion survives second reset",
+    "test_chat_removed": true
+  },
+  "preservation": {
+    "nvs_excluded_from_flash": true,
+    "all_existing_preference_bytes_preserved": true,
+    "all_preference_bytes_restored": true,
+    "api_key_preserved": true,
+    "te_disabled": true,
+    "final_chat": {
+      "available": "1",
+      "configured": "1",
+      "tier": "0",
+      "state": "0",
+      "busy": "0",
+      "turns": "0",
+      "input_ms": "0",
+      "output_ms": "0",
+      "record_ms": "0",
+      "peak": "0",
+      "nonzero": "0",
+      "cost_usd": "0.00000000",
+      "last_usd": "0.00000000",
+      "estimated": "0",
+      "http": "0",
+      "generation": "1",
+      "stack_free": "0",
+      "selftest": "0",
+      "volume": "60",
+      "speak": "1",
+      "mic_gain": "30",
+      "chat_id": "0",
+      "saved": "0",
+      "history_dirty": "0",
+      "history_error": "0",
+      "phase": "0",
+      "progress": "0",
+      "total": "0"
+    },
+    "final_history": {
+      "count": "0",
+      "capacity": "4",
+      "bytes": "3892",
+      "dirty": "0",
+      "error": "0"
+    },
+    "returned_home_and_automatic_sleep_restored": true
+  },
+  "evidence": [
+    {
+      "path": "build/c143-chat-ui-before.json",
+      "sha256": "0b2d5e12f8c6799555453115ebc39393db5528806f67ec20e8e971337c388049"
+    },
+    {
+      "path": "build/c143-chat-ui-before/manifest.json",
+      "sha256": "482183a1048fc122a80896a847ed25338a1021645dcc7ac212a54c06c9110e61"
+    },
+    {
+      "path": "build/c143-chat-ui-tests.log",
+      "sha256": "936c58f0157d2cc09ba5e863d74b3c3758e128f64137a1f00c67ff6368ef3114"
+    },
+    {
+      "path": "build/c143-chat-ui-build.log",
+      "sha256": "ca622e1383bc14c2d2fc13150ae0fd88668dcd74a6755179059a514a7ee0db0b"
+    },
+    {
+      "path": "build/c143-chat-ui-b-build.log",
+      "sha256": "d032e6a804966a32a90e15101f3f8a6efa0634d03f68a02359cf5c9df476c68b"
+    },
+    {
+      "path": "build/c143-chat-ui-sim-build.log",
+      "sha256": "5999a30e142304b47814af2341400dd3828e4e83e735b6b10e4cd4b72a22c586"
+    },
+    {
+      "path": "build/c143-chat-ui-ui.log",
+      "sha256": "048d371c9b04424ec6ec0fe708315431a5c87f2e2bfe1b4cf14c82d12bb64632"
+    },
+    {
+      "path": "build/c143-chat-ui-damage.log",
+      "sha256": "60eb53383cba2d607eadc0a099a75bd36b77c8575d6970613e34be4c970c519a"
+    },
+    {
+      "path": "build/c143-chat-ui-flash.log",
+      "sha256": "5169482bca0503534443d0ac0aebd95a16ced2dfecee1f922f8e067cf2d92901"
+    },
+    {
+      "path": "build/c143-chat-ui-flash-wire.jsonl",
+      "sha256": "ac06eff62afd908145ff963345d358d59da18d2f916059f3e3764372254a1708"
+    },
+    {
+      "path": "build/c143-chat-ui-device.json",
+      "sha256": "27c06f505d78f73128ca8b64a5a4f1b23e2304cec297f10107ab4a3172c19324"
+    },
+    {
+      "path": "build/c143-chat-ui-device.log",
+      "sha256": "5e6faedc38b8df81f364c464885bd0915c0dae22d2a4a09b3e12b1bce87e8d09"
+    },
+    {
+      "path": "build/c143-chat-ui-device-wire.jsonl",
+      "sha256": "599a17d09c2cfc6817c530ad42aaa034aecb702360a9fabedfeb144903246f4c"
+    },
+    {
+      "path": "build/verify_c143_chat_ui.py",
+      "sha256": "2c5fdfd31ab7bc86d8702c44e25f127031558d27783798757aea2944283fceb2"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/answer.png",
+      "sha256": "265f72e50b167a205fdd0231d07f9ca748c0a21a1ae33290ee2bd5e2b18ac4c4"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/audio.png",
+      "sha256": "ae66353aa6ebcc04ad3b607c8ae7a815ebeea66ec5884bf6c55f80db506f12ff"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/delete_confirm.png",
+      "sha256": "12b592fa0261542a745a06c3c9cbedd2281b25c09b67c82775fd02c5efd082f3"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/history_deleted.png",
+      "sha256": "f0e6487e3d55ada3f55c86814d9b39eb202f440d215083513cd63a0f8ae555ec"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/history_full.png",
+      "sha256": "14cd0ec609ff928de618246fdf290593b874e3e89043519a79f6796ce77d2b42"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/listening.png",
+      "sha256": "50b229da447180b11ef3a02c4b10042805f81e78b4ad33504139a196002de5c4"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/live_volume.png",
+      "sha256": "c5b633b6870bc8a96b20e8a64f9c7cf5a549bdd8634aa828b6e9239239bca71c"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/new.png",
+      "sha256": "d00b09f62fbeb083e45a6241070c3bda13b9d3f295b47124f23986eaf21d4bbc"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/preparing_voice.png",
+      "sha256": "1bd7e4396e9c86ce386ac971228ab7e96cad3dd7d2c10973ad8986ad63be36ca"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/previous_turn.png",
+      "sha256": "6b99bfe58ba4158fb50819ba201fce4616918e07b997a8552a3854edbb22aa6e"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/ready.png",
+      "sha256": "8582cc070ec353997bfa246954fbaa4907eb0832c97ca141e264eb8bd684c34d"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/restored.png",
+      "sha256": "df7c8396cb766c76d3a4adadc9c1bcb60a19c45a50cbc44b7d210889c384a6cc"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/speaking.png",
+      "sha256": "c1fc0baa3ab9bc19339cbbf5a806f158e0941f41a26c96047134d2d21e63a19e"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/thinking.png",
+      "sha256": "979a4bd7c91cbd961d0fed3d9d20e026bd5b0330b34adbc65484718aac09165d"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/uploading.png",
+      "sha256": "0c620d6d82681dc49e6c86829de905705f5b63365e1cb19e3a801f31d3ab149c"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/listening.gif",
+      "sha256": "f90383bf99e855077433958438f91533df35557417f358d41b72470b1fff9dbc"
+    },
+    {
+      "path": "build/c143-chat-ui-shots/working.gif",
+      "sha256": "31f0759a9c798f2a587d77a12bebb50e421a4ae4ca918defc587a193e8d50576"
+    }
+  ]
+}

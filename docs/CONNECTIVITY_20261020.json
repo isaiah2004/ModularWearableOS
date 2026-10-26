@@ -1,0 +1,14 @@
+{
+  "date": "2026-10-20",
+  "workspace": "A:\\makerspace\\smartwatch2.0",
+  "firmware_sha256": "b91bc1126461b80177c7d581681236474127bbb635694a0d1169a08c54f26e83",
+  "firmware_bytes": 7677392,
+  "flash_log": "build/connectivity-verified-flash.log",
+  "device_validation": "build/connectivity-validation/results.json",
+  "final_state": "build/connectivity-validation/final-state.log",
+  "bluetooth_discovery": "1 nearby BLE advertiser observed",
+  "bluetooth_connection_validation": "Not completed: PC Bluetooth radio is off; no accessory selected",
+  "preserved_preferences_hash": "b13834eb",
+  "frame_rate_validation": "Uses existing list blur and transition paths; new flows not qualified against strict 30 fps hardware deadlines",
+  "source_archive": "build/recovery-20261020/connectivity-update.zip"
+}

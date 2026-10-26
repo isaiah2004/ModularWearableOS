@@ -18,8 +18,8 @@ static void check(float end, int y_base, int rows, int x0, int x1)
     const uint16_t background = GFX_RGB(7, 11, 19);
     fill(direct, background);
     fill(split, background);
-    gfx_fb a = { direct + y_base * GFX_W, 0, 0, y_base, rows, x0, x1, 0 };
-    gfx_fb b = { split + y_base * GFX_W, 0, 0, y_base, rows, x0, x1, 0 };
+    gfx_fb a = { direct + y_base * GFX_W, 0, 0, y_base, rows, x0, x1, 0, 0, 0 };
+    gfx_fb b = { split + y_base * GFX_W, 0, 0, y_base, rows, x0, x1, 0, 0, 0 };
     gfx_arc(&a, GFX_CX, GFX_CY, GFX_S(100), GFX_S(4), 0.0f, end, GFX_ACCENT);
     gfx_sweep(&b, GFX_CX, GFX_CY, GFX_S(100), GFX_S(4), end,
               6.28318531f / 60.0f, GFX_ACCENT);
@@ -39,7 +39,7 @@ static void record(float end, gfx_rec *rec)
 static void render_full(uint16_t *pixels, float end, uint16_t background)
 {
     fill(pixels, background);
-    gfx_fb fb = { pixels, 0, 0, 0, GFX_H, 0, GFX_W, 0 };
+    gfx_fb fb = { pixels, 0, 0, 0, GFX_H, 0, GFX_W, 0, 0, 0 };
     gfx_sweep(&fb, GFX_CX, GFX_CY, GFX_S(100), GFX_S(4), end,
               6.28318531f / 60.0f, GFX_ACCENT);
 }
@@ -78,7 +78,7 @@ static void repaint_changed(float end, const gfx_rec *old_rec,
             if (x1 > GFX_W) x1 = GFX_W;
             if (y1 > GFX_H) y1 = GFX_H;
             if (x1 <= x0 || y1 <= y0) continue;
-            gfx_fb fb = { split + y0 * GFX_W, 0, 0, y0, y1 - y0, x0, x1, 0 };
+            gfx_fb fb = { split + y0 * GFX_W, 0, 0, y0, y1 - y0, x0, x1, 0, 0, 0 };
             gfx_clear(&fb, background);
             gfx_sweep(&fb, GFX_CX, GFX_CY, GFX_S(100), GFX_S(4), end,
                       6.28318531f / 60.0f, GFX_ACCENT);

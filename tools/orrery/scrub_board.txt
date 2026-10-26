@@ -1,0 +1,21 @@
+# Board repro: 1200 ms straight chord, forward/back; no device I/O.
+face 8
+date 2026-10-11
+time 10:08:15
+wait 2500
+hold 300 300 1700
+wait 700
+set orrprof 1
+mark opening
+tap 380 75
+wait 1200
+mark scrub_forward
+drag 368 88 297 46 1200
+mark scrub_back
+drag 297 46 368 88 1200
+mark settle
+wait 6000
+shot scrub_settled
+mark settled
+expect idle 1000
+expect nolate

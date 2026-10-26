@@ -1,0 +1,210 @@
+{
+  "date": "2026-10-22",
+  "verified_utc": "2026-10-22T15:01:24.074287+00:00",
+  "board": "ESP32-S3-Touch-AMOLED-1.43C",
+  "port": "COM4",
+  "status": "passed",
+  "installed_elf_sha256": "889e302ce95c23fa322b735a627a3110ac9ad3b549bddf79f362a819b4fd7b0c",
+  "source_tree_sha256": "b96bd25a09512fff16ae1a9e338d6a8e5cefc9e9287c84236c279e03d1a726c4",
+  "bundle_id": "8508bfca24ce0c2b7131d5f8c9c5e0b50eab86a50473a22a9d95f07efabe42d6",
+  "budget": {
+    "app_bytes": 7739056,
+    "app_headroom_bytes": 518480,
+    "app_limit_bytes": 8257536,
+    "app_offset": 65536,
+    "app_partition": "factory",
+    "flash_bytes": 8388608,
+    "nvs_preserved": true
+  },
+  "b_board_budget": {
+    "app_bytes": 7831136,
+    "app_headroom_bytes": 33184,
+    "app_limit_bytes": 7864320,
+    "app_offset": 131072,
+    "app_partition": "ota_0",
+    "flash_bytes": 16777216,
+    "nvs_preserved": true
+  },
+  "features": {
+    "Background jobs": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/sys_background.c",
+      "symbol": "scr_background"
+    },
+    "Developer tools": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/set_developer.c",
+      "symbol": "scr_developer"
+    },
+    "Energy": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/fit_energy.c",
+      "symbol": "scr_energy"
+    },
+    "Integrated home pager": {
+      "linked": true,
+      "registry": "nos/apps/sys_home.c",
+      "source": "nos/apps/sys_home.c",
+      "symbol": "scr_home"
+    },
+    "Sensor logs": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/fit_energy.c",
+      "symbol": "scr_sports_logs"
+    },
+    "Solar/Orrery": {
+      "linked": true,
+      "registry": "nos/faces/faces.c",
+      "source": "nos/faces/face_orrery.c",
+      "symbol": "face_orrery"
+    },
+    "Sports": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/fit_workout.c",
+      "symbol": "scr_workout"
+    },
+    "Voice chat": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/con_chat.c",
+      "symbol": "scr_chat"
+    }
+  },
+  "validation": {
+    "current_firmware_identity": true,
+    "key_loaded": true,
+    "tier_selection": true,
+    "cancel_parks_audio": true,
+    "microphone_and_speaker_io": true,
+    "worker_stack_margin": true,
+    "local_test_free": true,
+    "preferences_preserved": true,
+    "no_display_fault": true,
+    "chat_visible": true,
+    "no_failed_allocations": true
+  },
+  "acoustic_selftest": {
+    "phases": [
+      0,
+      4,
+      5,
+      2,
+      3,
+      6
+    ],
+    "status": "passed",
+    "messages": [
+      "NOSCHATSTATUS Tap TALK to continue"
+    ],
+    "final": {
+      "available": "1",
+      "configured": "1",
+      "tier": "0",
+      "state": "6",
+      "busy": "0",
+      "turns": "1",
+      "input_ms": "3350",
+      "output_ms": "6425",
+      "record_ms": "3350",
+      "peak": "5447",
+      "nonzero": "0",
+      "cost_usd": "0.00034056",
+      "last_usd": "0.00034056",
+      "estimated": "1",
+      "http": "200",
+      "generation": "320",
+      "stack_free": "4272",
+      "selftest": "1"
+    }
+  },
+  "tiers": [
+    {
+      "available": "1",
+      "configured": "1",
+      "tier": "0",
+      "state": "6",
+      "busy": "0",
+      "turns": "1",
+      "input_ms": "0",
+      "output_ms": "2675",
+      "record_ms": "0",
+      "peak": "0",
+      "nonzero": "0",
+      "cost_usd": "0.00014420",
+      "last_usd": "0.00014420",
+      "estimated": "1",
+      "http": "200",
+      "generation": "137",
+      "stack_free": "4272",
+      "selftest": "0"
+    },
+    {
+      "available": "1",
+      "configured": "1",
+      "tier": "1",
+      "state": "6",
+      "busy": "0",
+      "turns": "2",
+      "input_ms": "0",
+      "output_ms": "3900",
+      "record_ms": "0",
+      "peak": "0",
+      "nonzero": "0",
+      "cost_usd": "0.00029645",
+      "last_usd": "0.00015225",
+      "estimated": "1",
+      "http": "200",
+      "generation": "205",
+      "stack_free": "4272",
+      "selftest": "0"
+    },
+    {
+      "available": "1",
+      "configured": "1",
+      "tier": "2",
+      "state": "6",
+      "busy": "0",
+      "turns": "3",
+      "input_ms": "0",
+      "output_ms": "5000",
+      "record_ms": "0",
+      "peak": "0",
+      "nonzero": "0",
+      "cost_usd": "0.00070295",
+      "last_usd": "0.00040650",
+      "estimated": "1",
+      "http": "200",
+      "generation": "267",
+      "stack_free": "4272",
+      "selftest": "0"
+    }
+  ],
+  "host_tests": 54,
+  "identical_ui_frames": 259,
+  "credentials": {
+    "env_ignored": true,
+    "excluded_from_source_archive": true,
+    "absent_from_firmware_and_elf": true,
+    "persisted_and_reloaded_on_watch": true
+  },
+  "connectivity": "Existing NVS Wi-Fi profile reused; Wi-Fi and Bluetooth remain enabled.",
+  "audio": "ES8311 + ES7210, real speaker-to-microphone reference recognized by Whisper.",
+  "pricing": "1/5/10 USD cents per minute usage targets, conservative speech estimates, no billable automatic retry.",
+  "evidence_sha256": {
+    "build/c143-voice-final-flash.log": "4a73f2961f612230ef16382a54be975cb0656173e6780415db911f5b7e752d12",
+    "build/c143-voice-final-flash-wire.jsonl": "8cf6ddee32522ad109546989ee314e0c694a1b2e855cafe14734cb74f5ddba1f",
+    "build/c143-voice-device-verification.json": "814eecead3c91447c3bce0e591c3eb07dc85ab18ba3634be127cba55f9e37984",
+    "build/c143-voice-selftest.json": "ce7b7a322caf0fd17fd755e8e2a720898029b6383af46c1fe330f3cea6bc0be1",
+    "build/c143-voice-selftest-wire.jsonl": "ba1669c4e36bcf185ba0bbdb48a17cc0261dcfbc12857ff087c2e9d32a2db6d1",
+    "build/c143-voice-cloud-tiers.json": "7159b159dde512e0819c20d5e01235b921e12cf823806e862cd1642bb59a7632",
+    "build/c143-voice-final-info.log": "40cc01ea8766ad9068e0ffd346144f0b010a7be54fea382d4477c096276b5399",
+    "build/voice-focused-tests.log": "c61f753e7c1846c27de5916325b36ca32caf962a2aa649be5f3310278e4631e7",
+    "build/voice-ui-damage.log": "a0b82e1d9ce23a1752dc2d14250bcb8ce7e3ba2b52d2a7c50b42180a9c9996bf",
+    "build/voice-b-build.log": "f43068a58609f06a1e1e480e549456e8753448b0fb3a42b415c5310dcd9996a4"
+  }
+}

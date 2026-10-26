@@ -1,0 +1,39 @@
+# Zero latitude/longitude are valid. Invalid coordinates and teleports are not.
+wait 100
+set step_rate 0
+set gps_fix 0 0 0 1
+workout start 0
+wait 1100
+expect workout gps_status 2
+expect workout distance 0
+workout info zero_coordinate
+set gps_fix nan 0 2 1
+wait 1100
+expect workout gps_status 4
+set gps_fix 91 0 2 1
+wait 1100
+expect workout gps_status 4
+set gps_fix 0 181 2 1
+wait 1100
+expect workout gps_status 4
+set gps_fix 0 0 2 9
+wait 1100
+expect workout gps_status 4
+set gps_fix 0 0 2 0
+wait 1100
+expect workout gps_status 4
+set gps_fix 0 0 2 1
+wait 1100
+set gps_fix 1 1 2 1
+wait 1100
+expect workout gps_status 5
+expect workout distance 0
+workout info rejected_spike
+set gps_fix 0 0 0 1
+wait 1100
+workout info after_spike
+expect workout distance 0
+workout finish
+wait 200
+expect workout save 2
+

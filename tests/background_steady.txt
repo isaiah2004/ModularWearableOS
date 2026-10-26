@@ -1,0 +1,23 @@
+open! background
+wait 1200
+tap 233 145
+wait 1200
+mark motion_monitor
+expect maxdirty 90000 6000
+expect nolate
+pop
+wait 1200
+mark jobs_overview
+expect maxdirty 40000 6000
+expect nolate
+present 0
+wait 1200
+tap 336 398
+wait 40
+tap 336 398
+wait 40
+tap 233 145
+wait 1200
+mark absent_sensor
+expect idle 3000
+expect nolate

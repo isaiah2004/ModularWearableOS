@@ -1,0 +1,858 @@
+{
+  "schema": 1,
+  "date": "2026-10-22",
+  "status": "implemented_verified_60fps_not_achieved",
+  "board": "ESP32-S3-Touch-AMOLED-1.43C",
+  "port": "COM4",
+  "implementation": {
+    "default_enabled": false,
+    "preference": "nos_prefs.display_te",
+    "preference_version": 4,
+    "field_revision": 5,
+    "payload_bytes": 52,
+    "field_offset": 50,
+    "ui": "Developer Tools > TE sync",
+    "unsupported": "N/A",
+    "usb": "te 0 / te 1 now persist the same setting",
+    "irq_and_wait_disabled_when_off": true,
+    "te_generator_configured_for_future_enable": true,
+    "unchanged_preference_does_not_rearm_irq": true
+  },
+  "builds": {
+    "c": {
+      "bundle_id": "6866e9bb5e4048a6adbc9c1399e4aedda672d1a7211caeb7f5dace8624828c2a",
+      "source_tree_sha256": "45de9956dce93c0cb94add484a072783c73a7aa06c94384c4f050fec9f0e796e",
+      "firmware_elf_sha256": "7ea38e941edcb85ae4f1d6c4bc72adf88d6cec578514eddefd70c8b894e72157",
+      "budget": {
+        "app_bytes": 7741072,
+        "app_headroom_bytes": 516464,
+        "app_limit_bytes": 8257536,
+        "app_offset": 65536,
+        "app_partition": "factory",
+        "flash_bytes": 8388608,
+        "nvs_preserved": true
+      },
+      "features": {
+        "Background jobs": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/sys_background.c",
+          "symbol": "scr_background"
+        },
+        "Developer tools": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/set_developer.c",
+          "symbol": "scr_developer"
+        },
+        "Energy": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/fit_energy.c",
+          "symbol": "scr_energy"
+        },
+        "Integrated home pager": {
+          "linked": true,
+          "registry": "nos/apps/sys_home.c",
+          "source": "nos/apps/sys_home.c",
+          "symbol": "scr_home"
+        },
+        "Sensor logs": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/fit_energy.c",
+          "symbol": "scr_sports_logs"
+        },
+        "Solar/Orrery": {
+          "linked": true,
+          "registry": "nos/faces/faces.c",
+          "source": "nos/faces/face_orrery.c",
+          "symbol": "face_orrery"
+        },
+        "Sports": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/fit_workout.c",
+          "symbol": "scr_workout"
+        },
+        "Voice chat": {
+          "linked": true,
+          "registry": "nos/apps/registry.c",
+          "source": "nos/apps/con_chat.c",
+          "symbol": "scr_chat"
+        }
+      }
+    },
+    "b": {
+      "bundle_id": "709f50d7777d25e68fce903f89ffb2533d31fe6515a851f0d85b43dffdcef4dc",
+      "source_tree_sha256": "45de9956dce93c0cb94add484a072783c73a7aa06c94384c4f050fec9f0e796e",
+      "budget": {
+        "app_bytes": 7831952,
+        "app_headroom_bytes": 32368,
+        "app_limit_bytes": 7864320,
+        "app_offset": 131072,
+        "app_partition": "ota_0",
+        "flash_bytes": 16777216,
+        "nvs_preserved": true
+      }
+    }
+  },
+  "validation": {
+    "targeted_tests_passed": 61,
+    "targeted_tests_failed": 0,
+    "device_checks": {
+      "off_after_upgrade": true,
+      "migrated_preferences_durable": true,
+      "existing_display_radio_preferences_preserved": true,
+      "no_waits_while_disabled": true,
+      "developer_screen_open": true,
+      "ui_toggle_1": true,
+      "ui_toggle_checkpoint_1": true,
+      "enabled_survives_reboot": true,
+      "enabled_uses_te_without_timeouts": true,
+      "ui_toggle_0": true,
+      "ui_toggle_checkpoint_0": true,
+      "disabled_survives_reboot": true,
+      "all_preference_bytes_restored_except_migration": true,
+      "running_current_workspace_firmware": true,
+      "no_display_fault": true,
+      "no_allocation_failures": true
+    },
+    "persistence_reset_method": "verified preference flush, read-only esptool read_mac with reset, then live status",
+    "on_after_reboot": {
+      "v": "1",
+      "gpio": "8",
+      "ready": "1",
+      "enabled": "1",
+      "awake": "1",
+      "error": "0",
+      "edges": "61",
+      "period_us": "16513",
+      "age_us": "3389",
+      "waits": "12",
+      "synced": "12",
+      "timeouts": "0",
+      "last_wait_us": "7990",
+      "max_wait_us": "14686",
+      "total_wait_us": "74948",
+      "phase_us": "15",
+      "max_phase_us": "20",
+      "saved": "1"
+    },
+    "off_after_reboot": {
+      "v": "1",
+      "gpio": "8",
+      "ready": "1",
+      "enabled": "0",
+      "awake": "1",
+      "error": "0",
+      "edges": "0",
+      "period_us": "0",
+      "age_us": "4294967295",
+      "waits": "0",
+      "synced": "0",
+      "timeouts": "0",
+      "last_wait_us": "0",
+      "max_wait_us": "0",
+      "total_wait_us": "0",
+      "phase_us": "0",
+      "max_phase_us": "0",
+      "saved": "0"
+    },
+    "simulator_layout_reviewed": true,
+    "runner_corrections": [
+      "Initial UI-driven restart did not produce READY and was not counted as a persistence pass; verified resets used a read-only esptool ROM query instead.",
+      "The app-list USB route is launcher; an initial Apps route was rejected. The remaining diagnostic windows were resumed with the correct route."
+    ]
+  },
+  "performance": {
+    "render_mode": "existing sharp build; motion blur disabled before this change",
+    "clock_hz": 40000000,
+    "quiet_workload": "twelve alternating 350 ms Settings swipes, 480 ms spacing",
+    "detailed_workload": "six alternating 350 ms swipes, 480 ms spacing; optional per-frame pipeline/list observers",
+    "benchmarks": [
+      {
+        "app": "Settings",
+        "cap": 60,
+        "bands": 0,
+        "detailed": false,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "326",
+          "painted": "302",
+          "intervals": "290",
+          "e2e_max_us": "25651",
+          "present_max_us": "25899",
+          "deadline": "250",
+          "floor": "0",
+          "p50_ms": "19",
+          "p95_ms": "20",
+          "p99_ms": "24",
+          "start_us": "181788510",
+          "completed_us": "187708487"
+        },
+        "ui_fps": 55.067781513340336,
+        "painted_per_second": 51.01371170867724,
+        "te_wait_delta": 0
+      },
+      {
+        "app": "Settings",
+        "cap": 60,
+        "bands": 0,
+        "detailed": false,
+        "te": 1,
+        "capture": {
+          "state": "3",
+          "frames": "192",
+          "painted": "168",
+          "intervals": "156",
+          "e2e_max_us": "40479",
+          "present_max_us": "39214",
+          "deadline": "168",
+          "floor": "62",
+          "p50_ms": "34",
+          "p95_ms": "36",
+          "p99_ms": "39",
+          "start_us": "3115788",
+          "completed_us": "9074405"
+        },
+        "ui_fps": 32.22224217465227,
+        "painted_per_second": 28.194461902820738,
+        "te_wait_delta": 169
+      },
+      {
+        "app": "Settings",
+        "cap": 60,
+        "bands": 0,
+        "detailed": true,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "162",
+          "painted": "142",
+          "intervals": "136",
+          "e2e_max_us": "26302",
+          "present_max_us": "26633",
+          "deadline": "116",
+          "floor": "0",
+          "p50_ms": "19",
+          "p95_ms": "24",
+          "p99_ms": "25",
+          "start_us": "3106130",
+          "completed_us": "6107095"
+        },
+        "ui_fps": 53.98263558555332,
+        "painted_per_second": 47.31811267375661,
+        "te_wait_delta": 0,
+        "metrics": {
+          "e2e_us": {
+            "mean": 17946.556338028167,
+            "p95": 23058,
+            "max": 26302
+          },
+          "raster_us": {
+            "mean": 14785.68309859155,
+            "p95": 19782,
+            "max": 22114
+          },
+          "wait_us": {
+            "mean": 10083.521126760563,
+            "p95": 13708,
+            "max": 16777
+          },
+          "record_us": {
+            "mean": 359.5774647887324,
+            "p95": 487,
+            "max": 800
+          },
+          "rotation_us": {
+            "mean": 2216.542253521127,
+            "p95": 2878,
+            "max": 4756
+          },
+          "api_us": {
+            "mean": 12469.429577464789,
+            "p95": 16110,
+            "max": 17658
+          },
+          "pixels": {
+            "mean": 71511.88732394367,
+            "p95": 93140,
+            "max": 156724
+          },
+          "chunks": {
+            "mean": 62.401408450704224,
+            "p95": 74,
+            "max": 85
+          },
+          "intervals": {
+            "count": 136,
+            "p95_us": 23020,
+            "over_16667": 117,
+            "over_33333": 0
+          }
+        }
+      },
+      {
+        "app": "Settings",
+        "cap": 60,
+        "bands": 1,
+        "detailed": true,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "169",
+          "painted": "157",
+          "intervals": "151",
+          "e2e_max_us": "21363",
+          "present_max_us": "21481",
+          "deadline": "103",
+          "floor": "0",
+          "p50_ms": "18",
+          "p95_ms": "20",
+          "p99_ms": "22",
+          "start_us": "8117197",
+          "completed_us": "11089089"
+        },
+        "ui_fps": 56.86613107071186,
+        "painted_per_second": 52.82829927870865,
+        "te_wait_delta": 0,
+        "metrics": {
+          "e2e_us": {
+            "mean": 17097.070063694267,
+            "p95": 19605,
+            "max": 21363
+          },
+          "raster_us": {
+            "mean": 13939.579617834395,
+            "p95": 16162,
+            "max": 18304
+          },
+          "wait_us": {
+            "mean": 8243.821656050955,
+            "p95": 9942,
+            "max": 11696
+          },
+          "record_us": {
+            "mean": 361.02547770700636,
+            "p95": 469,
+            "max": 1318
+          },
+          "rotation_us": {
+            "mean": 2202.8471337579617,
+            "p95": 2709,
+            "max": 2893
+          },
+          "api_us": {
+            "mean": 11764.649681528663,
+            "p95": 13695,
+            "max": 14996
+          },
+          "pixels": {
+            "mean": 70984.66242038217,
+            "p95": 84448,
+            "max": 94420
+          },
+          "chunks": {
+            "mean": 56.63694267515923,
+            "p95": 67,
+            "max": 75
+          },
+          "intervals": {
+            "count": 151,
+            "p95_us": 19523,
+            "over_16667": 126,
+            "over_33333": 0
+          }
+        }
+      },
+      {
+        "app": "Settings",
+        "cap": 0,
+        "bands": 0,
+        "detailed": true,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "199",
+          "painted": "154",
+          "intervals": "148",
+          "e2e_max_us": "25914",
+          "present_max_us": "26182",
+          "deadline": "127",
+          "floor": "0",
+          "p50_ms": "19",
+          "p95_ms": "22",
+          "p99_ms": "26",
+          "start_us": "13160451",
+          "completed_us": "16130735"
+        },
+        "ui_fps": 66.99696056000033,
+        "painted_per_second": 51.84689410170879,
+        "te_wait_delta": 0,
+        "metrics": {
+          "e2e_us": {
+            "mean": 18107.74025974026,
+            "p95": 20825,
+            "max": 25914
+          },
+          "raster_us": {
+            "mean": 15076.454545454546,
+            "p95": 17556,
+            "max": 22066
+          },
+          "wait_us": {
+            "mean": 10274.12987012987,
+            "p95": 12465,
+            "max": 16331
+          },
+          "record_us": {
+            "mean": 344.1623376623377,
+            "p95": 408,
+            "max": 789
+          },
+          "rotation_us": {
+            "mean": 2266.2272727272725,
+            "p95": 2623,
+            "max": 4856
+          },
+          "api_us": {
+            "mean": 12783.266233766233,
+            "p95": 14748,
+            "max": 18049
+          },
+          "pixels": {
+            "mean": 73147.32467532468,
+            "p95": 84024,
+            "max": 160448
+          },
+          "chunks": {
+            "mean": 64.13636363636364,
+            "p95": 75,
+            "max": 77
+          },
+          "intervals": {
+            "count": 148,
+            "p95_us": 21096,
+            "over_16667": 128,
+            "over_33333": 0
+          }
+        }
+      },
+      {
+        "app": "launcher",
+        "cap": 60,
+        "bands": 0,
+        "detailed": true,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "140",
+          "painted": "122",
+          "intervals": "116",
+          "e2e_max_us": "26308",
+          "present_max_us": "26577",
+          "deadline": "114",
+          "floor": "0",
+          "p50_ms": "22",
+          "p95_ms": "27",
+          "p99_ms": "27",
+          "start_us": "150295299",
+          "completed_us": "153257681"
+        },
+        "ui_fps": 47.259266360651665,
+        "painted_per_second": 41.18307497142502,
+        "te_wait_delta": 0,
+        "metrics": {
+          "e2e_us": {
+            "mean": 21405.385245901638,
+            "p95": 25751,
+            "max": 26308
+          },
+          "raster_us": {
+            "mean": 19098.09836065574,
+            "p95": 23401,
+            "max": 23496
+          },
+          "wait_us": {
+            "mean": 15847.459016393443,
+            "p95": 19772,
+            "max": 20049
+          },
+          "record_us": {
+            "mean": 186.91803278688525,
+            "p95": 213,
+            "max": 281
+          },
+          "rotation_us": {
+            "mean": 3877.155737704918,
+            "p95": 5006,
+            "max": 5026
+          },
+          "api_us": {
+            "mean": 15588.180327868853,
+            "p95": 18730,
+            "max": 18878
+          },
+          "pixels": {
+            "mean": 128337.31147540984,
+            "p95": 165236,
+            "max": 165236
+          },
+          "chunks": {
+            "mean": 54.9344262295082,
+            "p95": 59,
+            "max": 59
+          },
+          "intervals": {
+            "count": 116,
+            "p95_us": 26052,
+            "over_16667": 115,
+            "over_33333": 0
+          }
+        }
+      },
+      {
+        "app": "launcher",
+        "cap": 60,
+        "bands": 1,
+        "detailed": true,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "170",
+          "painted": "152",
+          "intervals": "146",
+          "e2e_max_us": "19482",
+          "present_max_us": "19419",
+          "deadline": "92",
+          "floor": "0",
+          "p50_ms": "18",
+          "p95_ms": "19",
+          "p99_ms": "20",
+          "start_us": "155132843",
+          "completed_us": "158096033"
+        },
+        "ui_fps": 57.370603977470225,
+        "painted_per_second": 51.29606943867926,
+        "te_wait_delta": 0,
+        "metrics": {
+          "e2e_us": {
+            "mean": 16570.401315789473,
+            "p95": 18413,
+            "max": 19482
+          },
+          "raster_us": {
+            "mean": 14435.217105263158,
+            "p95": 16266,
+            "max": 17244
+          },
+          "wait_us": {
+            "mean": 9956.342105263158,
+            "p95": 11330,
+            "max": 12224
+          },
+          "record_us": {
+            "mean": 197.07894736842104,
+            "p95": 227,
+            "max": 310
+          },
+          "rotation_us": {
+            "mean": 2377.4144736842104,
+            "p95": 2782,
+            "max": 3114
+          },
+          "api_us": {
+            "mean": 12089.006578947368,
+            "p95": 13519,
+            "max": 14411
+          },
+          "pixels": {
+            "mean": 77755.78947368421,
+            "p95": 91620,
+            "max": 102780
+          },
+          "chunks": {
+            "mean": 55.526315789473685,
+            "p95": 61,
+            "max": 61
+          },
+          "intervals": {
+            "count": 146,
+            "p95_us": 18663,
+            "over_16667": 119,
+            "over_33333": 0
+          }
+        }
+      },
+      {
+        "app": "Settings",
+        "cap": 60,
+        "bands": 0,
+        "detailed": true,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "160",
+          "painted": "148",
+          "intervals": "142",
+          "e2e_max_us": "26063",
+          "present_max_us": "26338",
+          "deadline": "122",
+          "floor": "0",
+          "p50_ms": "19",
+          "p95_ms": "22",
+          "p99_ms": "24",
+          "start_us": "160089326",
+          "completed_us": "163043877"
+        },
+        "ui_fps": 54.15374451143338,
+        "painted_per_second": 50.092213673075875,
+        "te_wait_delta": 0,
+        "metrics": {
+          "e2e_us": {
+            "mean": 18166.89864864865,
+            "p95": 21938,
+            "max": 26063
+          },
+          "raster_us": {
+            "mean": 15084.621621621622,
+            "p95": 18781,
+            "max": 22002
+          },
+          "wait_us": {
+            "mean": 10413.682432432432,
+            "p95": 13863,
+            "max": 16730
+          },
+          "record_us": {
+            "mean": 357.19594594594594,
+            "p95": 477,
+            "max": 1128
+          },
+          "rotation_us": {
+            "mean": 2285.925675675676,
+            "p95": 2816,
+            "max": 4692
+          },
+          "api_us": {
+            "mean": 12830.871621621622,
+            "p95": 16009,
+            "max": 17547
+          },
+          "pixels": {
+            "mean": 73947.02702702703,
+            "p95": 91220,
+            "max": 156724
+          },
+          "chunks": {
+            "mean": 64.31756756756756,
+            "p95": 76,
+            "max": 85
+          },
+          "intervals": {
+            "count": 142,
+            "p95_us": 21258,
+            "over_16667": 126,
+            "over_33333": 0
+          }
+        }
+      },
+      {
+        "app": "Settings",
+        "cap": 60,
+        "bands": 1,
+        "detailed": true,
+        "te": 0,
+        "capture": {
+          "state": "3",
+          "frames": "169",
+          "painted": "157",
+          "intervals": "151",
+          "e2e_max_us": "20770",
+          "present_max_us": "21031",
+          "deadline": "100",
+          "floor": "0",
+          "p50_ms": "18",
+          "p95_ms": "19",
+          "p99_ms": "22",
+          "start_us": "164937743",
+          "completed_us": "167901723"
+        },
+        "ui_fps": 57.017928596009426,
+        "painted_per_second": 52.96931828149988,
+        "te_wait_delta": 0,
+        "metrics": {
+          "e2e_us": {
+            "mean": 17065.133757961783,
+            "p95": 19726,
+            "max": 20770
+          },
+          "raster_us": {
+            "mean": 13932.273885350318,
+            "p95": 16541,
+            "max": 17272
+          },
+          "wait_us": {
+            "mean": 8393.910828025477,
+            "p95": 10228,
+            "max": 11239
+          },
+          "record_us": {
+            "mean": 352.19745222929936,
+            "p95": 429,
+            "max": 1230
+          },
+          "rotation_us": {
+            "mean": 2221.375796178344,
+            "p95": 2684,
+            "max": 3100
+          },
+          "api_us": {
+            "mean": 11807.859872611465,
+            "p95": 14137,
+            "max": 14735
+          },
+          "pixels": {
+            "mean": 71665.9872611465,
+            "p95": 86656,
+            "max": 100148
+          },
+          "chunks": {
+            "mean": 56.75796178343949,
+            "p95": 67,
+            "max": 75
+          },
+          "intervals": {
+            "count": 151,
+            "p95_us": 18888,
+            "over_16667": 123,
+            "over_33333": 0
+          }
+        }
+      }
+    ],
+    "strict_60fps_passed": false,
+    "optical_refresh_measured": false,
+    "warning": "Loop calls include unpainted/idle frames. Whole-window painted rates include settling. Detailed stages overlap and must not be summed. Diagnostic experiments are short, not broad acceptance."
+  },
+  "limits": {
+    "frame_bytes_rgb565": 434312,
+    "ideal_qspi_bytes_per_second": 20000000.0,
+    "ideal_full_rgb565_ms": 21.715600000000002,
+    "minimum_clock_for_60_full_rgb565_hz": 52117440.0,
+    "co5300_min_write_cycle_ns": 20,
+    "no_overclock_trial": true,
+    "rgb332_halves_payload_but_quantizes_color": true
+  },
+  "next_candidates": [
+    {
+      "candidate": "Reduce CASET/RASET repetition by streaming both 8-row DMA chunks within a 16-row C-board window using RAMWR/RAMWRC",
+      "status": "source-supported hypothesis; not implemented or measured"
+    },
+    {
+      "candidate": "Tune conservative damage bands for partial updates",
+      "status": "measured modest benefit; default restored off; no optical qualification"
+    },
+    {
+      "candidate": "Pair C-board byte-swap/copy operations",
+      "status": "profile identifies about 2.2 ms inclusive copy stage; not implemented"
+    },
+    {
+      "candidate": "RGB332 transfer with dithering",
+      "status": "datasheet-supported quality tradeoff; not implemented or measured"
+    }
+  ],
+  "preservation": {
+    "nvs_excluded_from_flash": true,
+    "preference_hash_after_migration": "de84b543",
+    "preference_hash_at_end": "de84b543",
+    "brightness": 52,
+    "fps_cap": 60,
+    "te_enabled_at_end": false,
+    "saved_te_at_end": 0,
+    "diagnostics_restored": {
+      "pipeline_probe": 0,
+      "list_profile": 0,
+      "damage_bands": 0
+    },
+    "returned_home": true,
+    "automatic_sleep_restored": true
+  },
+  "references": [
+    "https://dl.espressif.com/AE/esp-iot-solution/CO5300_Datasheet_V0.00.pdf",
+    "https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/spi_master.html",
+    "https://docs.waveshare.com/ESP32-S3-Touch-AMOLED-1.43C"
+  ],
+  "evidence": [
+    {
+      "path": "build/c143-te-setting-before.json",
+      "sha256": "ab07a760eb62930541e1ea382e66752d5be129374da0a601435e0112fe0a870f"
+    },
+    {
+      "path": "build/c143-te-setting-tests.log",
+      "sha256": "e019238bc1be63e4680d4958968b3998b207e3fe0dac11d7fd210a80c4e861d8"
+    },
+    {
+      "path": "build/c143-te-setting-build.log",
+      "sha256": "3403a7d2773aee33c29d6d8ce89732502d3d6548429ee77db48745eb98cf389c"
+    },
+    {
+      "path": "build/c143-te-setting-b-compat-build.log",
+      "sha256": "5988fd5771201c13c5a4bc5a8429fdd3162559b9f80491f073f88895d6979210"
+    },
+    {
+      "path": "build/c143-te-setting-flash.log",
+      "sha256": "e524b189dacd238253c31f7c58946aa935e4b986cf6977726fe068baa8ec35ad"
+    },
+    {
+      "path": "build/c143-te-setting-flash-wire.jsonl",
+      "sha256": "a7adf50b3a008c617c3067d9ba6f82faf6935f34aeda599244132c94b885b55c"
+    },
+    {
+      "path": "build/c143-te-setting-device.json",
+      "sha256": "2ed8a4053617998388bf0bf6cd6725db9b40cd2f91b9f29b96df8cdf1bdf68dc"
+    },
+    {
+      "path": "build/c143-te-setting-device.log",
+      "sha256": "039fea13be647777c265f39f3c7f0952166190d6f1330fea4d4f4cd353a9234b"
+    },
+    {
+      "path": "build/c143-te-setting-device-wire.jsonl",
+      "sha256": "1c4913706409570e8770d4f49c66e1680c100bef105e6ca8670758472f416934"
+    },
+    {
+      "path": "build/verify_c143_te_setting.py",
+      "sha256": "c2f0e6d7c9b6ab937b97cdf945fb9dfe49c8248d22bea22c3eeb35ce0ffa35e9"
+    },
+    {
+      "path": "build/c143-te-setting-ui/developer.png",
+      "sha256": "e9e66a38f79cd51fad5d3523ea43795c983ec19aa45703af6d7e2c3cb1f76173"
+    },
+    {
+      "path": "build/c143-te-setting-ui/frame_rate.png",
+      "sha256": "0822c97c7909871d4adb0c34b48640f7c9d5da98ef3f7d98f546a3acc991da55"
+    },
+    {
+      "path": "build/c143-te-setting-ui.log",
+      "sha256": "0adeb324c94f2f0e00f27149d5ee42d89fa15b486f85eb4601e1ba1ac7f6e527"
+    },
+    {
+      "path": "build/c143-te-setting-device-attempt1.json",
+      "sha256": "959ff11614540c180b72d10e386e1778604f8775fccbefb92d50c354f073ee44"
+    },
+    {
+      "path": "build/c143-te-setting-device-attempt1.log",
+      "sha256": "db6c85d7b189f358f60d2e8246879cb8e0eaf41981833022fda705551b57b40f"
+    },
+    {
+      "path": "build/c143-te-setting-device-attempt2.json",
+      "sha256": "36d80652129965e3b81786859ab54badf3fff91bf73f4b4121f6938f97ba3d5d"
+    },
+    {
+      "path": "build/c143-te-setting-device-attempt2.log",
+      "sha256": "9dbf6539c4b505490d77ee9b0c026e6ad6ce4d5411ca34bed57671d2bac1d76b"
+    }
+  ]
+}

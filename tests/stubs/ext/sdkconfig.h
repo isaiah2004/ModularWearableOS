@@ -1,0 +1,6 @@
+#ifndef EXT_TEST_SDKCONFIG_H
+#define EXT_TEST_SDKCONFIG_H
+#ifndef CONFIG_WATCH_BOARD_143C
+#define CONFIG_WATCH_BOARD_143C 0
+#endif
+#endif

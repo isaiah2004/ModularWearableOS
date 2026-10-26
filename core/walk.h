@@ -13,6 +13,8 @@ typedef struct {
     uint32_t intervals[7];
     float baseline, filtered, peak, valley;
     int ready, high, candidates, interval_count;
+    float threshold_g;       /* 0 = default .10 g; board applies persisted tuning */
+    int entry_peaks;          /* 0 = default 8 */
 } walk_state;
 
 void walk_init(walk_state *state);

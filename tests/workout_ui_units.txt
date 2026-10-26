@@ -1,0 +1,56 @@
+# Display conversions must leave the authoritative SI workout record intact.
+wait 100
+set step_rate 120
+set gps_motion 5
+set hr_sample 144 0.95 1
+set units_metric 1
+workout start 2
+open workout
+wait 12000
+shot sport_cycle_metric
+workout info metric_live
+set units_metric 0
+wait 200
+shot sport_cycle_imperial
+workout info imperial_live
+workout pause
+workout finish
+wait 300
+shot sport_cycle_imperial_summary
+workout info imperial_summary
+set units_metric 1
+wait 200
+shot sport_cycle_metric_summary
+workout info metric_summary
+tap 154 372
+wait 700
+expect top SESSION DETAILS
+shot sport_metric_details
+set units_metric 0
+wait 100
+shot sport_imperial_details
+pop
+wait 700
+tap 312 372
+wait 500
+tap 233 420
+wait 700
+expect top WORKOUT HISTORY
+shot sport_imperial_history
+set units_metric 1
+wait 100
+shot sport_metric_history
+home
+wait 700
+workout start 1
+open workout
+wait 8000
+shot sport_run_metric
+set units_metric 0
+wait 200
+shot sport_run_imperial
+workout finish
+wait 300
+expect workout save 2
+expect workout history 2
+workout info unit_checks_done

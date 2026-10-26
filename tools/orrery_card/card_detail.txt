@@ -1,0 +1,60 @@
+face 8
+date 2026-10-14
+wait 2500
+mark moon_phase
+card 4
+open! orrery_card
+wait 3000
+shot moon_phase
+expect idle
+mark venus_crescent
+card 2
+wait 2500
+shot venus_crescent
+expect idle
+mark earth_night
+card 3
+wait 3000
+touch 233 214 1
+frames 1
+touch 20 214 1
+wait 400
+shot earth_night
+touch 20 214 0
+wait 4500
+expect idle
+expect nolate
+mark moon_info
+card 3
+wait 2500
+drag 100 300 100 170 600
+wait 700
+drag 100 300 100 170 600
+wait 700
+shot earth_moons
+expect idle
+tap 157 190
+wait 300
+shot moon_info
+wait 3000
+expect idle
+mark partial_page
+drag 100 300 100 270 500
+wait 700
+expect idle
+mark partial_body
+drag 120 320 165 320 500
+wait 700
+expect idle
+expect nolate
+mark flick_page
+flick 100 300 100 250 100
+wait 700
+shot earth_facts
+expect idle
+expect nolate
+mark back
+flick 10 233 220 233 180
+wait 1000
+expect top HOME
+expect idle

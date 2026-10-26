@@ -1,0 +1,73 @@
+time 12:30:00
+open energy
+wait 700
+shot energy
+tap 120 378
+wait 150
+shot food_entry
+tap 316 365
+wait 1200
+tap 233 160
+shot food_graph
+drag 220 235 350 235 400
+wait 300
+shot selected_range
+home
+wait 500
+open battery
+wait 1200
+shot battery
+home
+open report
+wait 400
+tap 233 145
+tap 233 340
+shot quick_report
+home
+open tuning
+wait 400
+shot tuning
+tap 150 210
+tap 233 270
+wait 1500
+tap 233 270
+wait 300
+tap 233 207
+tap 233 207
+tap 233 340
+shot trial_report
+home
+open logs
+wait 1500
+shot logs
+tap 233 65
+wait 1200
+shot raw_sensor_logs
+home
+wait 500
+drag 450 233 210 233 400
+wait 500
+shot home_paging
+home
+wait 500
+drag 233 90 233 410 500
+wait 700
+shot control_page_one
+drag 380 220 90 220 500
+wait 700
+shot control_quick_tools
+tap 233 130
+wait 700
+shot control_report
+home
+wait 500
+drag 233 90 233 410 500
+wait 700
+drag 380 220 90 220 500
+wait 700
+drag 90 220 380 220 500
+wait 700
+shot control_return
+drag 233 320 233 80 500
+wait 700
+shot control_closed

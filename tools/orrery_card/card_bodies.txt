@@ -1,0 +1,281 @@
+face 8
+wait 2500
+open! orrery_card
+mark sun
+card 0
+wait 3000
+shot sun_photo
+expect idle
+tap 233 214
+wait 500
+shot sun_heat
+expect idle
+tap 233 214
+wait 500
+shot sun_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot sun_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot sun_page2
+expect idle
+expect nolate
+mark mercury
+card 1
+wait 3000
+shot mercury_photo
+expect idle
+tap 233 214
+wait 500
+shot mercury_heat
+expect idle
+tap 233 214
+wait 500
+shot mercury_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot mercury_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot mercury_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot mercury_page3
+expect idle
+expect nolate
+mark venus
+card 2
+wait 3000
+shot venus_photo
+expect idle
+tap 233 214
+wait 500
+shot venus_heat
+expect idle
+tap 233 214
+wait 500
+shot venus_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot venus_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot venus_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot venus_page3
+expect idle
+expect nolate
+mark earth
+card 3
+wait 3000
+shot earth_photo
+expect idle
+tap 233 214
+wait 500
+shot earth_heat
+expect idle
+tap 233 214
+wait 500
+shot earth_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot earth_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot earth_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot earth_page3
+expect idle
+expect nolate
+mark moon
+card 4
+wait 3000
+shot moon_photo
+expect idle
+tap 233 214
+wait 500
+shot moon_heat
+expect idle
+tap 233 214
+wait 500
+shot moon_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot moon_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot moon_page2
+expect idle
+expect nolate
+mark mars
+card 5
+wait 3000
+shot mars_photo
+expect idle
+tap 233 214
+wait 500
+shot mars_heat
+expect idle
+tap 233 214
+wait 500
+shot mars_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot mars_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot mars_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot mars_page3
+expect idle
+expect nolate
+mark jupiter
+card 6
+wait 3000
+shot jupiter_photo
+expect idle
+tap 233 214
+wait 500
+shot jupiter_heat
+expect idle
+tap 233 214
+wait 500
+shot jupiter_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot jupiter_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot jupiter_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot jupiter_page3
+expect idle
+expect nolate
+mark saturn
+card 7
+wait 3000
+shot saturn_photo
+expect idle
+tap 233 214
+wait 500
+shot saturn_heat
+expect idle
+tap 233 214
+wait 500
+shot saturn_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot saturn_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot saturn_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot saturn_page3
+expect idle
+expect nolate
+mark uranus
+card 8
+wait 3000
+shot uranus_photo
+expect idle
+tap 233 214
+wait 500
+shot uranus_heat
+expect idle
+tap 233 214
+wait 500
+shot uranus_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot uranus_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot uranus_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot uranus_page3
+expect idle
+expect nolate
+mark neptune
+card 9
+wait 3000
+shot neptune_photo
+expect idle
+tap 233 214
+wait 500
+shot neptune_heat
+expect idle
+tap 233 214
+wait 500
+shot neptune_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot neptune_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot neptune_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot neptune_page3
+expect idle
+expect nolate
+mark pluto
+card 10
+wait 3000
+shot pluto_photo
+expect idle
+tap 233 214
+wait 500
+shot pluto_heat
+expect idle
+tap 233 214
+wait 500
+shot pluto_dot
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot pluto_page1
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot pluto_page2
+expect idle
+drag 100 300 100 160 500
+wait 700
+shot pluto_page3
+expect idle
+expect nolate

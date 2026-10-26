@@ -32,20 +32,65 @@ int main(void)
     }
     int x, y;
     uint8_t touch[5] = {1, 0x81, 0xd1, 0x01, 0xd1};
-    assert(board_touch_decode(touch, &x, &y) && x == 465 && y == 465);
-    touch[2] = 0xd2; assert(!board_touch_decode(touch, &x, &y));
-    touch[2] = 0xd1; touch[1] = 0x41; assert(!board_touch_decode(touch, &x, &y));
-    touch[1] = 0x81; touch[0] = 0; assert(!board_touch_decode(touch, &x, &y));
+    assert(board_touch_decode(touch, &x, &y)==1 && x == 465 && y == 465);
+    touch[2] = 0xd2; assert(board_touch_decode(touch, &x, &y)==-1 && x==465 && y==465);
+    touch[2] = 0xd1; touch[1] = 0x41; assert(board_touch_decode(touch, &x, &y)==0);
+    touch[1] = 0x81; touch[0] = 0; assert(board_touch_decode(touch, &x, &y)==0);
+    touch[0]=1; touch[1]=0xc1; assert(board_touch_decode(touch,&x,&y)==-1);
+    touch[0]=2; touch[1]=0x81; assert(board_touch_decode(touch,&x,&y)==-1);
+    touch[0]=0; touch[1]=0xff; assert(board_touch_decode(touch,&x,&y)==0);
+    assert(board_touch_decode(NULL,&x,&y)==-1);
     uint8_t imu[12] = {0x00,0x10, 0x00,0xf0, 0x00,0x20, 0x40,0, 0xc0,0xff, 0,0x80};
     hal_imu m; board_imu_decode(imu, &m);
     assert(m.ax == 1 && m.ay == -1 && m.az == 2);
     assert(m.gx == 1 && m.gy == -1 && m.gz == -512);
+    {   /* QMI8658 FIFO: word count -> whole 6-axis samples, overflow flag, batch timestamps */
+        uint8_t st[2] = {12, 0}; int ov = 9;
+        assert(board_fifo_samples(st, &ov) == 2 && !ov);
+        st[0] = 11; assert(board_fifo_samples(st, &ov) == 1);      /* a partial sample is not counted */
+        st[0] = 0; st[1] = 0x23; assert(board_fifo_samples(st, &ov) == 128 && ov);
+        st[0] = 0xff; st[1] = 0x03; assert(board_fifo_samples(st, NULL) == 128); /* clamped */
+        st[0] = 0; st[1] = 0; assert(board_fifo_samples(st, &ov) == 0 && !ov);
+        assert(board_fifo_samples(NULL, &ov) == 0 && !ov);
+        board_fifo_clock c = {0}; int64_t t[16]; const int64_t P = 8921;
+        board_fifo_stamp(&c, 1000000, 3, P, t);
+        assert(t[2] == 1000000 && t[1] == 1000000 - P && t[0] == 1000000 - 2 * P && c.last_us == 1000000);
+        board_fifo_stamp(&c, 1000000 + 5 * P, 5, P, t);      /* exactly on time */
+        assert(t[4] == 1000000 + 5 * P && t[0] == 1000000 + P);
+        int64_t last = c.last_us;
+        board_fifo_stamp(&c, last + 4 * P + 3000, 4, P, t);  /* 3 ms late: a quarter is absorbed */
+        assert(c.last_us == last + 4 * P + 750 && t[0] > last);
+        last = c.last_us;
+        board_fifo_stamp(&c, last + 400 * P, 4, P, t);       /* a long stall re-anchors on the host clock */
+        assert(c.last_us == last + 400 * P && t[3] == c.last_us);
+        board_fifo_stamp(&c, c.last_us + 9 * P, 0, P, t);    /* an empty batch changes nothing */
+        assert(c.last_us == last + 400 * P);
+        /* 20 Hz reads of a 112 Hz stream with scheduling jitter: always strictly increasing and
+         * never far from the host clock. */
+        board_fifo_clock j = {0}; int64_t prev = 0, now = 5000000; unsigned seed = 7;
+        for (int i = 0; i < 5000; i++) {
+            seed = seed * 1103515245u + 12345u;
+            unsigned n = 3 + (seed >> 16) % 6;
+            now += (int64_t)n * P + (int64_t)((seed >> 8) % 2001) - 1000;
+            board_fifo_stamp(&j, now, n, P, t);
+            for (unsigned k = 0; k < n; k++) { assert(t[k] > prev); prev = t[k]; }
+            assert(t[n - 1] - now < 3 * P && now - t[n - 1] < 3 * P);
+        }
+    }
     const uint16_t pixels[] = {0x1234,2,3,4,5,0xabcd};
     const uint16_t rotated[] = {3,0xabcd,2,5,0x1234,4};
     uint16_t actual[8] = {0xbeef,0,0,0,0,0,0,0xcafe};
     board_pixels_ccw(pixels, actual + 1, 3, 2);
     assert(!memcmp(actual + 1, rotated, sizeof rotated));
     assert(actual[0] == 0xbeef && actual[7] == 0xcafe);
+#if CONFIG_WATCH_BOARD_143C
+    /* 1.43C: the panel is upright (36h C0) and the CST820 reads 180 degrees off. */
+    for (int uy = 0; uy < 466; uy++) for (int ux = 0; ux < 466; ux++) {
+        x = 465 - ux; y = 465 - uy;
+        board_native_to_ui(&x, &y);
+        assert(x == ux && y == uy);
+    }
+#else
     /* All screen pixels must return to their UI position after the display's
      * CCW mapping and the touch inverse, including each extreme corner. */
     for (int uy = 0; uy < 466; uy++) for (int ux = 0; ux < 466; ux++) {
@@ -53,11 +98,91 @@ int main(void)
         board_native_to_ui(&x, &y);
         assert(x == ux && y == uy);
     }
+#endif
     board_pixels_ccw(pixels, actual + 1, 1, 6);
     assert(!memcmp(actual + 1, pixels, sizeof pixels));
     board_pixels_ccw(pixels, actual + 1, 6, 1);
     for (int i = 0; i < 6; i++) assert(actual[1 + i] == pixels[5 - i]);
     x = 0; y = 0;
+    {   /* fused path: a 2x2 window of a stride-4 buffer, byte-swapped */
+        const uint16_t big[] = {0x0102,0x0304,0x0506,0x0708, 0x090a,0x0b0c,0x0d0e,0x0f10};
+        const uint16_t want[] = {0x0807,0x100f,0x0605,0x0e0d};   /* cols 3,2 of rows 0,1 */
+        uint16_t got[4];
+        board_pixels_ccw_swap(big + 2, 4, got, 2, 2, 1);
+        assert(!memcmp(got, want, sizeof want));
+    }
+    {   /* 1.43C pack path: same window, unrotated */
+        const uint16_t big[] = {0x0102,0x0304,0x0506,0x0708, 0x090a,0x0b0c,0x0d0e,0x0f10};
+        const uint16_t want[] = {0x0605,0x0807,0x0e0d,0x100f};
+        uint16_t got[4];
+        board_pixels_pack_swap(big + 2, 4, got, 2, 2, 1);
+        assert(!memcmp(got, want, sizeof want));
+        board_pixels_pack_swap(big + 2, 4, got, 2, 2, 0);
+        assert(got[0] == 0x0506 && got[1] == 0x0708 && got[2] == 0x0d0e && got[3] == 0x0f10);
+    }
+    {   /* fast display: 565 wire order -> RGB332 / luma, in place */
+        const uint16_t px565[6] = {0xFFFF, 0x0000, 0x00F8, 0xE007, 0x1F00, 0x10A5};  /* white black red green blue grey */
+        uint16_t buf[6];
+        memcpy(buf, px565, sizeof buf);
+        board_pixels_to8((uint8_t *)buf, buf, 6, 1, 0, 0, 1);
+        const uint8_t *o = (const uint8_t *)buf;
+        assert(o[0] == 0xFF && o[1] == 0x00 && o[2] == 0xE0 && o[3] == 0x1C && o[4] == 0x03);
+        memcpy(buf, px565, sizeof buf);
+        board_pixels_to8((uint8_t *)buf, buf, 6, 1, 0, 0, 2);
+        assert(o[0] == 255 && o[1] == 0 && o[2] == 76 && o[3] == 149 && o[4] == 28);
+        /* mid grey dithers: a 4x4 tile averages to the true level, not one flat step */
+        uint16_t tile[16]; uint8_t t8[16]; int sum = 0;
+        for (int i = 0; i < 16; i++) tile[i] = 0x10A5;   /* wire order of 0xA510: r=20 g=40 b=16 */
+        board_pixels_to8(t8, tile, 4, 4, 0, 0, 1);
+        for (int i = 0; i < 16; i++) sum += t8[i] >> 5;
+        assert(sum >= 16 * 20 * 7 / 31 - 1 && sum <= 16 * 20 * 7 / 31 + 2);   /* ~4.5 avg red */
+        assert(t8[0] != t8[5] || t8[1] != t8[2]);    /* not a flat colour */
+        /* every RGB332 level (as GFX_RGB 565) converts to exactly that level at all
+         * 16 dither positions: Flat60 palette colours never speckle */
+        {
+            static const int L8[8] = {0, 36, 73, 109, 146, 182, 219, 255}, B8[4] = {0, 85, 170, 255};
+            for (int r = 0; r < 8; r++) for (int g = 0; g < 8; g++) for (int b = 0; b < 4; b++) {
+                uint16_t c = (uint16_t)(((L8[r] & 0xF8) << 8) | ((L8[g] & 0xFC) << 3) | (B8[b] >> 3));
+                uint16_t w16[16]; uint8_t o8[16];
+                for (int i = 0; i < 16; i++) w16[i] = (uint16_t)((c << 8) | (c >> 8));
+                board_pixels_to8(o8, w16, 4, 4, 0, 0, 1);
+                for (int i = 0; i < 16; i++) assert(o8[i] == (uint8_t)(r << 5 | g << 2 | b));
+            }
+        }
+        /* mode 3 (no dither) truncates to RGB332 and is exact for RGB332 levels */
+        {
+            uint16_t c = 0xF81F, wv = (uint16_t)((c << 8) | (c >> 8)); uint8_t o;
+            board_pixels_to8(&o, &wv, 1, 1, 0, 0, 3);
+            assert(o == 0xE3);                          /* magenta */
+            c = (uint16_t)(((146 & 0xF8) << 8) | ((73 & 0xFC) << 3) | (255 >> 3));   /* F60_PURPLE */
+            wv = (uint16_t)((c << 8) | (c >> 8));
+            board_pixels_to8(&o, &wv, 1, 1, 0, 0, 3);
+            assert(o == (4 << 5 | 2 << 2 | 3));
+        }
+        /* fused pack+narrow == pack_swap then to8, for both modes, odd window offsets
+         * and widths (unrolled body + tail), native and wire-order sources */
+        uint16_t src[7 * 9], wire[7 * 9], packed[5 * 6];
+        uint8_t a8[5 * 6], b8[5 * 6];
+        for (int i = 0; i < 7 * 9; i++) { src[i] = (uint16_t)(i * 2654435761u >> 7); wire[i] = (uint16_t)((src[i] << 8) | (src[i] >> 8)); }
+        for (int mode = 1; mode <= 3; mode++)
+            for (int sw = 0; sw <= 1; sw++)
+                for (int w = 1; w <= 6; w++) {
+                    board_pixels_pack_swap(src + 10, 7, packed, w, 5, 1);
+                    board_pixels_to8(a8, packed, w, 5, 3, 1, mode);
+                    board_pixels_pack_to8((sw ? src : wire) + 10, 7, b8, w, 5, 3, 1, mode, sw);
+                    assert(!memcmp(a8, b8, (size_t)w * 5));
+                }
+    }
+#if CONFIG_WATCH_BOARD_143C
+    board_pointer_update(&x, &y, 120, 365, 1);
+    assert(x == 345 && y == 100);
+    board_pointer_update(&x, &y, 0, 0, 0);
+    assert(x == 345 && y == 100); /* release cannot turn a tap into a swipe */
+    board_pointer_update(&x, &y, 4095, 4095, 0);
+    assert(x == 345 && y == 100); /* failed reads retain the last valid point */
+    board_pointer_update(&x,&y,4095,4095,-1); assert(x==345 && y==100);
+    puts("PASS (1.43C): RTC, touch press/release, QMI8658, pixels and 180-degree touch");
+#else
     board_pointer_update(&x, &y, 120, 365, 1);
     assert(x == 100 && y == 120);
     board_pointer_update(&x, &y, 0, 0, 0);
@@ -66,6 +191,8 @@ int main(void)
     assert(x == 120 && y == 130);
     board_pointer_update(&x, &y, 4095, 4095, 0);
     assert(x == 120 && y == 130); /* failed reads retain the last valid point */
+    board_pointer_update(&x,&y,4095,4095,-1); assert(x==120 && y==130);
     puts("PASS: RTC, FT3168 press/release, QMI8658, CCW pixels and touch inverse");
+#endif
     return 0;
 }

@@ -1,0 +1,101 @@
+# Reproducible ORRERY ring-sector review; all touches use real input.
+face 8
+ringstyle 5
+date 2026-10-11
+time 10:08:15
+wait 2500
+hold 300 300 1700
+wait 700
+mark open
+tap 380 75
+wait 1200
+shot style5_now
+mark open_rest
+expect idle 1000
+mark drag
+touch 403 135 1
+frames 2
+touch 395 123 1
+frames 1
+touch 387 112 1
+frames 1
+touch 379 102 1
+frames 1
+touch 369 92 1
+frames 1
+touch 359 83 1
+frames 1
+touch 348 74 1
+frames 1
+touch 337 67 1
+frames 1
+touch 325 60 1
+frames 1
+touch 313 54 1
+frames 1
+touch 300 49 1
+frames 1
+touch 287 45 1
+frames 1
+touch 274 41 1
+frames 1
+touch 260 39 1
+frames 1
+touch 247 37 1
+frames 1
+touch 233 37 1
+frames 1
+shot style5_drag
+touch 219 37 1
+frames 1
+touch 206 39 1
+frames 1
+touch 192 41 1
+frames 1
+touch 179 45 1
+frames 1
+touch 166 49 1
+frames 1
+touch 153 54 1
+frames 1
+touch 141 60 1
+frames 1
+touch 129 67 1
+frames 1
+touch 118 74 1
+frames 1
+touch 107 83 1
+frames 1
+touch 97 92 1
+frames 1
+touch 87 102 1
+frames 1
+touch 79 112 1
+frames 1
+touch 71 123 1
+frames 1
+touch 63 135 1
+frames 1
+touch 63 135 1
+frames 3
+touch 63 135 0
+mark coast
+wait 5000
+mark travelled_rest
+expect idle 1000
+shot style5_travelled
+mark return_now
+tap 290 392
+wait 1200
+shot style5_returned
+mark returned_rest
+expect idle 1000
+mark tilt
+hold 300 300 950
+wait 2200
+shot style5_tilt
+mark idle
+wait 700
+expect idle
+expect nolate
+

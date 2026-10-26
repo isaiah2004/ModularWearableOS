@@ -1,0 +1,14 @@
+# Overlay for the Waveshare ESP32-S3-Touch-AMOLED-1.43C. Applied after
+# sdkconfig.defaults into a separate sdkconfig.c143 / build_c143 (see
+# tools/build_c143.ps1), so the default 1.43-B build is untouched.
+CONFIG_WATCH_BOARD_143C=y
+# ESP32-S3-PICO-1-N8R8: 8 MB QIO flash (demo sdkconfig), 8 MB octal PSRAM.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_c143.csv"
+# Match the recovered runtime's Wi-Fi memory budget. The old C sdkconfig used
+# sixteen static TX buffers and IRAM Wi-Fi copies, exhausting internal RAM
+# before the driver could start alongside BLE and the native display pipeline.
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=3
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024

@@ -1,0 +1,45 @@
+skipboot
+set imu 0 0 -1
+open! imu
+wait 5000
+mark rest
+expect idle 2000
+expect nolate
+shot rest
+mark live
+set imu off
+wait 5000
+shot live
+expect nolate
+mark record
+film record_contact 12 4 2
+tap 233 416
+wait 500
+shot ready
+tap 339 218
+tap 233 342
+wait 3500
+shot recording
+expect imu state 2
+expect nolate
+mark saved
+tap 233 342
+wait 500
+shot saved
+tap 339 416
+wait 600
+shot files
+expect imu state 0
+expect imu file 1
+expect nolate
+mark delete
+tap 233 338
+wait 200
+shot delete_confirm
+tap 233 338
+wait 600
+shot empty
+expect imu file 0
+expect nolate
+mem
+quit

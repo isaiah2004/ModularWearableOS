@@ -1,0 +1,40 @@
+# DefaultOFF, cold/pending tail toggles, full paint, pager legacy-smear retirement, noop setters.
+expect damage_bands 0
+root settings
+wait 50
+flick 233 370 233 100 150
+wait 25
+mark toggle_on
+set damage_bands 1
+expect damage_bands 1
+wait 100
+set full 1
+wait 25
+set full 0
+wait 1000
+root home
+wait 800
+press
+wait 800
+flick 233 370 233 100 150
+wait 25
+mark toggle_off
+set damage_bands 0
+expect damage_bands 0
+wait 25
+mark toggle_on_again
+set damage_bands 1
+expect damage_bands 1
+wait 800
+root settings
+wait 5000
+mark noop_on
+set damage_bands 1
+wait 100
+mark stable_off
+set damage_bands 0
+wait 100
+mark noop_off
+set damage_bands 0
+wait 100
+expect memfailures 0

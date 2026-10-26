@@ -1,0 +1,30 @@
+skipboot
+imu start 25
+imu background 0
+imu background 10000
+expect imu samples 250
+imu stop
+imu background 0
+expect imu state 0
+expect imu dropped 0
+imu start 50
+imu background 0
+imu background 10000
+expect imu samples 500
+imu stop
+imu background 0
+expect imu state 0
+expect imu dropped 0
+imu start 100
+imu background 0
+imu background 10000
+expect imu samples 1000
+imu stop
+imu background 0
+expect imu state 0
+expect imu dropped 0
+imu files
+imu background 0
+expect imu file 1
+imu status
+quit

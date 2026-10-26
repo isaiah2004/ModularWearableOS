@@ -1,0 +1,29 @@
+skipboot
+imu files
+imu background 0
+expect imu file 1
+expect imu id 9999
+expect imu duration 200
+imu browse 9999 -1
+imu background 0
+expect imu id 7
+imu browse 7 1
+imu background 0
+expect imu id 9999
+imu delete 9999
+imu background 0
+expect imu id 7
+imu delete 7
+imu background 0
+expect imu id 0
+imu start 25
+imu background 0
+imu background 1000
+imu stop
+imu background 0
+expect imu state 0
+imu files
+imu background 0
+expect imu id 1
+expect imu duration 1000
+quit

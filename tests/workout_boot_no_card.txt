@@ -1,0 +1,21 @@
+# Refuse to overwrite unread SD history; loading becomes available on retry.
+set sd 0
+present 0
+set step_rate 0
+wait 100
+expect workout storage_ready 0
+expect workout storage_available 0
+workout start 5 0
+expect workout state 0
+workout info card_absent
+set sd 1
+workout retry
+wait 300
+expect workout storage_ready 1
+workout start 5
+wait 5000
+workout finish
+wait 300
+expect workout save 2
+expect workout history 1
+workout info card_restored

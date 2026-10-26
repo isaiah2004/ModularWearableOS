@@ -1,0 +1,24 @@
+# Firmware inj_poll chord, four drags, measured 48 ms cadence. No device I/O.
+face 8
+date 2026-10-11
+time 10:08:15
+wait 2500
+hold 300 300 1700
+wait 700
+tap 380 75
+wait 1200
+set orrprof 1
+mark scrub1
+board_swipe 368 88 297 46 1200 48
+mark scrub2
+board_swipe 297 46 368 88 1200 48
+mark scrub3
+board_swipe 368 88 297 46 1200 48
+mark scrub4
+board_swipe 297 46 368 88 1200 48
+mark settle
+wait 6000
+shot scrub_settled
+mark settled
+expect idle 1000
+expect nolate

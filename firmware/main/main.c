@@ -7,8 +7,9 @@
  *
  * Rendering is banded: the OS draws horizontal stripes straight into two
  * small internal-SRAM buffers, and each stripe is byte-swapped, rotated
- * counterclockwise, and DMA'd while the next renders. Tall single-region
- * updates first compose into PSRAM, then present the completed image. */
+ * counterclockwise (1.43-B; the 1.43C panel is upright, so only packed), and
+ * DMA'd while the next renders. Tall single-region updates first compose
+ * into PSRAM, then present the completed image. */
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -29,6 +30,8 @@
 #include "esp_log.h"
 
 #include "../../core/wos.h"
+#include "../../core/flat60.h"
+#include "esp_wifi.h"
 #include "../../core/apps/apps.h"
 #include "../../core/settings.h"
 #include "../../core/notif.h"
@@ -40,14 +43,27 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "display_perf.h"
+#include "gfx_bench.h"
 #include "lcd_probe.h"
 #include "display_bench.h"
+#include "ota.h"
 
 #define TAG "main"
 
 #define STRIPE_ROWS    16   /* Two render buffers + one rotated DMA buffer: 44 KiB. */
+#if CONFIG_WATCH_BOARD_143C
+/* Demo set_gap(8, 0), paired with MADCTL C0 (6 is the unmirrored value). Adjust
+ * live with `gap N` (saved to NVS) and check with the `border` pattern. */
+#define PANEL_GAP_DEFAULT 8
+static int s_gap_x = PANEL_GAP_DEFAULT;
+#define PANEL_GAP_X     s_gap_x
+#define PANEL_INIT_NAME "CO5300-1.43C"
+#define TE_ROUTED_JSON  "true"
+#else
 #define PANEL_GAP_X     (LCD_USE_SH8601 ? 0 : 6)
 #define PANEL_INIT_NAME (LCD_USE_SH8601 ? "SH8601" : "CO5300")
+#define TE_ROUTED_JSON  "false"
+#endif
 
 void hal_esp32_init_periph(void);
 void hal_esp32_start_radios(void);
@@ -55,8 +71,8 @@ void hal_esp32_start_radios(void);
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_stripe[2];             /* render targets, internal DMA RAM */
-static uint16_t *s_rotated;
-static SemaphoreHandle_t s_dma_ready;    /* rotated buffer reusable after DMA */
+static uint16_t *s_rotated, *s_rotated2;
+static SemaphoreHandle_t s_dma_ready;    /* counts free rotated buffers; the ISR returns one per DMA */
 static SemaphoreHandle_t s_frame_tick;
 static esp_timer_handle_t s_frame_timer;
 static void frame_tick(void *arg)
@@ -65,7 +81,8 @@ static void frame_tick(void *arg)
     xSemaphoreGive(s_frame_tick);
 }
 static SemaphoreHandle_t s_buf_free;      /* counts free stripe buffers */
-typedef struct { uint16_t *buf; int x0, y0, w, rows; int atomic; } flush_job;
+typedef struct { uint16_t *buf; int x0, y0, w, rows; int atomic; int stride; int flat; } flush_job;
+static volatile int s_flat;               /* current frame is Flat60 content (wos_frame_flat) */
 static QueueHandle_t s_flush_q;           /* render core (0) -> flush core (1) */
 
 /* Compose large redraws in PSRAM before a burst transfer. The B board has no
@@ -73,6 +90,7 @@ static QueueHandle_t s_flush_q;           /* render core (0) -> flush core (1) *
 static uint16_t *s_backbuf;               /* PSRAM full-frame, byte-swapped */
 static volatile int s_atomic;             /* current frame accumulates into backbuf */
 static int s_bx0, s_by0, s_bx1, s_by1;    /* the atomic band's bounds (may be narrow) */
+#if !CONFIG_WATCH_BOARD_143C
 /* Init tables from Waveshare Demo V3, 09_FactoryProgram. */
 static const sh8601_lcd_init_cmd_t sh8601_init[] = {
     {0x11, (uint8_t[]){0x00}, 0, 120},
@@ -90,6 +108,25 @@ static const sh8601_lcd_init_cmd_t co5300_init[] = {
     {0x51, (uint8_t[]){0x00}, 1, 1},
     {0x29, (uint8_t[]){0x00}, 0, 10},
 };
+#else
+/* Official 1.43C demo table (port_bsp lcd_init_cmds), except 51h starts at 00
+ * like the B profile so power-on RAM noise stays dark until settings apply
+ * brightness. 35h 00 enables TE (GPIO8); 36h C0 = MY|MX gives an upright image. */
+static const sh8601_lcd_init_cmd_t c143_init[] = {
+    {0xFE, (uint8_t[]){0x00}, 1, 0},
+    {0xC4, (uint8_t[]){0x80}, 1, 0},
+    {0x3A, (uint8_t[]){0x55}, 1, 0},
+    {0x35, (uint8_t[]){0x00}, 1, 0},
+    {0x53, (uint8_t[]){0x20}, 1, 0},
+    {0x51, (uint8_t[]){0x00}, 1, 0},
+    {0x36, (uint8_t[]){0xC0}, 1, 0},
+    {0x63, (uint8_t[]){0xFF}, 1, 0},
+    {0x2A, (uint8_t[]){0x00, 0x06, 0x01, 0xD7}, 4, 0},
+    {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xD1}, 4, 0},
+    {0x11, (uint8_t[]){0x00}, 0, 100},
+    {0x29, (uint8_t[]){0x00}, 0, 0},
+};
+#endif
 static uint8_t s_panel_id;
 static volatile int s_panel_brightness=-1; /* Last successful DCS write; not optical readback. */
 static SemaphoreHandle_t s_sleep_ready;
@@ -101,6 +138,7 @@ static size_t s_bench_capacity = GFX_W*STRIPE_ROWS*2;
 static int s_trace_restore_awake, s_trace_restore_face, s_trace_running;
 static TaskHandle_t s_flush_handle;
 static display_bench_result s_bench_result;
+static int s_border_shown;              /* 1.43C `border` gap pattern is on screen */
 
 static bool on_stripe_done(esp_lcd_panel_io_handle_t io,
                            esp_lcd_panel_io_event_data_t *edata, void *ctx)
@@ -109,6 +147,162 @@ static bool on_stripe_done(esp_lcd_panel_io_handle_t io,
     display_perf_complete_isr(0, esp_timer_get_time());
     xSemaphoreGiveFromISR(s_dma_ready, &woken);
     return woken == pdTRUE;
+}
+
+#if CONFIG_WATCH_BOARD_143C
+/* `border` gap check, run on the flush task (the LCD owner). Paint all 480 RAM
+ * columns magenta with no gap, then draw the 466x466 window at the current gap:
+ * black, a 1-px white frame, and red/green/blue/white on the outermost four
+ * columns/rows at each edge midpoint. Correct gap: no magenta sliver at the
+ * left/right edges and red is the outermost visible line on both sides. */
+static uint16_t border_px(int x, int y)
+{
+    static const uint16_t ramp[4] = {0xF800, 0x07E0, 0x001F, 0xFFFF};
+    int mx = x < GFX_W / 2 ? x : GFX_W - 1 - x, my = y < GFX_H / 2 ? y : GFX_H - 1 - y;
+    if (mx < 4 && y >= 193 && y < 273) return ramp[mx];
+    if (my < 4 && x >= 193 && x < 273) return ramp[my];
+    return mx == 0 || my == 0 ? 0xFFFF : 0x0000;
+}
+static void border_paint(int width, int magenta)
+{
+    int chunk = (GFX_W * STRIPE_ROWS) / width;
+    for (int y = 0; y < GFX_H; y += chunk) {
+        int rows = GFX_H - y < chunk ? GFX_H - y : chunk;
+        for (int r = 0; r < rows; r++)
+            for (int x = 0; x < width; x++) {
+                uint16_t v = magenta ? 0xF81F : border_px(x, y + r);
+                s_rotated[r * width + x] = (uint16_t)((v << 8) | (v >> 8));
+            }
+        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, y, width, y + rows, s_rotated));
+        xSemaphoreTake(s_dma_ready, portMAX_DELAY);  /* ISR returns the credit */
+    }
+}
+static void border_pattern(void)
+{
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);       /* own both DMA buffers */
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 0));
+    border_paint(480, 1);
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, PANEL_GAP_X, 0));
+    border_paint(GFX_W, 0);
+    xSemaphoreGive(s_dma_ready);
+    xSemaphoreGive(s_dma_ready);
+}
+#endif
+
+/* `pxfmt N` interface pixel-format probe, run on the flush task. Switches the
+ * CO5300 COLMOD (3Ah) / COLOPT (80h) to a smaller wire format, paints a test
+ * card straight to panel RAM and times the full-screen bus transfer:
+ *   1 RGB332 (8bpp)   2 GRAY256 (8bpp)   3 RGB111 (2px/byte)   4 RGB 4-bit palette
+ *   5 RGB565 reference.  Top half: white yellow cyan green magenta red blue black
+ * bars. Bottom: 1/2/5 left->right gradient, 3 the same 8 bars reversed, 4 the
+ * custom palette entries 78h-7Fh (grey orange purple pink teal brown olive navy).
+ * The datasheet (V0.01) marks the 8-bit modes "SPI3/SPI4" in the COLMOD table but
+ * draws QSPI timing for them, and its COLOPT bit table disagrees with its default;
+ * only the panel can say. `resume` restores RGB565 and redraws the UI. */
+static int s_fmt_shown;
+static void fmt_cmd(uint8_t cmd, const uint8_t *p, int n)
+{
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(s_io, (0x02ULL << 24) | (cmd << 8), p, n));
+}
+static uint8_t fmt_px(int mode, int x, int y)
+{
+    static const uint8_t bar332[8] = {0xFF, 0xFC, 0x1F, 0x1C, 0xE3, 0xE0, 0x03, 0x00};
+    static const uint8_t bar111[8] = {7, 6, 3, 2, 5, 4, 1, 0};   /* palette 70h-77h indices */
+    int bar = x * 8 / GFX_W, v = x * 255 / (GFX_W - 1);
+    int top = y < GFX_H / 2;
+    switch (mode) {
+    case 1: return top ? bar332[bar] : (uint8_t)((v >> 5) << 5 | (v >> 5) << 2 | v >> 6);
+    case 2: return top ? (uint8_t)(255 - bar * 36) : (uint8_t)v;
+    case 3: return top ? bar111[bar] : bar111[7 - bar];
+    default: return top ? bar111[bar] : (uint8_t)(8 + bar);
+    }
+}
+static void fmt_probe(int mode)
+{
+    static const uint8_t pal[16][3] = {
+        {0,0,0}, {0,0,255}, {0,255,0}, {0,255,255}, {255,0,0}, {255,0,255}, {255,255,0}, {255,255,255},
+        {128,128,128}, {255,128,0}, {128,0,255}, {255,128,192}, {0,160,160}, {128,64,0}, {128,128,0}, {0,0,128},
+    };
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);       /* own both DMA buffers */
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+    uint8_t colmod = mode == 1 ? 0x22 : mode == 2 ? 0x11 : mode == 5 ? 0x55 : 0x33;
+    uint8_t colopt = mode == 3 ? 0x03 : 0x07;          /* D2 = RGB4bit_en per the bit table */
+    for (int i = 0; i < 16; i++) fmt_cmd(0x70 + i, pal[i], 3);
+    fmt_cmd(0x80, &colopt, 1);
+    fmt_cmd(0x3A, &colmod, 1);
+    int x0 = PANEL_GAP_X, x1 = PANEL_GAP_X + GFX_W - 1;
+    uint8_t ca[4] = { x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF };
+    fmt_cmd(0x2A, ca, 4);
+    /* bytes per row on the wire: 16bpp 2/px, 8bpp 1/px, 3/4-bit 2px per byte */
+    int row_bytes = mode == 5 ? GFX_W * 2 : mode <= 2 ? GFX_W : GFX_W / 2;
+    int chunk = (int)((GFX_W * STRIPE_ROWS * 2) / row_bytes);
+    uint8_t *buf = (uint8_t *)s_rotated;
+    int64_t bus_us = 0;
+    for (int y = 0; y < GFX_H; y += chunk) {
+        int rows = GFX_H - y < chunk ? GFX_H - y : chunk;
+        for (int r = 0; r < rows; r++) {
+            uint8_t *o = &buf[r * row_bytes];
+            for (int x = 0; x < GFX_W; x++) {
+                if (mode == 5) {                        /* RGB565 test card, big-endian */
+                    uint8_t c = fmt_px(1, x, y + r);
+                    uint16_t v = (uint16_t)((c & 0xE0) << 8 | (c & 0x1C) << 6 | (c & 0x03) << 3);
+                    o[2 * x] = v >> 8; o[2 * x + 1] = v & 0xFF;
+                } else if (mode <= 2) o[x] = fmt_px(mode, x, y + r);
+                else if (x & 1) o[x / 2] |= fmt_px(mode, x, y + r);
+                else o[x / 2] = (uint8_t)(fmt_px(mode, x, y + r) << (mode == 3 ? 3 : 4));
+            }
+        }
+        int y1 = y + rows - 1;
+        uint8_t ra[4] = { y >> 8, y & 0xFF, y1 >> 8, y1 & 0xFF };
+        fmt_cmd(0x2B, ra, 4);
+        int64_t t = esp_timer_get_time();
+        ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(s_io, (0x32ULL << 24) | (0x2C << 8), buf, (size_t)rows * row_bytes));
+        xSemaphoreTake(s_dma_ready, portMAX_DELAY);    /* ISR returns the credit */
+        bus_us += esp_timer_get_time() - t;
+    }
+    printf("PXFMT mode=%d colmod=0x%02X colopt=0x%02X bytes=%d bus_us=%lld (%.1f fps if bus-bound)\n",
+           mode, colmod, colopt, row_bytes * GFX_H, (long long)bus_us, bus_us ? 1e6 / bus_us : 0.0);
+    xSemaphoreGive(s_dma_ready);
+    xSemaphoreGive(s_dma_ready);
+}
+
+/* Wire format of every UI flush (fast display, wos_fast_display): 0 = RGB565,
+ * 1 = RGB332 dithered, 2 = 256 grey. Owned by the flush task: only it switches
+ * the panel (fmt_apply, with no stripe in flight) and only it converts. Both 8-bit
+ * formats were verified on the 1.43C over QSPI; the 3/4-bit ones garble. */
+static int s_wire_fmt;
+static int s_fmt_applied = -1;          /* main loop: last wos_fast_display queued */
+static void fmt_apply(int fmt)
+{
+    uint8_t colmod = fmt == 1 ? 0x22 : fmt == 2 ? 0x11 : 0x55, colopt = 0x07;
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+    fmt_cmd(0x80, &colopt, 1);
+    fmt_cmd(0x3A, &colmod, 1);
+    s_wire_fmt = fmt;
+    xSemaphoreGive(s_dma_ready);
+    xSemaphoreGive(s_dma_ready);
+}
+/* Send a packed wire-order RGB565 window. In an 8-bit format it is narrowed in
+ * place to one byte per pixel (unless the caller already packed it narrow) and
+ * sent with an explicit window: the vendor driver's draw_bitmap always sizes the
+ * transfer at 16bpp. Returns bytes sent. */
+static uint32_t panel_send(int x0, int y0, int x1, int y1, uint16_t *buf, int narrowed)
+{
+    int w = x1 - x0, h = y1 - y0;
+    if (!s_wire_fmt) {
+        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x1, y1, buf));
+        return (uint32_t)w * h * 2;
+    }
+    if (!narrowed) board_pixels_to8((uint8_t *)buf, buf, w, h, x0, y0, s_wire_fmt);
+    int cx0 = x0 + PANEL_GAP_X, cx1 = x1 - 1 + PANEL_GAP_X;
+    uint8_t ca[4] = { cx0 >> 8, cx0 & 0xFF, cx1 >> 8, cx1 & 0xFF };
+    uint8_t ra[4] = { y0 >> 8, y0 & 0xFF, (y1 - 1) >> 8, (y1 - 1) & 0xFF };
+    fmt_cmd(0x2A, ca, 4);
+    fmt_cmd(0x2B, ra, 4);
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(s_io, (0x32ULL << 24) | (0x2C << 8), buf, (size_t)w * h));
+    return (uint32_t)w * h;
 }
 
 /* Flush worker on core 1: pack, byte-swap and rotate each stripe. Release the
@@ -120,15 +314,27 @@ static void flush_task(void *arg)
     flush_job j;
     for (;;) {
         xQueueReceive(s_flush_q, &j, portMAX_DELAY);
-        if (j.atomic == 4) { perf_benchmark_worker(); continue; }
+        if (j.atomic == 4) {                    /* bench drives one buffer: park the other */
+            xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+            perf_benchmark_worker();
+            xSemaphoreGive(s_dma_ready);
+            continue;
+        }
         if (j.atomic == 3) {
             ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, false));
             ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(s_io, (0x02ULL << 24) | (0x10 << 8), NULL, 0));
             vTaskDelay(pdMS_TO_TICKS(120));
+#ifdef PIN_LCD_EN
             gpio_set_level(PIN_LCD_EN, 0);
+#endif
             xSemaphoreGive(s_sleep_ready);
             continue;
         }
+#if CONFIG_WATCH_BOARD_143C
+        if (j.atomic == 5) { border_pattern(); continue; }
+#endif
+        if (j.atomic == 6) { fmt_probe(j.x0); continue; }
+        if (j.atomic == 7) { fmt_apply(j.x0); continue; }
         if (!j.buf) {
             uint8_t level = (uint8_t)j.x0;
             ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(s_io, (0x02ULL << 24) | (0x51 << 8), &level, 1));
@@ -140,7 +346,7 @@ static void flush_task(void *arg)
             uint16_t *b = j.buf;           /* copy just this band's [x0,x0+w) columns,
                                             * byte-swapped, into the back-buffer */
             for (int r = 0; r < j.rows; r++) {
-                const uint16_t *src = &b[r * GFX_W + j.x0];
+                const uint16_t *src = &b[r * j.stride];
                 uint16_t *dst = &s_backbuf[(size_t)(j.y0 + r) * GFX_W + j.x0];
                 for (int i = 0; i < j.w; i++) {
                     uint16_t v = src[i];
@@ -151,44 +357,49 @@ static void flush_task(void *arg)
             xSemaphoreGive(s_buf_free);    /* stripe buffer reusable immediately */
             continue;
         }
-        /* Byte-swap RGB565 to wire order and, for a sub-rectangle,
-         * compact its [x0,x0+w) columns to the front of each buffer row so the
-         * draw_bitmap gets a tightly-packed w*rows image. In-place is safe: the
-         * write index r*w+i never exceeds the read index r*GFX_W+x0+i. */
-        uint16_t *b = j.buf;
-        if (j.atomic == 2) goto submit; /* already byte-swapped in backbuffer */
-        if (j.x0 == 0 && j.w == GFX_W) {                 /* full width — fast 2px swap */
-            uint32_t *d32 = (uint32_t *)b;
-            int n32 = (GFX_W * j.rows) / 2;
-            for (int i = 0; i < n32; i++) {
-                uint32_t v = d32[i];
-                d32[i] = ((v & 0x00FF00FFu) << 8) | ((v & 0xFF00FF00u) >> 8);
-            }
-        } else {
-            for (int r = 0; r < j.rows; r++) {
-                uint16_t *dst = &b[r * j.w];
-                const uint16_t *src = &b[r * GFX_W + j.x0];
-                for (int i = 0; i < j.w; i++) {
-                    uint16_t v = src[i];
-                    dst[i] = (uint16_t)((v << 8) | (v >> 8));
-                }
-            }
-        }
-        display_perf_add_stage(DISPLAY_PERF_SWAP, esp_timer_get_time()-stage_start);
-submit:
-        /* Mounted panel is 90 degrees clockwise from the UI. The official
-         * driver cannot swap axes, so rotate the packed stripe CCW in software.
-         * Keep the native controller gap; only logical pixels/rectangles rotate. */
+#if CONFIG_WATCH_BOARD_143C
+        /* Upright panel (36h C0): pack the dirty [x0,x0+w) window out of the
+         * stride-wide source into the DMA buffer in wire order, no rotation. Two
+         * DMA buffers alternate exactly as on the B board. */
+        static int s_rot_slot;
+        uint16_t *b = j.buf, *out = s_rot_slot ? s_rotated2 : s_rotated;
         stage_start = esp_timer_get_time();
         xSemaphoreTake(s_dma_ready, portMAX_DELAY);
         display_perf_add_stage(DISPLAY_PERF_DMA_WAIT, esp_timer_get_time()-stage_start);
         stage_start = esp_timer_get_time();
-        board_pixels_ccw(b, s_rotated, j.w, j.rows);
+        if (s_wire_fmt)                         /* fast display: pack straight to 8 bits */
+            board_pixels_pack_to8(b, j.stride, (uint8_t *)out, j.w, j.rows, j.x0 + PANEL_GAP_X, j.y0,
+                                  s_wire_fmt == 1 && j.flat ? 3 : s_wire_fmt, j.atomic != 2);
+        else
+            board_pixels_pack_swap(b, j.stride, out, j.w, j.rows, j.atomic != 2);
         display_perf_add_stage(DISPLAY_PERF_ROTATE, esp_timer_get_time()-stage_start);
-        xSemaphoreGive(s_buf_free); /* DMA reads s_rotated, never b from here on */
-        display_perf_submit((uint32_t)j.w*j.rows*2, esp_timer_get_time());
-        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel,
-            j.y0, GFX_W - j.x0 - j.w, j.y0 + j.rows, GFX_W - j.x0, s_rotated));
+        xSemaphoreGive(s_buf_free); /* DMA reads `out`, never b from here on */
+        s_rot_slot ^= 1;
+        display_perf_submit((uint32_t)j.w*j.rows*(s_wire_fmt ? 1 : 2), esp_timer_get_time());
+        panel_send(j.x0, j.y0, j.x0 + j.w, j.y0 + j.rows, out, 1);
+#else
+        /* Mounted panel is 90 degrees clockwise from the UI. The official driver
+         * cannot swap axes, so the stripe is rotated CCW in software. One pass reads
+         * the dirty [x0,x0+w) columns straight out of the GFX_W-stride render buffer,
+         * byte-swaps to wire order and writes the rotated image. Two rotated buffers
+         * alternate, so this pass for stripe k+1 runs while stripe k is on the bus
+         * (only the panel's window commands remain serialized with the DMA). */
+        static int s_rot_slot;
+        uint16_t *b = j.buf, *out = s_rot_slot ? s_rotated2 : s_rotated;
+        stage_start = esp_timer_get_time();
+        xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+        display_perf_add_stage(DISPLAY_PERF_DMA_WAIT, esp_timer_get_time()-stage_start);
+        stage_start = esp_timer_get_time();
+        if (j.atomic == 2)                      /* already byte-swapped (backbuffer) */
+            board_pixels_ccw_swap(b, j.stride, out, j.w, j.rows, 0);
+        else
+            board_pixels_ccw_swap(b, j.stride, out, j.w, j.rows, 1);
+        display_perf_add_stage(DISPLAY_PERF_ROTATE, esp_timer_get_time()-stage_start);
+        xSemaphoreGive(s_buf_free); /* DMA reads `out`, never b from here on */
+        s_rot_slot ^= 1;
+        display_perf_submit((uint32_t)j.w*j.rows*(s_wire_fmt ? 1 : 2), esp_timer_get_time());
+        panel_send(j.y0, GFX_W - j.x0 - j.w, j.y0 + j.rows, GFX_W - j.x0, out, 0);
+#endif
     }
 }
 
@@ -198,7 +409,7 @@ submit:
 void display_set_brightness(uint8_t level)
 {
     if (s_flush_q) {
-        flush_job j = { NULL, level, 0, 0, 0, 0 };
+        flush_job j = { NULL, level, 0, 0, 0, 0, 0 };
         xQueueSend(s_flush_q, &j, portMAX_DELAY);
     } else if (s_io) {
         if(esp_lcd_panel_io_tx_param(s_io, (0x02ULL << 24) | (0x51 << 8), &level, 1)==ESP_OK)
@@ -208,11 +419,19 @@ void display_set_brightness(uint8_t level)
 
 static void lcd_init(void)
 {
+#if CONFIG_WATCH_BOARD_143C
+    /* VCI_EN is hard pulled up; no enable pin. The B-board bit-bang ID probe
+     * and SH8601/CO5300 selection do not apply. */
+    int saved_gap;
+    if (hal_store_load("lcd_gap", &saved_gap, sizeof saved_gap) && saved_gap >= 0 && saved_gap <= 14)
+        s_gap_x = saved_gap;
+#else
     gpio_config_t en = { .pin_bit_mask = 1ULL << PIN_LCD_EN, .mode = GPIO_MODE_OUTPUT };
     ESP_ERROR_CHECK(gpio_config(&en));
     ESP_ERROR_CHECK(gpio_set_level(PIN_LCD_EN, 1));
     vTaskDelay(pdMS_TO_TICKS(20));
     s_panel_id = board_lcd_probe();
+#endif
     ESP_LOGI(TAG, "PANEL id=0x%02x init=%s selection=board_profile identity=unconfirmed gap=%d",
              s_panel_id, PANEL_INIT_NAME, PANEL_GAP_X);
     const spi_bus_config_t bus = SH8601_PANEL_BUS_QSPI_CONFIG(
@@ -227,8 +446,13 @@ static void lcd_init(void)
                                              &io_cfg, &s_io));
 
     sh8601_vendor_config_t vendor = {
+#if CONFIG_WATCH_BOARD_143C
+        .init_cmds = c143_init,
+        .init_cmds_size = sizeof c143_init / sizeof c143_init[0],
+#else
         .init_cmds = LCD_USE_SH8601 ? sh8601_init : co5300_init,
         .init_cmds_size = LCD_USE_SH8601 ? sizeof sh8601_init / sizeof sh8601_init[0] : sizeof co5300_init / sizeof co5300_init[0],
+#endif
         .flags = { .use_qspi_interface = 1 },
     };
     const esp_lcd_panel_dev_config_t panel_cfg = {
@@ -256,7 +480,8 @@ static int touch_poll(void)
     return down;
 }
 
-/* The 1.43-B has neither an ES8311 nor an onboard speaker/microphone. */
+/* The 1.43-B has neither an ES8311 nor an onboard speaker/microphone. The 1.43C
+ * has ES8311/ES7210 audio, not driven yet (TODO). */
 void hal_beep(int freq, int ms) { (void)freq; (void)ms; }
 void hal_play(int sound) { (void)sound; }
 int hal_mic_level(void) { return 0; }
@@ -358,13 +583,14 @@ static void perf_info(void)
     const esp_app_desc_t *app=esp_app_get_description();
     printf("PERF_INFO,{\"fw\":\"%s\",\"idf\":\"%s\",\"cpu_mhz\":%d,"
         "\"clock_requested_hz\":%d,\"clock_actual_hz\":40000000,\"clock_basis\":\"80MHz divided by two; not scope measured\","
-        "\"panel_identity\":\"unconfirmed\",\"legacy_id\":%u,\"legacy_gap\":%d,\"te_routed\":false,"
+        "\"panel_identity\":\"unconfirmed\",\"legacy_id\":%u,\"legacy_gap\":%d,\"te_routed\":%s,\"board\":\"%s\","
         "\"panel_init\":\"%s\",\"panel_selection\":\"board_profile\",\"panel_gap_x\":%d,"
         "\"width\":466,\"height\":466,\"stripe_rows\":%d,\"dma_buffer_bytes\":%d,"
         "\"internal_free\":%u,\"internal_largest\":%u,\"dma_largest\":%u,\"psram_free\":%u,"
         "\"main_stack_free_bytes\":%u,\"flush_stack_free_bytes\":%u,\"render_core\":0,\"flush_core\":1,"
         "\"queue_capacity\":2,\"lvgl\":false,\"tearing_observed\":null,\"current_ma\":null}\n",
-        app->version,app->idf_ver,CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,LCD_SPI_HZ,s_panel_id,PANEL_GAP_X,PANEL_INIT_NAME,PANEL_GAP_X,
+        app->version,app->idf_ver,CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,LCD_SPI_HZ,s_panel_id,PANEL_GAP_X,
+        TE_ROUTED_JSON,WATCH_BOARD_NAME,PANEL_INIT_NAME,PANEL_GAP_X,
         STRIPE_ROWS,GFX_W*STRIPE_ROWS*2,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
@@ -439,6 +665,7 @@ static void perf_command(const char *s)
     else printf("perf display info|probe|status|export|fill N sram|generator|psram|rect W H N [source]|app NAME SEC|sweep\n");
 }
 
+static void bench_yield(void) { vTaskDelay(1); }
 static void dbg_exec(char *s)
 {
     int a, b, c, d, e, f;
@@ -459,8 +686,42 @@ static void dbg_exec(char *s)
     else if (sscanf(s, "wifi %39s %67s", ws, wp) == 2) hal_wifi_connect(ws, wp);
     else if (!strncmp(s,"wifi ",5)) printf("ERR Wi-Fi credentials\n");
     else if (!strcmp(s, "wifi")) printf("Use wifi SSID PASSWORD or the setup page\n");
+    else if (!strcmp(s, "wifistop")) { esp_wifi_stop(); printf("WIFISTOP\n"); }   /* quiet radio for benches */
     else if (!strcmp(s, "bleinfo")) { char bi[96]; hal_ble_status(bi, sizeof bi); printf("BLEINFO: %s\n", bi); }
     else if (!strcmp(s, "aod"))    power_set_aod(!g_aod);
+    else if (sscanf(s, "scanorder %d", &a) == 1 && a >= 0 && a <= 2) { wos_scan_order = a; wos_invalidate(); printf("SCANORDER %d\n", a); }
+    else if (!strcmp(s, "ota"))     ota_print_status();
+    else if (!strcmp(s, "ota sd"))  printf("OTA: %s\n", esp_err_to_name(ota_from_sd()));
+    else if (!strncmp(s, "ota ", 4)) printf("OTA: %s\n", esp_err_to_name(ota_from_url(s + 4)));
+    else if (!strcmp(s, "rects"))  { extern int wos_debug_rects; wos_debug_rects = !wos_debug_rects; settings_save(); printf("RECTS %d (saved)\n", wos_debug_rects); }
+    else if (!strcmp(s, "convbench")) {      /* wire conversion cost per pixel (flush core path, run here) */
+        uint16_t *src = s_stripe[0]; uint8_t *dst = (uint8_t *)s_rotated; int n = GFX_W * STRIPE_ROWS;
+        for (int i = 0; i < n; i++) src[i] = (uint16_t)(i * 40503u);
+        for (int mode = 0; mode <= 3; mode++) for (int sw = 1; sw >= 0; sw--) {
+            int64_t t0 = esp_timer_get_time();
+            for (int r = 0; r < 20; r++) {
+                if (mode == 0) board_pixels_pack_swap(src, GFX_W, (uint16_t *)dst, GFX_W, STRIPE_ROWS, sw);
+                else board_pixels_pack_to8(src, GFX_W, dst, GFX_W, STRIPE_ROWS, 0, 0, mode, sw);
+            }
+            int64_t us = esp_timer_get_time() - t0;
+            printf("CONV mode=%d swap=%d ns_per_px=%.1f\n", mode, sw, us * 1000.0 / (20.0 * n));
+        }
+        wos_invalidate();
+    }
+    else if (!strcmp(s, "gfxbench")) {       /* per-primitive ns/px on the render core */
+        gfx_bench_run(s_stripe[0], STRIPE_ROWS, bench_yield);
+        wos_invalidate();
+    }
+    else if (!strcmp(s, "dirty")) {          /* last frame's dirty rects (damage debugging) */
+        extern int wos_dbg_rect[16][4], wos_dbg_nr; extern uint32_t wos_dbg_dirty_pixels;
+        printf("DIRTY n=%d px=%u", wos_dbg_nr, (unsigned)wos_dbg_dirty_pixels);
+        for (int i = 0; i < wos_dbg_nr && i < 16; i++)
+            printf(" [%d,%d,%d,%d]", wos_dbg_rect[i][0], wos_dbg_rect[i][1], wos_dbg_rect[i][2], wos_dbg_rect[i][3]);
+        printf("\n");
+    }
+    else if (sscanf(s, "ui %d", &a) == 1) { wos_ui_style = a != 0; ui_style_apply(); settings_save(); wos_invalidate(); printf("UI %d (saved)\n", wos_ui_style); }
+    else if (sscanf(s, "fastdisp %d", &a) == 1 && a >= 0 && a <= 2) { wos_fast_display = a; settings_save(); printf("FASTDISP %d (saved)\n", a); }
+    else if (sscanf(s, "fps48 %d", &a) == 1) { wos_fps_cap48 = a != 0; settings_save(); printf("FPS48 %d (saved)\n", wos_fps_cap48); }
     else if (!strcmp(s, "hud"))    { extern int wos_debug_hud; wos_debug_hud = !wos_debug_hud; settings_save(); printf("HUD %d (saved)\n", wos_debug_hud); }
     else if (!strcmp(s, "time"))   { hal_datetime dt; hal_get_datetime(&dt); printf("TIME %04d-%02d-%02d %02d:%02d:%02d (tz %+dmin)\n", dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, g_tz_offset_min); }
     else if (sscanf(s, "settime %d %d %d %d %d %d", &a, &b, &c, &d, &e, &f) == 6) {
@@ -477,7 +738,7 @@ static void dbg_exec(char *s)
     }
     else if (sscanf(s, "beep %d %d", &a, &b) == 2) hal_beep(a, b);
     else if (!strcmp(s, "beep"))   hal_beep(1500, 400);
-    else if (!strcmp(s, "mic")) printf("MIC unavailable on 1.43-B\n");
+    else if (!strcmp(s, "mic")) printf("MIC unavailable on this board build\n");
     else if (sscanf(s, "face %d", &a) == 1) {
         if (a < 0 || a >= 13) printf("ERR face index\n");
         else { g_saved_face = a; settings_save(); wos_open_app(0); printf("face=%d\n", g_saved_face); }
@@ -539,7 +800,37 @@ static void dbg_exec(char *s)
     }
     else if (!strcmp(s,"bri")) printf("BRIGHTNESS level=%d percent=%d panel_command=%d\n",g_brightness,(g_brightness*100+127)/255,s_panel_brightness);
     else if (!strcmp(s, "pause"))  g_pause = 1;
-    else if (!strcmp(s, "resume")) g_pause = 0;
+    else if (!strcmp(s, "resume")) {
+        g_pause = 0;
+        if (s_fmt_shown) { s_fmt_shown = 0; s_fmt_applied = -1; }   /* main loop reapplies the format + redraws */
+        if (s_border_shown) { s_border_shown = 0; wos_invalidate(); }
+    }
+    else if (sscanf(s, "pxfmt %d", &a) == 1 && a >= 1 && a <= 5) {
+        g_pause = 1; s_fmt_shown = 1;               /* UI stops drawing over the card */
+        flush_job job = { .x0 = a, .atomic = 6 };
+        xQueueSend(s_flush_q, &job, portMAX_DELAY);
+    }
+#if CONFIG_WATCH_BOARD_143C
+    else if (!strcmp(s, "border")) {
+        g_pause = 1; s_border_shown = 1;            /* UI stops drawing over the pattern */
+        flush_job job = { .atomic = 5 };
+        xQueueSend(s_flush_q, &job, portMAX_DELAY);
+        printf("BORDER gap=%d: magenta at an edge or a missing red line = wrong gap; 'gap N', 'resume'\n", s_gap_x);
+    }
+    else if (sscanf(s, "gap %d", &a) == 1) {
+        if (a < 0 || a > 14) printf("ERR gap 0..14\n");
+        else {
+            /* frame_end drained the DMA before commands run: no stripe in flight. */
+            s_gap_x = a;
+            ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, s_gap_x, 0));
+            hal_store_save("lcd_gap", &s_gap_x, sizeof s_gap_x);
+            if (s_border_shown) { flush_job job = { .atomic = 5 }; xQueueSend(s_flush_q, &job, portMAX_DELAY); }
+            else wos_invalidate();
+            printf("GAP %d (saved)\n", s_gap_x);
+        }
+    }
+    else if (!strcmp(s, "gap")) printf("GAP %d (default %d)\n", s_gap_x, PANEL_GAP_DEFAULT);
+#endif
     else if (sscanf(s,"prof %d",&a)==1) { g_prof=a!=0;printf("prof=%d\n",g_prof); }
     else if (!strcmp(s, "info"))
         printf("app=%d/%d name=%s\n", wos_current_app(), wos_app_count(),
@@ -587,6 +878,7 @@ static void dbg_exec(char *s)
     else if (!strcmp(s, "sdmount")) printf("SDMOUNT %s\n", esp_err_to_name(board_sd_mount()));
     else if (!strcmp(s, "sdeject")) printf("SDEJECT %s\n", esp_err_to_name(board_sd_unmount()));
     else if (!strcmp(s, "sdtest")) printf("SDTEST %s\n", esp_err_to_name(board_sd_test()));
+    else if (sscanf(s, "lpills %d", &a) == 1) { extern int applist_pills; applist_pills = a != 0; wos_invalidate(); puts(a ? "lpills=1" : "lpills=0"); }
     else if (sscanf(s, "sprites %d", &a) == 1) { extern int launcher_sprites; launcher_sprites = a != 0; printf("sprites=%d\n", launcher_sprites); }
     else if (sscanf(s, "awake %d", &a) == 1) { g_no_sleep = a != 0; printf("awake=%d\n", g_no_sleep); }
     else if (!strcmp(s, "apps")) {
@@ -597,7 +889,11 @@ static void dbg_exec(char *s)
                "left|right|top|bottom | bri 1..255 | info | apps | board | imu | sd | "
                "sdmount | sdeject | sdtest | awake 0|1 | prof 0|1 | time | settime Y M D h m s | "
                "pip [care|hello|pet|play|save|center|live|demo ACTION|routine WAKE REST] | power | activity | notify APP|TITLE | "
-               "wake [left|right|pickup 0|1|turn 0|1|learn] | screen [off|dim] | diag imu | weather [refresh] | location LAT LON CITY | wifi {JSON}\n");
+               "wake [left|right|pickup 0|1|turn 0|1|learn] | screen [off|dim] | diag imu | weather [refresh] | location LAT LON CITY | wifi {JSON}"
+#if CONFIG_WATCH_BOARD_143C
+               " | gap [N] | border | resume"
+#endif
+               "\n");
     else if (s[0]) printf("? '%s' (try 'help')\n", s);
 }
 static int command_wakes_display(const char *s)
@@ -646,9 +942,9 @@ static void stripe_wait(void)
 /* wos calls this after drawing a dirty rect's stripe: hand it to the flush core
  * (core 1), which byte-swaps + compacts + DMAs it in parallel with the next
  * stripe's render. */
-static void stripe_flush(uint16_t *buf, int x0, int y0, int w, int rows)
+static void stripe_flush(uint16_t *buf, int stride, int x0, int y0, int w, int rows)
 {
-    flush_job j = { buf, x0, y0, w, rows, s_atomic };
+    flush_job j = { buf, x0, y0, w, rows, s_atomic, stride, s_flat };
     xQueueSend(s_flush_q, &j, portMAX_DELAY);
     display_perf_queue_depth(uxQueueMessagesWaiting(s_flush_q));
 }
@@ -657,7 +953,17 @@ static void stripe_flush(uint16_t *buf, int x0, int y0, int w, int rows)
 static void frame_begin(int atomic, int x0, int y0, int x1, int y1)
 {
     s_atomic = atomic && s_backbuf != NULL;
+    s_flat = wos_frame_flat();
     s_bx0 = x0; s_by0 = y0; s_bx1 = x1; s_by1 = y1;
+}
+
+/* Both rotated buffers idle <=> every queued stripe has left the bus. */
+static void dma_drain(void)
+{
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+    xSemaphoreTake(s_dma_ready, portMAX_DELAY);
+    xSemaphoreGive(s_dma_ready);
+    xSemaphoreGive(s_dma_ready);
 }
 
 static void frame_end(int atomic)
@@ -667,27 +973,71 @@ static void frame_end(int atomic)
     xSemaphoreGive(s_buf_free);
     xSemaphoreGive(s_buf_free);
     if (!atomic || !s_backbuf) {
-        xSemaphoreTake(s_dma_ready,portMAX_DELAY);
-        xSemaphoreGive(s_dma_ready);
+        dma_drain();
         return;
     }
     int x0 = s_bx0, w = s_bx1 - s_bx0;            /* the band is only [x0,x1) wide */
+    if (wos_scan_order) {                         /* column bands in scan order */
+        int h = s_by1 - s_by0, bw = ((GFX_W * STRIPE_ROWS) / h) & ~1;
+        for (int c = 0; c < w; c += bw) {
+            int cw = w - c < bw ? w - c : bw;
+            int bx = wos_scan_order == 1 ? s_bx1 - c - cw : x0 + c;
+            /* rotate (1.43C: pack) straight out of PSRAM: a band row is one cache
+             * line, so no repack copy (credit taken only to pace the queue) */
+            xSemaphoreTake(s_buf_free, portMAX_DELAY);
+            flush_job job = { &s_backbuf[(size_t)s_by0 * GFX_W + bx], bx, s_by0, cw, h, 2, GFX_W, s_flat };
+            xQueueSend(s_flush_q, &job, portMAX_DELAY);
+        }
+    } else
     for (int y = s_by0; y < s_by1; y += STRIPE_ROWS) {
         int rows = (s_by1 - y) < STRIPE_ROWS ? (s_by1 - y) : STRIPE_ROWS;
+#if CONFIG_WATCH_BOARD_143C
+        /* Unrotated panel: the flush packs this window straight out of PSRAM
+         * into its DMA buffer, so no bounce copy (credit only paces the queue). */
+        xSemaphoreTake(s_buf_free, portMAX_DELAY);
+        flush_job job = { &s_backbuf[(size_t)y * GFX_W + x0], x0, y, w, rows, 2, GFX_W, s_flat };
+        xQueueSend(s_flush_q, &job, portMAX_DELAY);
+#else
         int slot = ((y - s_by0) / STRIPE_ROWS) & 1;
         xSemaphoreTake(s_buf_free, portMAX_DELAY);          /* free bounce buffer */
         for (int r = 0; r < rows; r++)                      /* pack the band's cols */
             memcpy(&s_stripe[slot][r * w],
                    &s_backbuf[(size_t)(y + r) * GFX_W + x0], (size_t)w * 2);
-        flush_job job = { s_stripe[slot], x0, y, w, rows, 2 };
+        flush_job job = { s_stripe[slot], x0, y, w, rows, 2, w, s_flat };
         xQueueSend(s_flush_q, &job, portMAX_DELAY);
+#endif
     }
     xSemaphoreTake(s_buf_free, portMAX_DELAY);   /* drain the last two input buffers */
     xSemaphoreTake(s_buf_free, portMAX_DELAY);
     xSemaphoreGive(s_buf_free);
     xSemaphoreGive(s_buf_free);
-    xSemaphoreTake(s_dma_ready,portMAX_DELAY);   /* last rotated output still in flight */
-    xSemaphoreGive(s_dma_ready);
+    dma_drain();                                 /* last rotated outputs still in flight */
+}
+
+/* BOOT button edge latch. Contact bounce is dropped by ignoring edges within
+ * BTN_DEBOUNCE_MS of the last accepted one; the main loop re-syncs the state if
+ * a genuine edge ever lands inside that window. */
+#define BTN_DEBOUNCE_MS 25
+static portMUX_TYPE s_btn_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile int s_btn_down;                       /* debounced: 1 = pressed */
+static volatile uint32_t s_btn_down_ms, s_btn_up_ms, s_btn_edge_ms;
+static volatile uint32_t s_btn_presses, s_btn_releases;
+
+static inline void btn_edge(int pressed, uint32_t t)
+{
+    if (pressed == s_btn_down || t - s_btn_edge_ms < BTN_DEBOUNCE_MS) return;
+    s_btn_down = pressed;
+    s_btn_edge_ms = t;
+    if (pressed) { s_btn_down_ms = t; s_btn_presses++; }
+    else         { s_btn_up_ms = t;   s_btn_releases++; }
+}
+
+static void IRAM_ATTR btn_isr(void *arg)
+{
+    (void)arg;
+    portENTER_CRITICAL_ISR(&s_btn_mux);
+    btn_edge(gpio_get_level(GPIO_NUM_0) == 0, (uint32_t)(esp_timer_get_time() / 1000));
+    portEXIT_CRITICAL_ISR(&s_btn_mux);
 }
 
 void app_main(void)
@@ -703,7 +1053,9 @@ void app_main(void)
                                    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     s_rotated = heap_caps_malloc((size_t)GFX_W * STRIPE_ROWS * 2,
                                    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    assert(s_stripe[0] && s_stripe[1] && s_rotated);
+    s_rotated2 = heap_caps_malloc((size_t)GFX_W * STRIPE_ROWS * 2,
+                                   MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    assert(s_stripe[0] && s_stripe[1] && s_rotated && s_rotated2);
 
     hal_esp32_init_periph();
     lcd_init();
@@ -714,18 +1066,21 @@ void app_main(void)
     hal_esp32_start_radios();
     hal_play(SND_STARTUP); /* little 8-bit power-on jingle (silent while muted) */
 
-    /* BOOT button (GPIO0): input w/ pull-up (active low). Polled in the main loop. */
-    gpio_config_t btn = { .pin_bit_mask = 1ULL << 0, .mode = GPIO_MODE_INPUT, .pull_up_en = 1 };
+    /* BOOT button (GPIO0): input w/ pull-up (active low). Edges are latched by an ISR
+     * so a tap shorter than a frame is never lost; the main loop consumes them. */
+    gpio_config_t btn = { .pin_bit_mask = 1ULL << 0, .mode = GPIO_MODE_INPUT, .pull_up_en = 1,
+                          .intr_type = GPIO_INTR_ANYEDGE };
     gpio_config(&btn);
+    esp_err_t isr_err = gpio_install_isr_service(0);
+    if (isr_err == ESP_OK || isr_err == ESP_ERR_INVALID_STATE) gpio_isr_handler_add(GPIO_NUM_0, btn_isr, NULL);
 
     s_buf_free = xSemaphoreCreateCounting(2, 2);    /* both buffers start free */
-    s_dma_ready = xSemaphoreCreateBinary();
+    s_dma_ready = xSemaphoreCreateCounting(2, 2);   /* both rotated buffers start free */
     s_flush_q = xQueueCreate(2, sizeof(flush_job));
     s_sleep_ready = xSemaphoreCreateBinary();
     s_bench_done = xSemaphoreCreateBinary();
     assert(s_bench_done);
     assert(s_buf_free && s_dma_ready && s_flush_q && s_sleep_ready);
-    xSemaphoreGive(s_dma_ready);
     s_backbuf = heap_caps_malloc((size_t)GFX_W * GFX_H * 2, MALLOC_CAP_SPIRAM);
     if (!s_backbuf)
         ESP_LOGW(TAG, "no PSRAM back-buffer -> atomic present disabled");
@@ -750,6 +1105,7 @@ void app_main(void)
     wos_register_overlay(WOS_EDGE_RIGHT,  &app_applist,       0);
     wos_register_overlay(WOS_EDGE_TOP,    &app_notifications, 0);
     wos_register_overlay(WOS_EDGE_BOTTOM, &app_control,       0);
+    ui_style_apply();      /* Flat60 swaps in its own overlays */
 
     /* Test harness: USB-serial command interface (see dbg_exec). Route stdio
      * through the driver so ESP_LOG (PROF) and the command reader share it. */
@@ -833,35 +1189,53 @@ void app_main(void)
         }
 
         /* BOOT button (GPIO0) gestures, each with an on-screen callout:
-         *   SHORT   = home / exit AOD          DOUBLE  = toggle AOD (Always-On)
-         *   HOLD >=1.5s = Sleep (deep sleep)   HOLD >=3s = Power Off
-         * While held, a live toast previews which action a release will trigger, so you can keep
-         * holding from Sleep into Power Off. (Second physical button TBD — give me its GPIO and I
-         * can split these across the two.) */
+         *   PRESS   = home / exit AOD, at once  DOUBLE  = toggle AOD (Always-On)
+         *   HOLD >=1.5s = Sleep (deep sleep)    HOLD >=3s = Power Off
+         * Edges come from btn_isr, so quick taps between frames still count. A single
+         * press acts on the press itself (no wait for a possible second click); the
+         * second press of a double then toggles AOD. While held, a live toast previews
+         * which action a release will trigger. RST is the chip's EN line, not readable. */
         {
-            static int bt_prev = 1, bt_pending = 0;
-            static uint32_t bt_down = 0, bt_up = 0;
-            int lv = gpio_get_level(GPIO_NUM_0);
-            if (lv == 0 && bt_prev == 1) bt_down = nowms;             /* pressed */
-            else if (lv == 0) {                                       /* held: preview the action */
-                uint32_t held = nowms - bt_down;
+            static uint32_t bt_presses, bt_releases, bt_last_up;
+            static int bt_short = 0;                  /* last press was a short tap */
+            static int bt_left_aod = 0;               /* that tap only woke from AOD */
+            static int bt_second = 0;                 /* current press completed a double */
+            portENTER_CRITICAL(&s_btn_mux);
+            if (s_btn_down != (gpio_get_level(GPIO_NUM_0) == 0) && nowms - s_btn_edge_ms > 60)
+                btn_edge(!s_btn_down, nowms);         /* an edge was lost in the debounce window */
+            int down = s_btn_down;
+            uint32_t presses = s_btn_presses, releases = s_btn_releases;
+            uint32_t down_ms = s_btn_down_ms, up_ms = s_btn_up_ms;
+            portEXIT_CRITICAL(&s_btn_mux);
+
+            if (presses != bt_presses) {                              /* pressed */
+                bt_presses = presses;
+                s_activity = nowms;
+                command_activity = 1;
+                if (bt_short && down_ms - bt_last_up < 400) {         /* second click */
+                    bt_second = 1;
+                    if (!bt_left_aod) power_set_aod(!g_aod);
+                } else {
+                    bt_second = 0;
+                    if (g_aod) { power_set_aod(0); bt_left_aod = 1; }
+                    else { wos_open_app(0); bt_left_aod = 0; }
+                }
+            }
+            if (down) {                                               /* held: preview the action */
+                uint32_t held = nowms - down_ms;
                 if (held >= 3000)      wos_callout("Power Off", 400);
                 else if (held >= 1500) wos_callout("Sleep", 400);
             }
-            else if (lv == 1 && bt_prev == 0) {                       /* released */
-                uint32_t held = nowms - bt_down;
+            if (releases != bt_releases) {                            /* released */
+                bt_releases = releases;
+                uint32_t held = up_ms - down_ms;
                 s_activity = nowms;
                 command_activity = 1;
+                bt_last_up = up_ms;
                 if (held >= 3000)      power_off();
                 else if (held >= 1500) power_deep_sleep();
-                else if (bt_pending && nowms - bt_up < 400) { bt_pending = 0; power_set_aod(!g_aod); }
-                else { bt_pending = 1; bt_up = nowms; }
+                bt_short = held < 1500 && !bt_second;                 /* can start a double */
             }
-            if (bt_pending && nowms - bt_up > 400) {                  /* settle single click */
-                bt_pending = 0;
-                if (g_aod) power_set_aod(0); else wos_open_app(0);
-            }
-            bt_prev = lv;
         }
 
         if (s_debug_done && !g_inj_active) {
@@ -893,6 +1267,12 @@ void app_main(void)
         }
         if (scr == 2) { vTaskDelay(pdMS_TO_TICKS(40)); continue; }   /* asleep: no render */
         if (g_pause) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }    /* frozen (hw-scroll probe) */
+        if (wos_fast_display != s_fmt_applied) {   /* switch wire format between frames */
+            s_fmt_applied = wos_fast_display;
+            flush_job job = { .x0 = s_fmt_applied, .atomic = 7 };
+            xQueueSend(s_flush_q, &job, portMAX_DELAY);
+            wos_invalidate();                       /* panel RAM is in the old format */
+        }
 
         /* POWER: a STATIC screen (control centre, notifications, a face with no moving hand) has
          * nothing to redraw, so instead of spinning the record+damage pass at ~1kHz we drop to a
@@ -910,6 +1290,8 @@ void app_main(void)
 
         int64_t b = esp_timer_get_time();
         int drew = wos_run_frame();      /* renders + flushes only the dirty band */
+        static int s_frames_ok;          /* UI is up and rendering: keep this OTA image */
+        if (++s_frames_ok == 120) ota_mark_valid();
         int64_t c = esp_timer_get_time();
         extern uint32_t wos_dbg_record_us,wos_dbg_raster_us,wos_dbg_present_us;
         extern int wos_dbg_nr;
@@ -927,8 +1309,12 @@ void app_main(void)
         if (drew) s_render_active = nowms;
         /* Microsecond deadline instead of truncating the wait to scheduler
          * ticks. Yield the CPU while waiting; slow frames never catch up in
-         * bursts. The panel has no TE signal, so this is software 60 Hz pacing. */
-        int64_t frame_left = 16667 - (esp_timer_get_time() - a);
+         * bursts. The panel has no TE signal, so this is software 60 Hz pacing
+         * (48 Hz with the experimental cap: a 20.8ms budget fits a near-full-screen
+         * flush at 40MHz QSPI, so heavy frames stop dropping below the target). */
+        int64_t frame_period = wos_fps_cap48 ? 20833 : 16667;
+        display_perf_set_frame_deadline((uint32_t)frame_period);
+        int64_t frame_left = frame_period - (esp_timer_get_time() - a);
         if (frame_left > 0) {
             ESP_ERROR_CHECK(esp_timer_start_once(s_frame_timer,(uint64_t)frame_left));
             xSemaphoreTake(s_frame_tick,portMAX_DELAY);

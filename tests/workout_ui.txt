@@ -1,0 +1,77 @@
+# Real taps through ready, active, paused, confirmation, summary, details and done.
+wait 100
+set step_rate 120
+set gps_motion 2.5
+set hr_sample 148 0.95 1
+motion on
+mark sports_entry
+open workout
+wait 900
+expect top SPORTS
+shot sport_selector
+tap 312 244
+wait 700
+expect top SPORT READY
+shot sport_ready
+tap 233 372
+wait 700
+expect top BODY MASS
+tap 233 372
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 6000
+expect top SPORTS
+expect workout state 1
+expect workout sport 1
+shot sport_live
+tap 154 372
+wait 200
+expect workout laps 1
+home
+wait 1000
+expect workout state 1
+open workout
+wait 700
+expect top SPORTS
+expect workout state 1
+tap 312 372
+wait 500
+expect workout state 2
+workout info ui_paused
+shot sport_paused
+tap 154 372
+wait 500
+expect top FINISH SESSION
+expect workout state 2
+shot sport_finish_confirmation
+tap 154 372
+wait 500
+expect workout state 2
+tap 312 372
+wait 1200
+expect workout state 1
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 2
+expect workout history 1
+shot sport_saved
+tap 154 372
+wait 700
+expect top SESSION DETAILS
+shot sport_details
+pop
+wait 700
+tap 312 372
+wait 700
+expect workout state 3
+expect workout history 1
+expect top SPORTS
+shot sport_returned
+workout history 0 ui_saved_record
+expect motionok

@@ -29,6 +29,7 @@ static void add_time(walk_state *s,uint32_t elapsed)
 
 static void candidate(walk_state *s,uint32_t now)
 {
+    unsigned entry=s->entry_peaks>=4 && s->entry_peaks<=12?(unsigned)s->entry_peaks:ENTRY_PEAKS;
     if(!s->candidates) {
         s->candidates=1; s->first_peak_ms=now; s->peak_ms=now; return;
     }
@@ -58,9 +59,9 @@ static void candidate(walk_state *s,uint32_t now)
     if(s->walking) {
         if(s->steps<UINT32_MAX) s->steps++;
         add_time(s,interval);
-    } else if(++s->candidates>=ENTRY_PEAKS) {
+    } else if((unsigned)++s->candidates>=entry) {
         s->walking=1;
-        s->steps=UINT32_MAX-s->steps<ENTRY_PEAKS ? UINT32_MAX : s->steps+ENTRY_PEAKS;
+        s->steps=UINT32_MAX-s->steps<entry ? UINT32_MAX : s->steps+entry;
         add_time(s,now-s->first_peak_ms);
     }
 }
@@ -90,7 +91,8 @@ void walk_update(walk_state *s,uint32_t now,const hal_imu *m,int valid)
     s->baseline+=(magnitude-s->baseline)*dt/(.7f+dt);
     s->filtered+=(magnitude-s->baseline-s->filtered)*dt/(.05f+dt);
     if(s->filtered<s->valley) s->valley=s->filtered;
-    if(!s->high && s->filtered>.10f) {
+    float threshold=s->threshold_g>=.04f && s->threshold_g<=.20f?s->threshold_g:.10f;
+    if(!s->high && s->filtered>threshold) {
         s->high=1; s->high_ms=now; s->peak=s->filtered;
     }
     if(s->high && s->filtered>s->peak) s->peak=s->filtered;

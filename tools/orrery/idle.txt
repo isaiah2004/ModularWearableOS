@@ -1,0 +1,24 @@
+# Advancing RTC: no touches, every frame checked (not just the final frame).
+face 8
+time 10:10:10
+wait 8000
+mark locked_realtime
+expect idle 5000
+expect nolate
+set aod 1
+wait 1000
+mark aod_realtime
+expect idle 5000
+expect nolate
+set aod 0
+wait 1000
+mark wake_realtime
+expect idle 5000
+expect nolate
+# Cross a minute: only the clock should send pixels, then go completely quiet.
+time 10:10:55
+wait 100
+mark minute_clock
+expect maxdirty 20000 6000
+expect idle 5000
+expect nolate

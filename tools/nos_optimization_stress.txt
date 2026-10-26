@@ -1,0 +1,71 @@
+# Cold caches, warm caches, reversals, held motion, owner eviction and live data.
+time 10:09:30
+mark settings_cold
+root settings
+wait 50
+flick 233 370 233 100 100
+wait 300
+flick 233 110 233 370 100
+wait 1800
+mark settings_warm
+flick 233 370 233 100 150
+wait 300
+slide 233 100 233 350 500 300
+wait 800
+mark owners
+root modules
+wait 700
+flick 233 370 233 100 100
+wait 400
+root about
+wait 700
+flick 233 370 233 100 100
+wait 400
+root settings
+wait 50
+flick 233 370 233 100 100
+wait 700
+mark weather
+root weather
+wait 1000
+flick 233 370 233 100 100
+wait 800
+mark live_notifications
+root home
+notify Messages|Ana|Fresh content invalidates cached rows.
+notify Mail|Build|The optimization build has finished.
+notify Calendar|Meeting|Starts in ten minutes.
+notify Messages|Sam|Please check the new list.
+wait 5000
+root notifs
+wait 1000
+flick 233 370 233 100 100
+wait 150
+notify Messages|Updated|Changed while moving.
+wait 1000
+mark faces
+root home
+face 0
+wait 250
+face 1
+wait 250
+face 2
+wait 250
+face 3
+wait 250
+face 4
+wait 250
+face 5
+wait 250
+face 6
+wait 250
+face 7
+wait 250
+open faces
+wait 350
+flick 370 233 100 233 100
+wait 600
+mark settling
+root home
+face 0
+wait 2000

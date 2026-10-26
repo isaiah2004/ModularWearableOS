@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-22",
+  "app": "Background Jobs",
+  "launcher_label": "Jobs",
+  "installed_elf_sha256": "2896c3243cc249b6c1b33990f2749087e6a565539937c890809b28cdac91e534",
+  "source_tree_sha256": "eac75494e4c03d2012a85a5abd6eea65c53c62967c8e0cf36cb7414aafa41e30",
+  "budget": {
+    "app_bytes": 7795216,
+    "app_headroom_bytes": 69104,
+    "app_limit_bytes": 7864320,
+    "app_offset": 131072,
+    "app_partition": "ota_0",
+    "flash_bytes": 16777216,
+    "nvs_preserved": true
+  },
+  "features": {
+    "Background jobs": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/sys_background.c",
+      "symbol": "scr_background"
+    },
+    "Developer tools": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/set_developer.c",
+      "symbol": "scr_developer"
+    },
+    "Energy": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/fit_energy.c",
+      "symbol": "scr_energy"
+    },
+    "Integrated home pager": {
+      "linked": true,
+      "registry": "nos/apps/sys_home.c",
+      "source": "nos/apps/sys_home.c",
+      "symbol": "scr_home"
+    },
+    "Sensor logs": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/fit_energy.c",
+      "symbol": "scr_sports_logs"
+    },
+    "Solar/Orrery": {
+      "linked": true,
+      "registry": "nos/faces/faces.c",
+      "source": "nos/faces/face_orrery.c",
+      "symbol": "face_orrery"
+    },
+    "Sports": {
+      "linked": true,
+      "registry": "nos/apps/registry.c",
+      "source": "nos/apps/fit_workout.c",
+      "symbol": "scr_workout"
+    }
+  },
+  "validation": {
+    "firmware_identity": true,
+    "navigation_graph_readings_events_and_records": true,
+    "collects_with_app_closed": true,
+    "display_off_collection_and_sd_writes": true,
+    "preferences_preserved": true
+  },
+  "prefs_hash": "4e7f2e46",
+  "display_off_5s": {
+    "motion_updates": 757,
+    "activity_checks": 5,
+    "committed_records": 656.0
+  },
+  "focused_tests": 49,
+  "damage_identical_frames": 707,
+  "steady_simulation_frames": 857,
+  "history": {
+    "seconds": 120,
+    "latest_samples_per_second": 1,
+    "events_per_job": 16,
+    "persistence": "RAM only; existing SD journals are unchanged"
+  },
+  "preexisting_harness_failures": [
+    "test_watchctl: prior board command contradicts old exclusion",
+    "test_boot_resources: obsolete period declaration search",
+    "test_nos_launcher_bake: extracted ui_text lacks cost_profile header"
+  ],
+  "evidence_sha256": {
+    "build/background-focused-tests.log": "366ff225b8b28e10109f4477c6584eec1ff810e8d5c1aed1b27c124012cec338",
+    "build/background-steady.log": "f72244f9a42c0aa1c839b55c7a5c017270a99885a91ee6dd76e238f7e1a71386",
+    "build/background-damage.log": "42230e398eedf8512ea22ff6caac8f9819f4b50a0519dc89936644a11aa8d150",
+    "build/background-flash.log": "cf981d37a979424f6dd9ad8653b4ffabcade24856784fe80281f43bf90cf7eae",
+    "build/background-flash-wire.jsonl": "9dfdba90fcdcbed94e29b37dce660eb7f57aca3940854ef90d43c9ba79ed7016",
+    "build/background-device-verification.json": "8c08e33ca4757f6130561f4d633b3f21d2e7f7e880d8460d61319439c031d88f",
+    "build/background-device-wire.jsonl": "e208f330d56494ba3a1742cf48f5b85fe0e75f526c0e2e9008aa97d2a74af7f7",
+    "build/background-device-info.log": "b708925967e7af6600bd97efdeae427866f6ab5c76c3cd32d30a0d4e4b3c16d7"
+  }
+}

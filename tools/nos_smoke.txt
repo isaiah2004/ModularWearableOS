@@ -1,0 +1,20 @@
+# nos_smoke.txt — quick end-to-end check of the simulator tools
+time 10:09:30
+mark home
+wait 1000
+shot home
+mark launcher
+gif open_launcher 30
+flick 233 300 233 120 150
+wait 900
+shot after_flick
+mark app
+film iris_open 15
+tap 233 233
+wait 700
+shot app
+mark back
+press
+wait 800
+shot back_home
+expect top HOME

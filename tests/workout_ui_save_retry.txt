@@ -1,0 +1,29 @@
+# Finish and retry a failed save through visible buttons, retaining one record.
+wait 100
+present 0
+set step_rate 0
+workout start 5
+open workout
+wait 2500
+set sd 0
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+expect workout state 3
+expect workout save 3
+expect workout storage_dirty 1
+shot sport_save_failed
+tap 154 372
+wait 500
+expect workout save 3
+set sd 1
+tap 154 372
+wait 700
+expect workout save 2
+expect workout history 1
+expect workout storage_dirty 0
+shot sport_save_retried
+workout info ui_save_retried

@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include "weather.h"
+#include "asset.h"
 
 typedef struct {
     int year, month, day;     /* month 1-12, day 1-31 */
@@ -27,6 +28,7 @@ void     hal_frame_end(void);
 
 void     hal_get_datetime(hal_datetime *out);
 void     hal_set_datetime(const hal_datetime *dt);  /* set the wall clock */
+int      hal_set_datetime_checked(const hal_datetime *dt); /* validate and report write result */
 int      hal_battery_percent(void);       /* 0-100 */
 int      hal_battery_mv(void);            /* system-rail millivolts, 0 if unknown */
 /* Evidence, not a fuel gauge: USB raises this board's sensed system rail.
@@ -37,18 +39,28 @@ typedef struct {
     uint32_t age_ms;
 } hal_power;
 void hal_power_get(hal_power *out);
-uint64_t hal_epoch_seconds(void);          /* trusted UTC, or 0 if unknown */
+uint64_t hal_epoch_seconds(void);
+/* Display timezone, minutes east of UTC (NOS: Gadgetbridge time sync, Settings). */
+void hal_set_tz_min(int tz_min);          /* trusted UTC, or 0 if unknown */
 /* Battery history logger: `hal_batt_log_tick()` is called every main-loop iteration and self-times
  * a sample; the ring is dumped (delta-compressed) to the companion over BLE for offline analysis
  * (e.g. the "won't charge past 85%" issue). No-op on the sim. */
 void     hal_batt_log_tick(void);
 
-/* Persistent key/value blob store (device: NVS flash; sim: a file). Survives
- * reboot. Used for saved settings + the last-known time. Returns 1 on a
- * successful load of exactly `size` bytes, else 0. */
+/* Settings/Wi-Fi use alternating checked SD checkpoints on device, with NVS
+ * migration/card-absent fallback. Other keys use NVS; simulator uses memory/files.
+ * Loads return 1 only for exactly `size` bytes. An unresolved SD read must not
+ * silently replace durable settings with fallback data. */
 void     hal_store_save(const char *key, const void *data, int size);
 int      hal_store_save_checked(const char *key, const void *data, int size);
 int      hal_store_load(const char *key, void *data, int size);
+int      hal_store_load_pending(const char *key); /* unresolved authoritative read */
+/* Opaque explicit-edit overlay, separate from the SD-authoritative checkpoint.
+ * At most 256 bytes. Save verifies committed NVS readback and never clears SD
+ * pending/dirty. Load: 1 exact bytes, 0 absent, -1 unresolved (buffer unchanged).
+ * Portable prefs owns schema/field merge and writes an empty-mask tombstone. */
+int      hal_prefs_overlay_save_checked(const void *data, int size);
+int      hal_prefs_overlay_load(void *data, int size);
 void     hal_set_backlight(uint8_t level);/* 0-255 */
 void     hal_log(const char *msg);
 /* In-watch log ring for the diagnostics log screen. `hal_log_count` = lines kept (newest last);
@@ -81,7 +93,7 @@ void        hal_play(int sound);
  * access points, returns the count. Real esp_wifi_scan on device, fake list
  * in the simulator. */
 typedef struct {
-    char ssid[24];
+    char ssid[33]; /* complete 32-byte SSID; truncate only its displayed label */
     int  rssi;    /* dBm */
     int  chan;
 } hal_wifi_ap;
@@ -117,6 +129,13 @@ void hal_wifi_air_hist(uint8_t *out);       /* HAL_AIR_NCH * HAL_AIR_HIST bytes 
 /* Join a Wi-Fi network (own device). Prints "WIFI_IP: <ip>" over stdout once associated.
  * No-op on the simulator. */
 void hal_wifi_connect(const char *ssid, const char *pass);
+/* User-requested configuration. Setup stays available while STA joins. */
+int hal_setup_set(int enabled);
+void hal_setup_info(char *ssid, int sn, char *password, int pn, int *active);
+void hal_wifi_info(char *text, int n);
+void hal_wifi_set_enabled(int enabled);
+/* UI-thread pump for queued phone settings and cached portal statistics. */
+void hal_setup_poll(void);
 
 /* 6-axis IMU (QMI8658). Accel in g, gyro in deg/s. Returns 1 on success. */
 typedef struct {
@@ -125,9 +144,42 @@ typedef struct {
 } hal_imu;
 
 int hal_imu_read(hal_imu *out);
+/* Raw, fixed-rate acquisition, independent of UI frames. One consumer (recorder).
+ * UTC is Unix milliseconds, zero if the clock is not set. Stop retains unread
+ * samples; start resets counters. Only 25/50/100 Hz are supported. */
+typedef struct { uint64_t utc_ms; uint32_t ms; hal_imu v; } hal_imu_point;
+typedef struct { unsigned hz, queued; uint32_t dropped, missed, errors; } hal_imu_stream;
+int hal_imu_stream_start(unsigned hz);
+void hal_imu_stream_stop(void);
+int hal_imu_stream_read(hal_imu_point *out, int max);
+void hal_imu_stream_get(hal_imu_stream *out);
+/* Asynchronous SD recorder and browser. Requests return 0 if busy/unavailable.
+ * Snapshot getters never access the card. IDLE/ERROR mean the file is closed. */
+enum { HAL_IMU_IDLE, HAL_IMU_STARTING, HAL_IMU_RECORDING, HAL_IMU_STOPPING, HAL_IMU_ERROR };
+typedef struct {
+    int state; unsigned hz;
+    uint32_t elapsed_ms, samples, dropped, missed, errors;
+    uint64_t bytes;
+    char name[16], message[48];
+} hal_imu_record;
+typedef struct {
+    int busy, valid, id;
+    uint32_t duration_ms;
+    uint64_t bytes;
+    char name[16], message[48];
+} hal_imu_file;
+int hal_imu_record_start(unsigned hz);
+int hal_imu_record_stop(void);
+void hal_imu_record_get(hal_imu_record *out);
+/* direction: 0 newest, -1 older than id, +1 newer than id. */
+int hal_imu_files_request(int id, int direction);
+int hal_imu_file_delete(int id);
+void hal_imu_file_get(hal_imu_file *out);
 /* Fresh cached acquisition time, for motion algorithms that must not count a
  * sample twice. Timestamp uses the same wrapping millisecond clock as uptime. */
 int hal_imu_sample(hal_imu *out,uint32_t *sample_ms);
+/* Double knocks detected since boot (core/knock.c on the IMU stream): knock to lock. */
+uint32_t hal_knock_count(void);
 
 /* Cached hardware status; drawing must not perform filesystem operations. */
 typedef struct {
@@ -136,6 +188,16 @@ typedef struct {
     char message[48];
 } hal_storage;
 void hal_storage_get(hal_storage *out);
+/* Try mounting the SD card again (a card inserted after boot). Asynchronous: the board
+ * task mounts it and hal_storage_get() shows the result a moment later. */
+void hal_storage_retry(void);
+/* The watch's own flash, for Settings > Storage (filled once by the board task; zeros
+ * until then). nvs_*: settings / activity store entries. */
+typedef struct {
+    uint32_t flash_bytes, app_bytes, app_slot_bytes;
+    uint32_t nvs_used, nvs_total;
+} hal_flash_info;
+void hal_flash_info_get(hal_flash_info *out);
 int hal_audio_available(void);
 
 /* Ambient-audio spectrum for the visualizer: fills up to `n` bar levels
@@ -153,8 +215,8 @@ int hal_mic_level(void);
  * quiet to tell). Only meaningful while hal_mic_level() is being polled. */
 int hal_mic_pitch(void);
 
-/* Passive BLE scan (white-hat recon; observe-only, no advertising tricks).
- * Fills up to `max` nearby devices, returns the count. */
+/* On-demand BLE discovery. Copies a recent snapshot without blocking; polling
+ * renews a short scan lease. Friendly names include scan responses. */
 typedef struct {
     char name[24];
     char addr[18];   /* "AA:BB:CC:DD:EE:FF" */
@@ -162,6 +224,12 @@ typedef struct {
 } hal_ble_dev;
 
 int hal_ble_scan(hal_ble_dev *out, int max);
+/* Logical radio Off: stop all GAP activity/connections asynchronously; stack
+ * memory is retained. Calling before radio initialization sets the boot intent. */
+void hal_ble_set_enabled(int enabled);
+int hal_ble_connect_device(const char *addr);
+void hal_ble_disconnect_device(void);
+void hal_ble_device_status(char *text, int n);
 /* Last BLE pairing outcome as a short string (for the `bleinfo` serial command). */
 void hal_ble_status(char *buf, int n);
 
@@ -182,10 +250,14 @@ void hal_media_vol(int pct);
  * auto-contrast text colours), all RGB565. Returns 1 if a palette is set, else 0. */
 int  hal_media_colors(uint16_t *ring, uint16_t *artist_bg, uint16_t *song_bg,
                       uint16_t *artist_txt, uint16_t *song_txt);
-/* Album art pushed over Wi-Fi (POST /cover), raw RGB565 of `*px` by `*px` pixels. Returns
- * the buffer (row-major) or NULL if none received. `*gen` increments on each new image so
- * callers can tell when to repaint. No-op/NULL on the simulator. */
+/* Album art pushed over Wi-Fi (POST /cover), raw RGB565 of `*px` by `*px` pixels.
+ * Both accessors pin an immutable image or return NULL. Release each successful
+ * acquisition after pixel reads; the legacy name follows the same pin contract.
+ * `*gen` changes only after complete publication. Simulator returns NULL. */
 const uint16_t *hal_media_cover(int *px, unsigned *gen);
+/* Pin across pixel reads; a published buffer is immutable until released. */
+const uint16_t *hal_media_cover_acquire(int *px, unsigned *gen);
+void hal_media_cover_release(const uint16_t *pixels);
 
 /* ---- connectivity / feature status (control-panel grid) ------------------
  * Per-feature link state. OFF = feature disabled/not present; DOWN = enabled but
@@ -225,6 +297,10 @@ void hal_haptic(int ms);
 
 /* Allocate a large buffer (device: external PSRAM, not scarce internal SRAM;
  * sim: plain malloc). Used for full-screen layer caches. NULL on failure. */
-void *hal_big_alloc(uint32_t bytes);
+void *(hal_big_alloc)(uint32_t bytes); /* safe if psram.h's call macro was included first */
+#include "psram.h"
+/* Where the SD card's files live (device: "/sdcard"; sim: "build/sd" under the working dir).
+ * Only read files outside draw() (tick, enter): a slice per frame. */
+const char *hal_sd_root(void);
 
 #endif

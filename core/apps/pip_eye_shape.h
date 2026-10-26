@@ -19,10 +19,11 @@ static void pip_eye_blob(gfx_fb *fb, float cx, float cy,
     if(fb->rec) {
         unsigned hash=gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(
             gfx_hash_u(0x50495042u,color),cx),cy),hw),hh);
-        gfx_rec_cmd(fb,pip_floor(cx-hw-1)+fb->ox,
-            pip_floor(cy-hh-1)+fb->oy,
-            pip_ceil(cx+hw+1)+fb->ox,
-            pip_ceil(cy+hh+1)+fb->oy,hash);
+        /* The recorder applies fb translation once, like the raster path. */
+        gfx_rec_cmd(fb,pip_floor(cx-hw-1),
+            pip_floor(cy-hh-1),
+            pip_ceil(cx+hw+1),
+            pip_ceil(cy+hh+1),hash);
         return;
     }
     int c0=fb->cx0,c1=fb->cx1;

@@ -1,0 +1,21 @@
+face 8
+wait 700
+touch 300 300 1
+wait 1700
+touch 300 300 0
+wait 800
+mark zoom
+shot z1_at_1x
+drag 176 445 120 410 500
+wait 400
+shot z2_out
+tap 330 430
+wait 400
+shot z3_tap_3x
+drag 330 430 233 452 500
+wait 400
+shot z4_drag_back
+mark rest
+wait 1000
+expect idle
+expect nolate
