@@ -1,0 +1,24 @@
+face 8
+wait 700
+shot 01_chip_early
+mark hold_ring
+touch 300 300 1
+film hold 50 10 2
+wait 1700
+touch 300 300 0
+wait 600
+mark zoom_centre
+drag 300 300 360 340 500
+wait 900
+drag 176 445 300 441 600
+wait 300
+shot 02_zoom_about_centre
+mark relock
+press
+film relock 16 8 2
+wait 800
+shot 03_relocked_home
+mark idle
+wait 1000
+expect idle
+expect nolate

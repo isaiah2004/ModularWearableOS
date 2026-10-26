@@ -1,0 +1,26 @@
+# Stale and missing data break a segment; reacquisition never draws a connector.
+wait 100
+set step_rate 120
+set gps_motion 2.5
+workout start 1
+wait 14000
+expect workout gps_status 2
+expect workout distance 20 30
+workout info before_gap
+set gps_fix 12.9800 77.5929 2.5 1 10000
+wait 1100
+expect workout gps_status 3
+expect workout speed_valid 0
+workout info stale
+wait 5000
+set gps_fix 12.9900 77.5929 2.5 1
+wait 1100
+workout info reacquired
+expect workout gps_status 2
+set gps_fix 12.99002246 77.5929 2.5 1
+wait 1100
+workout info after_gap
+workout finish
+wait 200
+expect workout save 2
+

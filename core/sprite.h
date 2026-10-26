@@ -15,6 +15,10 @@ typedef struct {
 /* Allocate a w x h sprite (PSRAM). Returns 0 on failure. Sprites are never freed:
  * owners allocate a fixed set once and re-render into them. */
 int sprite_alloc(sprite *s, int w, int h);
+#ifdef NOS_PSRAM_TRACKING
+int nos_sprite_alloc(sprite *s, int w, int h, const char *owner);
+#define sprite_alloc(s,w,h) nos_sprite_alloc((s),(w),(h),__FILE__)
+#endif
 
 /* A gfx_fb that draws into the sprite: logical (0,0) is the sprite's top-left and
  * every primitive clips to it. Clear it first; it starts as whatever was there. */
@@ -37,6 +41,10 @@ typedef struct {
 } sprite8;
 
 int sprite8_alloc(sprite8 *s, int w, int h);
+#ifdef NOS_PSRAM_TRACKING
+int nos_sprite8_alloc(sprite8 *s, int w, int h, const char *owner);
+#define sprite8_alloc(s,w,h) nos_sprite8_alloc((s),(w),(h),__FILE__)
+#endif
 
 /* Quantize an RGB565 sprite of the same size into s (nearest RGB332 level). */
 void sprite8_from(sprite8 *s, const sprite *src);
@@ -48,5 +56,10 @@ void sprite8_lut_identity(uint16_t lut[256]);
 /* Copy the sprite to logical (x, y), mapping every pixel through lut. Opaque,
  * like sprite_blit; `key` must change whenever the pixels or the lut change. */
 void sprite8_blit(gfx_fb *fb, const sprite8 *s, int x, int y, const uint16_t *lut, unsigned key);
+
+/* sprite8_blit at twice the height: output row r shows sprite row r / 2, for images
+ * with no vertical detail worth a full row (a long vertical blur). h is the drawn
+ * height, at most 2 * s->h. */
+void sprite8_blit_y2(gfx_fb *fb, const sprite8 *s, int x, int y, int h, const uint16_t *lut, unsigned key);
 
 #endif

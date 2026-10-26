@@ -1,0 +1,144 @@
+open! chat
+wait 1000
+expect top VOICE CHAT
+expect chat busy 0
+expect chat saved 0
+shot ready
+tap 312 110
+wait 200
+expect top CHAT AUDIO
+shot audio
+tap 337 266
+wait 100
+expect chat volume 70
+tap 233 266
+wait 100
+expect chat volume 0
+tap 233 266
+wait 100
+expect chat volume 70
+tap 259 209
+wait 100
+expect chat volume 60
+tap 333 348
+wait 100
+expect chat mic_gain 36
+tap 233 348
+wait 100
+expect chat mic_gain 30
+tap 337 402
+wait 100
+expect chat speak 0
+tap 337 402
+wait 100
+expect chat speak 1
+press
+wait 400
+expect top VOICE CHAT
+tap 312 386
+gif listening 20
+wait 650
+expect chat state 1
+expect chat phase 1
+shot listening
+tap 312 386
+gif working 100
+wait 200
+expect chat state 2
+expect chat phase 2
+shot uploading
+wait 550
+expect chat state 3
+shot thinking
+wait 900
+expect chat state 4
+shot preparing_voice
+wait 650
+expect chat state 5
+shot speaking
+tap 312 110
+wait 150
+expect top CHAT AUDIO
+expect chat busy 1
+tap 129 266
+wait 100
+expect chat volume 50
+shot live_volume
+press
+wait 2400
+expect chat state 6
+expect chat saved 1
+expect chat dirty 0
+expect chat error 0
+shot answer
+tap 312 386
+wait 650
+tap 312 386
+wait 4500
+expect chat turns 2
+drag 233 208 233 285 600
+wait 200
+shot previous_turn
+tap 154 386
+wait 200
+expect chat turns 0
+expect chat saved 1
+shot new
+tap 312 386
+wait 650
+tap 312 386
+wait 4500
+expect chat saved 2
+tap 154 386
+wait 200
+tap 312 386
+wait 650
+tap 312 386
+wait 4500
+expect chat saved 3
+tap 154 386
+wait 200
+tap 312 386
+wait 650
+tap 312 386
+wait 4500
+expect chat saved 4
+tap 154 386
+wait 200
+expect chat turns 1
+expect chat saved 4
+tap 154 110
+wait 2600
+expect top SAVED CHATS
+shot history_full
+tap 362 157
+wait 300
+expect top DELETE CHAT
+shot delete_confirm
+tap 154 372
+wait 200
+expect top SAVED CHATS
+expect chat saved 4
+tap 362 157
+wait 200
+tap 312 372
+wait 300
+expect top SAVED CHATS
+expect chat saved 3
+expect chat dirty 0
+shot history_deleted
+tap 200 157
+wait 300
+expect top VOICE CHAT
+expect chat turns 1
+shot restored
+tap 312 386
+wait 650
+tap 312 386
+wait 4500
+expect chat turns 2
+expect chat saved 3
+expect memfailures 0
+press
+wait 500
+expect top HOME

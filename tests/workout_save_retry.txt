@@ -1,0 +1,25 @@
+# SD removal must leave a retryable result; repeated finish must not duplicate it.
+wait 100
+set step_rate 0
+set sd 0
+workout start 5
+wait 5000
+workout finish
+wait 1500
+expect workout state 3
+expect workout save 3
+expect workout storage_dirty 1
+workout info failed_save
+workout start 0 0
+workout finish 0
+set sd 1
+workout retry
+wait 500
+expect workout save 2
+expect workout storage_dirty 0
+expect workout history 1
+workout info retried_save
+workout retry
+wait 500
+expect workout history 1
+

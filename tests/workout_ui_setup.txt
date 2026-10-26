@@ -1,0 +1,140 @@
+# Configure real UI controls; wrist, dominant, racket, batting and bowling remain independent.
+wait 100
+present 0
+set step_rate 0
+open workout
+wait 700
+tap 154 244
+wait 700
+expect top SPORT READY
+tap 233 307
+wait 700
+expect top SESSION SETUP
+expect setup wrist 1
+expect setup mass 0
+expect setup autoresume 1
+tap 233 155
+wait 150
+tap 233 233
+wait 150
+tap 233 311
+wait 150
+tap 233 311
+wait 150
+tap 233 389
+wait 150
+expect setup wrist 2
+expect setup dominant 1
+expect setup playing_hand 2
+expect setup bowling 0
+slide 233 380 233 146 700 100
+wait 500
+tap 233 233
+wait 150
+expect setup autoresume 0
+tap 233 311
+wait 700
+expect top BODY MASS
+tap 312 292
+wait 150
+tap 312 292
+wait 150
+expect setup mass 0
+pop
+wait 700
+expect top SESSION SETUP
+expect setup mass 0
+tap 233 311
+wait 700
+expect top BODY MASS
+tap 312 292
+wait 150
+tap 233 372
+wait 700
+expect top SESSION SETUP
+expect setup mass 71
+tap 233 389
+wait 700
+expect top DETECT WRIST
+tap 233 372
+wait 200
+expect wrist state 3
+expect wrist reason 1
+expect wrist candidate 0
+expect setup wrist 2
+shot wrist_missing_calibration
+pop
+wait 700
+pop
+wait 700
+expect top SPORT READY
+tap 233 372
+wait 1200
+expect workout sport 8
+expect workout wrist 2
+expect workout dominant 1
+expect workout playing_hand 2
+expect workout bowling 0
+expect workout autoresume 0
+expect workout mass 71
+workout info racket_configured
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+tap 312 372
+wait 700
+expect top SPORTS
+tap 312 150
+wait 700
+tap 233 307
+wait 700
+expect top SESSION SETUP
+expect setup wrist 2
+expect setup playing_hand 0
+expect setup bowling 0
+tap 233 311
+wait 150
+tap 233 389
+wait 150
+tap 233 389
+wait 150
+expect setup wrist 2
+expect setup playing_hand 1
+expect setup bowling 2
+slide 233 380 233 146 700 100
+wait 500
+tap 233 233
+wait 150
+expect setup autoresume 1
+pop
+wait 700
+tap 233 372
+wait 1200
+expect workout sport 7
+expect workout wrist 2
+expect workout playing_hand 1
+expect workout bowling 2
+expect workout autoresume 1
+expect workout mass 71
+workout info cricket_configured
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 700
+tap 312 372
+wait 700
+tap 154 244
+wait 700
+tap 233 307
+wait 700
+expect setup playing_hand 2
+expect setup bowling 0
+expect setup wrist 2
+expect setup mass 71
+workout info setup_finished
+expect motionok

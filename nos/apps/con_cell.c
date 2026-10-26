@@ -1,6 +1,6 @@
 /* con_cell.c — Cellular (Quectel EG800AK strap module): status, SMS inbox, SMS reader.
  *
- * Status: four signal bars built from dot columns (the focal element) with the RSSI
+ * Status: four solid rising signal columns (the focal element) with the RSSI
  * in dBm beneath, the operator, technology and registration, and two round buttons
  * in the thumb zone: radio power (on = white) and messages (with an unread badge).
  * States: module absent, radio off, starting, no SIM, SIM locked, searching, live.
@@ -8,6 +8,7 @@
  * Reader: sender, time, the wrapped text, then quick-reply pills sent through
  * hal_lte_sms_send with a "[ SENT ]" confirmation. */
 #include "nos.h"
+#include "diag_log.h"
 #include "ui.h"
 #include "dot.h"
 #include "motion.h"
@@ -24,11 +25,12 @@ static float q(float x, float n) { return floorf(m_clamp(x, 0, 1) * n + 0.5f) / 
 
 /* ------------------------------------------- content <-> absent swap */
 /* Losing (or getting back) the phone or a module: the page on the glass leaves over 2
- * ink steps at 30 fps (2/3, 1/3), then the other page builds from its start: ui_absent's
+ * perceptual ink steps at 30 fps (56 %, 19 %: m_ink), then the other page builds from its
+ * start: ui_absent's
  * icon from the centre and its text ladder, or the content's own entry build. Same
  * timings as the outdoor apps. */
 #define PS_OUT_F 2
-typedef struct { int shown, want; float t_out, t_in; } pswap;
+typedef struct { int shown, want; nos_time_t t_out, t_in; } pswap;
 static void ps_init(pswap *s, int v) { s->shown = s->want = v; s->t_out = s->t_in = -10; }
 static int ps_frames(const pswap *s) { return (int)lroundf((nos_t - s->t_out) * NOS_FPS); }
 /* per tick with the live state; 1 on the frame the other page takes over (its build
@@ -39,11 +41,11 @@ static int ps_tick(pswap *s, int v)
     if (s->want != s->shown && ps_frames(s) >= PS_OUT_F) { s->shown = s->want; s->t_in = nos_t - 1.0f / NOS_FPS; return 1; }
     return 0;
 }
-/* ink of the page on the glass: 1 at rest, 2/3 then 1/3 while it leaves */
+/* ink of the page on the glass: 1 at rest, then m_ink(2/3), m_ink(1/3) while it leaves */
 static float ps_ink(const pswap *s)
 {
     if (s->want == s->shown) return 1.0f;
-    return 1.0f - (float)(ps_frames(s) + 1) / (PS_OUT_F + 1);
+    return m_ink(1.0f - (float)(ps_frames(s) + 1) / (PS_OUT_F + 1));
 }
 /* dims what is drawn next while the page leaves (restore fb->dim with the return value).
  * The dim is in no primitive's hash, so the page is recorded once with the step. */
@@ -62,17 +64,44 @@ static int ps_dim(gfx_fb *fb, const pswap *s)
  * screen waits for them, then the fill stays lit while the screen slides away. */
 #define HOLD_S (2.5f / NOS_FPS)
 
+/* A toggle's white disc grows from the centre (or folds back) over 6 whole frames, the
+ * tap's own frame first; a near-linear table (22 43 62 79 92 100 %) keeps the edge under
+ * the 16 px micro budget on the 72 px Find disc too, so both toggles click alike. */
+static const mframes TOGGLE6 = { 6, { 22, 43, 62, 79, 92, 100 } };
+
 /* ----------------------------------------------------------- shared data */
 #define SMS_MAX 16
 static hal_sms *s_sms;                 /* PSRAM, SMS_MAX entries (internal DRAM is full) */
 static int s_nsms;
 static int s_open = -1;                /* message shown by the reader */
 
+static hal_sms s_selected;
+static int s_selected_valid;
+/* The backend owns a single result latch. Keep its trace outside reader state so
+ * leaving/reopening cannot lose completion or permit a new send to overwrite it. */
+static uint32_t s_send_backend, s_send_trace;
+void svc_cell_tick(float dt)
+{
+    (void)dt;
+    if (!s_send_backend) return;
+    int state = hal_lte_sms_send_status(s_send_backend);
+    if (state != 0 && state != 3 && state != 4) return;
+    diag_action_result(s_send_trace, state == 3 ? DIAG_RESULT_SUCCESS :
+                       state == 0 ? DIAG_RESULT_STALE : DIAG_RESULT_FAILED, state);
+    s_send_backend = s_send_trace = 0;
+}
+
+static void sms_keepalive(void)
+{
+    if (nos_prefs.lte && (hal_ext_present() & EXT_LTE)) hal_lte_enable(1);
+}
+
 static void sms_refresh(void)
 {
     if (!s_sms) s_sms = (hal_sms *)hal_big_alloc(sizeof(hal_sms) * SMS_MAX);
     s_nsms = s_sms ? hal_lte_sms_list(s_sms, SMS_MAX) : 0;
     if (s_nsms < 0) s_nsms = 0;
+    if (s_nsms > SMS_MAX) s_nsms = SMS_MAX;
 }
 
 /* "yy/mm/dd,hh:mm:ss" -> "09:58" today, else "10 OCT" */
@@ -105,9 +134,12 @@ static void body_line(gfx_fb *fb, int y, const char *s, uint16_t c)
 }
 
 /* ============================================================ status ===== */
-#define BAR_PITCH 12.0f
-#define BAR_D     9.0f
+#define BAR_W     12.0f              /* signal columns: 12 px wide ... */
+#define BAR_H0    16.0f              /* ... 16 / 32 / 48 / 64 px tall ... */
+#define BAR_GAP   8.0f               /* ... 8 px apart */
 #define BAR_BOT   206.0f
+#define BAR_STAG  3                  /* build: a column starts every 3 frames ... */
+#define BAR_F     9                  /* ... and rises over 9 */
 #define BTN_Y     360.0f
 #define BTN_R     44.0f              /* 88 px: the OS button size */
 #define BTN_DX    64.0f
@@ -116,7 +148,7 @@ enum { CB_NONE = 0, CB_POWER, CB_SMS };
 enum { LS_ABSENT = 0, LS_OFF, LS_STARTING, LS_NOSIM, LS_LOCKED, LS_SEARCHING, LS_LIVE };
 
 static struct {
-    float t_enter, build, txt;
+    nos_time_t t_enter; float build, txt;
     hal_lte l;
     int   present;
     int   want_on;            /* the user asked for the radio */
@@ -125,13 +157,14 @@ static struct {
     pswap sw;                 /* 1 = the radio page, 0 = module absent */
     int   pressed;
     int   held;               /* last pressed button, lit until t_down + HOLD_S */
-    float t_down;
+    nos_time_t t_down;
     int   pend_sms;           /* the SMS tap waits for its pressed frames */
     int   sweep;              /* searching animation step */
     int   sweep_frame;
     int   unread;
     mtween fill;              /* power button white fill 0..1 */
     int   fill_on;
+    int   bk;                 /* whole frames into the build (< 0 before it) */
 } L;
 
 static const nos_screen scr_cell_sms;
@@ -146,6 +179,8 @@ static int lte_state(void)
     if (L.l.registered == 1 || L.l.registered == 2) return LS_LIVE;
     return LS_SEARCHING;
 }
+
+static float bar_h(int i, int k);
 
 static void cell_enter(void)
 {
@@ -162,7 +197,8 @@ static void cell_enter(void)
     L.st_c = L.st != LS_ABSENT ? L.st : LS_OFF;
     ps_init(&L.sw, L.present);
     L.fill_on = L.want_on || L.l.powered;
-    mtw_start(&L.fill, (float)L.fill_on, (float)L.fill_on, 0.01f, &EASE_MECH);
+    mtw_start(&L.fill, (float)L.fill_on, (float)L.fill_on, M_FRAMES(1), &EASE_LINEAR);
+    L.bk = -1;
     sms_refresh();
 }
 
@@ -175,7 +211,8 @@ static void cell_tick(float dt)
     if (L.st != LS_ABSENT) L.st_c = L.st;
     if (ps_tick(&L.sw, L.present)) L.t_enter = L.sw.t_in;   /* the other page builds now */
     L.build = q((nos_t - L.t_enter) / UI_ENTRY_S, 32);
-    L.txt = nos_t >= L.t_enter ? 1.0f : 0.0f;           /* words arrive with the build, at full ink */
+    L.bk = nos_t + 0.5f / NOS_FPS < L.t_enter ? -1 : m_frame_k(L.t_enter);
+    L.txt = L.bk >= 0 ? 1.0f : 0.0f;                    /* words arrive with the build, at full ink */
     L.unread = 0;
     for (int i = 0; i < s_nsms; i++) L.unread += s_sms[i].unread ? 1 : 0;
     if (L.l.unread_sms > L.unread) L.unread = L.l.unread_sms;
@@ -185,7 +222,8 @@ static void cell_tick(float dt)
     int on = L.want_on || L.l.powered;
     if (on != L.fill_on) {               /* the modem can drop on its own */
         L.fill_on = on;
-        mtw_start(&L.fill, mtw_value(&L.fill), (float)on, 0.18f, &EASE_MECH);
+        mtw_start_tab(&L.fill, mtw_value(&L.fill), (float)on, &TOGGLE6);
+        mtw_lead(&L.fill);
     }
     if (L.st == LS_STARTING || L.st == LS_SEARCHING) nos_keep_awake();
     if (L.pend_sms && nos_t - L.t_down >= HOLD_S && !nos_transitioning()) {
@@ -193,14 +231,35 @@ static void cell_tick(float dt)
         L.t_down = nos_t + 1.0f;            /* lit while the inbox slides in */
         nos_push(&scr_cell_sms, TX_PUSH);
     }
+#ifdef GFX_COST_MODEL
+    nos_motion_probe("cell.swap.ink", MC_FADE, 100.0f * ps_ink(&L.sw));
+    if (L.sw.shown && nos_t >= L.t_enter) {
+        nos_motion_probe("cell.power.r", MC_MICRO, BTN_R * mtw_value(&L.fill));
+        if (L.bk >= 0) {
+            nos_motion_probe("cell.bar0.h", MC_COMPONENT, bar_h(0, L.bk));
+            nos_motion_probe("cell.bar3.h", MC_COMPONENT, bar_h(3, L.bk));
+        }
+    }
+#endif
 }
 
-static void draw_bars(gfx_fb *fb, float build)
+/* Signal strength: four solid rising columns (BAR_W wide, BAR_H0 .. 4 BAR_H0 tall, BAR_GAP
+ * apart, 2 px corners) on one baseline. They grow up from it one after another: column i
+ * starts BAR_STAG frames after the one before and rises over BAR_F frames on EASE_STEADY
+ * in whole pixels, so the four are up after 18 frames (0.6 s). k = whole frames into
+ * the build. Each column is one rounded rectangle: a live change repaints one. */
+static float bar_h(int i, int k)
 {
-    const float bw = 2 * BAR_PITCH, gap = BAR_PITCH;
-    float x0 = UI_CX - (4 * bw + 3 * gap) * 0.5f;
+    int f = k - BAR_STAG * i + 1;                       /* the build's first frame shows */
+    float full = BAR_H0 * (float)(i + 1);
+    if (f <= 0) return 0;
+    if (f >= BAR_F) return full;
+    return floorf(full * bezier_ease(&EASE_STEADY, (float)f / BAR_F) + 0.5f);
+}
+static void draw_bars(gfx_fb *fb, int k)
+{
+    float x0 = UI_CX - (4 * BAR_W + 3 * BAR_GAP) * 0.5f;
     for (int i = 0; i < 4; i++) {
-        int rows = 2 * (i + 1);
         uint16_t on;
         int lit;
         switch (L.st_c) {
@@ -210,12 +269,9 @@ static void draw_bars(gfx_fb *fb, float build)
         default:           lit = 0; on = C_WHITE; break;
         }
         uint16_t off = L.st_c == LS_LIVE ? C_LINE2 : C_LINE;
-        /* bars build from the bottom up, one after another */
-        float bb = q(build * 1.6f - i * 0.2f, 16);
-        uint8_t v[2];
-        v[0] = v[1] = (uint8_t)(255.0f * bb);
-        dot_columns(fb, x0 + i * (bw + gap), BAR_BOT - rows * BAR_PITCH, 2, rows, BAR_PITCH, BAR_D, v,
-                    lit ? on : off, 0);
+        float h = bar_h(i, k);
+        if (h < 1) continue;
+        ui_rrect(fb, x0 + i * (BAR_W + BAR_GAP), BAR_BOT - h, BAR_W, h, h < 4 ? h * 0.5f : 2.0f, lit ? on : off);
     }
 }
 
@@ -255,8 +311,8 @@ static void cell_page(gfx_fb *fb)
                   "LTE MODULE", L.build);
         return;
     }
-    if (nos_t < L.t_enter) return;
-    draw_bars(fb, L.build);
+    if (L.bk < 0) return;
+    draw_bars(fb, L.bk);
     char b[40];
     switch (L.st_c) {
     case LS_LIVE:
@@ -292,8 +348,8 @@ static void cell_page(gfx_fb *fb)
     /* thumb zone: radio power, messages; full size, the glyphs build */
     float ib = q((nos_t - L.t_enter) / UI_ENTRY_S, 32);
     int on = L.want_on || L.l.powered;
-    {   /* power: a white disc grows from the centre as the radio turns on */
-        float f = q(mtw_value(&L.fill), 16);
+    {   /* power: a white disc grows from the centre as the radio turns on (float: AA) */
+        float f = mtw_value(&L.fill);
         int pr = shown_pressed(CB_POWER);
         cell_button(fb, UI_CX - BTN_DX, DOT_ICON_NONE, 0, pr, 0, BTN_R, ib);
         if (BTN_R * f > 1) ui_circle(fb, UI_CX - BTN_DX, BTN_Y, BTN_R * f, pr ? C_SEC : C_WHITE);
@@ -321,6 +377,8 @@ static int cell_btn_at(int x, int y)
 
 static int cell_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { L.pressed = L.held = CB_NONE; L.pend_sms = 0; L.t_down = -10; return 1; }
+
     if (L.st == LS_ABSENT) return 0;
     switch (in->type) {
     case IN_DOWN:
@@ -332,8 +390,12 @@ static int cell_input(const nos_input *in)
         L.pressed = CB_NONE;
         if (b == CB_POWER) {
             int on = !(L.want_on || L.l.powered);
+            uint32_t request = diag_action_request(DIAG_DOMAIN_CONTROL, DIAG_ACT_SET,
+                                                   (int32_t)diag_log_name_id("cell.power"));
+            diag_action_context(request, (int32_t)diag_log_name_id("CELLULAR"), L.l.powered);
             L.want_on = on;
             hal_lte_enable(on);
+            diag_action_result(request, DIAG_RESULT_PENDING, on); /* PWRKEY is asynchronous */
             nos_prefs.lte = (uint8_t)on;
             prefs_save();
             nos_feedback(on ? FB_TOGGLE_ON : FB_TOGGLE_OFF);
@@ -363,23 +425,27 @@ const nos_screen scr_cell = { "CELLULAR", cell_enter, 0, cell_tick, cell_draw, c
 
 static struct {
     ui_list list;
-    float t_enter;
+    nos_time_t t_enter;
     float txt;
     int   inited;
     int   pend;              /* tapped row, pushed once its press has shown */
     int   held;              /* row lit while the reader slides in */
-    float held_until;
+    nos_time_t held_until;
+    nos_time_t refresh_at;
+    int touching;
 } I = { .pend = -1, .held = -1 };
 
 static const nos_screen scr_cell_read;
+
+static float row_ink(int k) { return m_ink(m_clamp((float)(k + 1) / 4.0f, 0, 1)); }
 
 static void inbox_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
 {
     if (i >= s_nsms) return;
     const hal_sms *m = &s_sms[i];
-    /* rows stagger in 34 ms apart (6 rows at most) */
-    float st = q((nos_t - I.t_enter - 0.034f * (i < 6 ? i : 6)) / 0.15f, 4);
-    float k = fade * st;
+    /* rows fade in one frame apart (whole frames, 8 starts at most), each over 4
+     * perceptual ink steps, the first on the screen's first visible frame */
+    float k = fade * row_ink(m_stagger_k(m_frame_k(I.t_enter), i, 1));
     if (k <= 0) return;
     /* fixed-width cards: the glass edge crops a low card, the text never jumps sideways */
     pressed = pressed || i == I.pend || (i == I.held && nos_t < I.held_until);
@@ -398,24 +464,37 @@ static void inbox_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fad
 static void inbox_tap(int i)
 {
     if (i < 0 || i >= s_nsms) return;
+    s_selected = s_sms[i]; s_selected_valid = 1;
     I.pend = i;
 }
 
 static void inbox_enter(void)
 {
+    sms_keepalive();
     sms_refresh();
     if (!I.inited) { ui_list_init(&I.list, s_nsms, ROW_H, 104, inbox_row, inbox_tap); I.inited = 1; }
     else ui_list_set_n(&I.list, s_nsms);
     I.list.margin = 30;
     /* revealed by back (reader popped): keep the cards, no re-stagger */
-    if (!nos_revealed()) I.t_enter = nos_t;
+    if (!nos_revealed()) I.t_enter = nos_enter_t();
     I.pend = I.held = -1;
+    I.touching = 0; I.refresh_at = nos_t + 1;
 }
 
 static void inbox_tick(float dt)
 {
+    sms_keepalive();
+    if (!I.touching && I.pend < 0 && nos_t >= I.refresh_at && !nos_transitioning()) {
+        sms_refresh(); ui_list_set_n(&I.list, s_nsms); I.refresh_at = nos_t + 1;
+    }
     ui_list_tick(&I.list, dt);
     I.txt = 1.0f;
+#ifdef GFX_COST_MODEL
+    for (int i = 0; i < 4 && i < s_nsms; i += 3)
+        if (nos_t + 0.5f / NOS_FPS >= I.t_enter)
+            nos_motion_probe(i ? "cell.inbox.ink3" : "cell.inbox.ink0", MC_FADE,
+                             100.0f * row_ink(m_stagger_k(m_frame_k(I.t_enter), i, 1)));
+#endif
     if (I.pend >= 0 && nos_t - I.list.press_t >= HOLD_S && !nos_transitioning()) {
         s_open = I.pend;
         I.held = I.pend; I.held_until = nos_t + 0.6f;
@@ -436,7 +515,14 @@ static void inbox_draw(gfx_fb *fb)
     ui_title(fb, "MESSAGES", ui_list_offset(&I.list));
 }
 
-static int inbox_input(const nos_input *in) { return s_nsms ? ui_list_input(&I.list, in) : 0; }
+static int inbox_input(const nos_input *in)
+{
+    if (in->type == IN_CANCEL) { I.touching = 0; I.pend = I.held = -1; I.refresh_at = nos_t + 0.2f; ui_list_input(&I.list, in); return 1; }
+
+    if (in->type == IN_DOWN) I.touching = 1;
+    if (in->type == IN_UP || in->type == IN_DRAG_END) { I.touching = 0; I.refresh_at = nos_t + 0.2f; }
+    return s_nsms ? ui_list_input(&I.list, in) : 0;
+}
 
 static const nos_screen scr_cell_sms = { "MESSAGES", inbox_enter, 0, inbox_tick, inbox_draw, inbox_input, 0 };
 
@@ -449,12 +535,13 @@ static const char *const k_replies[NREPLY] = { "OK", "On my way", "Call you late
 
 static struct {
     ui_list list;
-    float t_enter, txt;
+    nos_time_t t_enter; float txt;
     int   lines;               /* wrapped body lines */
     int   header_h;
     int   reply;               /* can reply */
-    int   result;              /* 0 none, 1 sent, -1 failed */
-    float t_result;
+    int   result;              /* 0 none, 1 modem accepted, 2 pending, -1 failed */
+    uint32_t request;
+    nos_time_t t_result;
     int   sent_i;
     int   popped;
     int   inited;
@@ -488,8 +575,8 @@ static int count_lines(const char *s, int max_w)
 
 static void reply_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
 {
-    float st = q((nos_t - R.t_enter - 0.1f - 0.034f * i) / 0.15f, 4);
-    float k = fade * st;
+    /* chips fade in one frame apart after the text (3 frames), 4 perceptual steps each */
+    float k = fade * row_ink(m_stagger_k(m_frame_k(R.t_enter) - 3, i, 1));
     if (k <= 0) return;
     float w = 240, ph = 60;                         /* chip: 60 tall in a 90 px hit row */
     pressed = pressed || i == R.pend;
@@ -499,30 +586,44 @@ static void reply_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fad
 
 static void reply_tap(int i)
 {
-    if (R.result || s_open < 0 || i < 0 || i >= NREPLY) return;
+    if (R.result || !s_selected_valid || i < 0 || i >= NREPLY) return;
     R.pend = i;
 }
 
 static void reply_send(int i)
 {
-    int ok = hal_lte_sms_send(s_sms[s_open].from, k_replies[i]);
-    R.result = ok ? 1 : -1;
+    if (!s_selected_valid || i < 0 || i >= NREPLY) return;
+    uint32_t trace = diag_action_request(DIAG_DOMAIN_SMS, DIAG_ACT_SEND, (int32_t)s_selected.id);
+    diag_action_context(trace, (int32_t)diag_log_name_id("SMS_READ"), i);
+    svc_cell_tick(0);
+    if (s_send_backend) {
+        diag_action_result(trace, DIAG_RESULT_REJECTED, 1); /* earlier send owns the latch */
+        R.result = -1; R.t_result = nos_t; nos_feedback(FB_ERROR); return;
+    }
+    R.request = hal_lte_sms_send_request(s_selected.from, k_replies[i]);
+    if (R.request) { s_send_backend = R.request; s_send_trace = trace; }
+    diag_action_result(trace, R.request ? DIAG_RESULT_PENDING : DIAG_RESULT_REJECTED, R.request ? 1 : 0);
+    R.result = R.request ? 2 : -1;
     R.t_result = nos_t;
     R.sent_i = i;
-    nos_feedback(ok ? FB_SUCCESS : FB_ERROR);
+    nos_feedback(R.request ? FB_TAP : FB_ERROR);
 }
 
 static void read_enter(void)
 {
-    if (s_open >= 0 && s_open < s_nsms && s_sms[s_open].unread) {
-        hal_lte_sms_mark_read(s_open);
-        s_sms[s_open].unread = 0;
+    sms_keepalive();
+    if (nos_revealed()) return;
+    if (s_selected_valid && s_selected.unread) {
+        hal_lte_sms_mark_read_id(s_selected.id);
+        s_selected.unread = 0;
+        for (int i = 0; i < s_nsms; i++) if (s_sms[i].id == s_selected.id) s_sms[i].unread = 0;
     }
-    R.t_enter = nos_t;
+    R.t_enter = nos_enter_t();
     R.result = 0;
+    R.request = 0;
     R.popped = 0;
     R.pend = -1;
-    const hal_sms *m = (s_open >= 0 && s_open < s_nsms) ? &s_sms[s_open] : 0;
+    const hal_sms *m = s_selected_valid ? &s_selected : 0;
     R.lines = m ? count_lines(m->text, TEXT_W) : 1;
     if (R.lines > 7) R.lines = 7;
     R.reply = m && can_reply(m) && (hal_ext_present() & EXT_LTE);
@@ -540,12 +641,28 @@ static void read_enter(void)
 
 static void read_tick(float dt)
 {
+    sms_keepalive();
+    svc_cell_tick(dt);
+    if (R.result == 2) {
+        int state = hal_lte_sms_send_status(R.request);
+        if (state == 3 || state == 4 || state == 0) {
+            R.result = state == 3 ? 1 : -1; R.t_result = nos_t;
+            nos_feedback(R.result == 1 ? FB_SUCCESS : FB_ERROR);
+        }
+    }
     ui_list_tick(&R.list, dt);
     R.txt = 1.0f;
+#ifdef GFX_COST_MODEL
+    if (R.reply && !R.result)
+        for (int i = 0; i < NREPLY; i += 4)
+            if (nos_t + 0.5f / NOS_FPS >= R.t_enter)
+                nos_motion_probe(i ? "cell.reply.ink4" : "cell.reply.ink0", MC_FADE,
+                                 100.0f * row_ink(m_stagger_k(m_frame_k(R.t_enter) - 3, i, 1)));
+#endif
     if (R.pend >= 0 && nos_t - R.list.press_t >= HOLD_S) {
         int i = R.pend;
         R.pend = -1;
-        if (!R.result && s_open >= 0 && s_open < s_nsms) reply_send(i);
+        if (!R.result && s_selected_valid) reply_send(i);
     }
     if (R.result == 1 && !R.popped && nos_t - R.t_result > 1.3f && !nos_transitioning()) { R.popped = 1; nos_pop(); }
     if (R.result == -1 && nos_t - R.t_result > 1.6f) R.result = 0;
@@ -553,17 +670,20 @@ static void read_tick(float dt)
 
 static void read_draw(gfx_fb *fb)
 {
-    const hal_sms *m = (s_open >= 0 && s_open < s_nsms) ? &s_sms[s_open] : 0;
+    const hal_sms *m = s_selected_valid ? &s_selected : 0;
     if (!m) { ui_state(fb, UI_CX, UI_CY, "NO MESSAGE", C_SEC); return; }
     if (R.result) {
-        float p = q((nos_t - R.t_result) / 0.3f, 32);
-        dot_icon_anim(fb, R.result > 0 ? DOT_ICON_CHECK : DOT_ICON_CROSS, UI_CX, 196, 8.0f, 6.4f,
+        /* the reader cuts to the result: the glyph builds from the centre over 9 frames,
+         * the words come up over 4 perceptual steps (the send's own frame first) */
+        int k = m_frame_k(R.t_result) + 1;
+        float p = m_clamp((float)k / 9.0f, 0, 1), wk = m_ink(m_clamp((float)k / 4.0f, 0, 1));
+        dot_icon_anim(fb, R.result == 2 ? DOT_ICON_MSG : R.result == 1 ? DOT_ICON_CHECK : DOT_ICON_CROSS, UI_CX, 196, 8.0f, 6.4f,
                       C_WHITE, p, DOT_REVEAL_CENTER);
-        ui_state(fb, UI_CX, 300, R.result > 0 ? "SENT" : "NOT SENT", C_PRI);
+        ui_state(fb, UI_CX, 300, R.result == 2 ? "SENDING" : R.result == 1 ? "SENT" : "NOT SENT", ui_dim(C_PRI, wk));
         char b[64];
         if (R.result > 0) snprintf(b, sizeof b, "\"%s\"", k_replies[R.sent_i]);
         else snprintf(b, sizeof b, "Check the signal and try again");
-        body_line(fb, 336, b, C_SEC);
+        body_line(fb, 336, b, ui_dim(C_SEC, wk));
         return;
     }
     int off = (int)floorf(ui_list_offset(&R.list) + 0.5f);
@@ -585,8 +705,10 @@ static void read_draw(gfx_fb *fb)
 
 static int read_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { R.pend = -1; ui_list_input(&R.list, in); return 1; }
+
     if (R.result) {
-        if (in->type == IN_TAP && R.result > 0 && !R.popped) { R.popped = 1; nos_pop(); }
+        if (in->type == IN_TAP && R.result == 1 && !R.popped && !nos_transitioning()) { R.popped = 1; nos_pop(); }
         return in->type == IN_TAP || in->type == IN_DOWN || in->type == IN_UP;
     }
     return ui_list_input(&R.list, in);

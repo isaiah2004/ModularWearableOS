@@ -37,8 +37,16 @@
 /* called once by the firmware after board init (I2C bus up, NVS ready): probes
  * the modules and starts the background service task. */
 void hal_ext_init(void);
+/* Idempotent asynchronous shutdown. Poll: 0 pending, 1 acknowledged clean,
+ * -1 timeout/error (keep polling; never interpret a timeout as powered off). */
+void hal_ext_shutdown_begin(void);
+int  hal_ext_shutdown_poll(void);
+/* Release quiesce admission after an in-flight shutdown hook returns. Owned
+ * file finalization and already-requested hardware power-down still finish. */
+void hal_ext_shutdown_cancel(void);
 /* Serial hook: `ext` prints module status; `ext help` lists test sub-commands. */
 void hal_ext_debug(const char *cmd);
+int  hal_ext_debug_command(const char *cmd); /* 1 accepted/status, 0 rejected; async completion is separate */
 
 enum {
     EXT_HAPTIC = 1 << 0,
@@ -88,6 +96,7 @@ void hal_audio_volume(int pct);          /* 0-100 */
 /* Play a 16 kHz mono 16-bit PCM file from SD (voice memo). 1 = started. */
 int  hal_audio_play_file(const char *path);
 int  hal_audio_playing(void);            /* 1 while a PCM stream plays */
+int  hal_audio_play_result(void);         /* 0 pending/playing, 1 finished, -1 error */
 uint32_t hal_audio_play_pos_ms(void);
 void hal_audio_play_stop(void);
 
@@ -98,10 +107,16 @@ float hal_mic_db(void);
 /* 32 recent envelope samples 0-255, newest last (waveform display). */
 int   hal_mic_wave(uint8_t out[32]);
 /* Record 16 kHz mono 16-bit WAV to SD. Returns 1 if recording started. */
-int   hal_rec_start(const char *path);
+int   hal_rec_start(const char *path);   /* 1 = bounded request accepted */
+int   hal_rec_start_exclusive(const char *path); /* 1 queued, -2 known collision, 0 rejected */
 void  hal_rec_stop(void);
 int   hal_rec_active(void);
 uint32_t hal_rec_ms(void);
+/* 0 idle, 1 queued/recording, 2 finalizing, 3 saved, 4 error. Terminal state is
+ * latched until another request is accepted. Saved means checked final publish. */
+int   hal_rec_status(void);
+enum { HAL_REC_PENDING=0, HAL_REC_DONE=1, HAL_REC_ERROR=-1, HAL_REC_EXISTS=-2 };
+int   hal_rec_result(void); /* latched result; collision can be discovered asynchronously */
 
 /* ---- GPS (u-blox M10 NMEA) -------------------------------------------------- */
 typedef struct {
@@ -138,24 +153,35 @@ typedef struct {
 } hal_lte;
 void hal_lte_enable(int on);             /* PWRKEY sequence; takes seconds, non-blocking */
 int  hal_lte_get(hal_lte *out);          /* 1 = module present */
-typedef struct { char from[24]; char text[160]; char when[20]; int unread; } hal_sms;
+typedef struct { char from[24]; char text[160]; char when[20]; int unread; uint32_t id; } hal_sms;
 int  hal_lte_sms_list(hal_sms *out, int max);   /* cached inbox, newest first */
 int  hal_lte_sms_send(const char *to, const char *text);  /* 1 = queued */
-void hal_lte_sms_mark_read(int i);        /* inbox index from hal_lte_sms_list (the SIM marks it read on CMGR) */
+void hal_lte_sms_mark_read(int i);        /* local overlay; prefer stable ID below */
+uint32_t hal_lte_sms_send_request(const char *to, const char *text);
+int hal_lte_sms_send_status(uint32_t id); /* 0 unknown,1 queued,2 sending,3 accepted by CMGS,4 failed */
+void hal_lte_sms_mark_read_id(uint32_t id);
 
 /* ---- environment (BME280) --------------------------------------------------- */
 typedef struct {
     int   valid;
     float temp_c, humidity, pressure_hpa;
     float altitude_m;      /* from pressure and the reference below */
+    int humidity_valid;    /* valid BME humidity; false for BMP/absent/stale */
+    uint32_t sample_ms;    /* last successful acquisition; getters never renew it */
 } hal_env;
+#define NOS_ENV_MAX_AGE_MS 6000u
 int  hal_env_get(hal_env *out);
 void hal_env_set_sea_level(float hpa);   /* altimeter calibration */
 /* 1 sample per 10 min for 24 h (144), oldest first; returns count. Barometer trend. */
 int  hal_env_history(float *hpa_out, int max);
 
 /* ---- light / proximity / gesture (APDS-9960) -------------------------------- */
-typedef struct { int valid; float lux; int prox; /* 0-255 */ } hal_light;
+typedef struct {
+    int valid; float lux; int prox; /* 0-255 */
+    int prox_valid;
+    uint32_t sample_ms, prox_ms; /* independent successful ALS/proximity acquisitions */
+} hal_light;
+#define NOS_LIGHT_MAX_AGE_MS 2000u
 int  hal_light_get(hal_light *out);
 enum { GEST_NONE = 0, GEST_UP, GEST_DOWN, GEST_LEFT, GEST_RIGHT, GEST_NEAR, GEST_FAR };
 int  hal_light_gesture(void);            /* pops the last air gesture, GEST_NONE if none */
@@ -179,17 +205,26 @@ typedef struct {
     int   spo2;            /* % or 0 */
     float quality;         /* 0-1 signal confidence */
     uint8_t wave[48];      /* recent PPG, 0-255, newest last (for the live trace) */
+    uint32_t sample_ms;    /* monotonic acquisition time; 0 until a FIFO read succeeds */
 } hal_hr;
 void hal_hr_enable(int on);
+enum { HAL_HR_OWNER_WORKOUT=1u, HAL_HR_OWNER_HEART=2u, HAL_HR_OWNER_BREATHE=4u,
+       HAL_HR_OWNER_LEGACY=8u };
+/* Each consumer releases only its own demand. Getters renew the shared lease. */
+void hal_hr_request(unsigned owner, int on);
 int  hal_hr_get(hal_hr *out);            /* 1 = module present */
 /* Resting/periodic samples taken in the background, one per 10 min, 0 = none. */
 int  hal_hr_history(uint8_t *bpm_out, int max);
+typedef struct { uint32_t sample_ms, epoch; uint16_t bpm; } hal_hr_sample;
+/* Producer timestamps stay fixed across UI refreshes. epoch=0 means untrusted UTC. */
+int  hal_hr_history_samples(hal_hr_sample *out, int max);
 
 /* ---- system ----------------------------------------------------------------- */
 /* Side button: the OS polls this each frame. 1 = held down. */
 int  hal_button_down(void);
 /* Display power: 0 off, 1 AOD (low brightness), 2 on. */
 void hal_display_power(int mode);
+int  hal_display_mode(void);             /* actual current display power state */
 /* Optional: free PSRAM/internal heap, for About/diagnostics. */
 void hal_mem_info(uint32_t *psram_free, uint32_t *internal_free);
 /* Monotonic counters for diagnostics: frames presented, late frames. */

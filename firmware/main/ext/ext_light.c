@@ -1,3 +1,4 @@
+#include "sports.h"
 /* ext_light.c — APDS-9960 at 0x39: ambient light (lux), proximity, air gestures.
  *
  * Always-on low-rate cycle: proximity (8 x 16 us pulses @ 100 mA) -> ALS
@@ -67,7 +68,9 @@ typedef struct {
     uint8_t id;
     int again;                        /* index into GAINS */
     uint32_t next, last_gest_call;
-    int gest_on, gest_want, errors;
+    int gest_on, gest_want, errors, suspended;
+    unsigned als_errors, prox_errors, status_errors;
+    uint32_t last_error_ms; int last_error_op;
     hal_light cur;
     float prox_base;
     /* gesture session */
@@ -103,7 +106,7 @@ void light_init(void)
              ext_wr(d, R_GPENTH, 40) && ext_wr(d, R_GEXTH, 30) && ext_wr(d, R_GCONF1, 0x40) &&
              ext_wr(d, R_GCONF2, 0x41) && ext_wr(d, R_GPULSE, 0xC9) && ext_wr(d, R_GCONF3, 0x00) &&
              ext_wr(d, R_GCONF4, 0x00) && set_enable();
-    if (!ok) { i2c_master_bus_rm_device(d); free(Lt); Lt = NULL; return; }
+    if (!ok) { i2c_master_bus_rm_device(d); nos_mem_free(Lt); Lt = NULL; return; }
     Lt->prox_base = 255;
     Lt->last_gest_call = ext_ms() - NOS_EXT_IDLE_MS - 1;
     Lt->next = ext_ms() + 400;
@@ -169,6 +172,11 @@ static void gesture_poll(uint32_t now)
 uint32_t light_service(uint32_t now)
 {
     if (!Lt) return 1000;
+    if(Lt->suspended){if(!set_enable())return 400;Lt->suspended=0;}
+    portENTER_CRITICAL(&ext_lock);
+    if(Lt->cur.valid && ext_elapsed(now,Lt->cur.sample_ms)>NOS_LIGHT_MAX_AGE_MS)Lt->cur.valid=0;
+    if(Lt->cur.prox_valid && ext_elapsed(now,Lt->cur.prox_ms)>NOS_LIGHT_MAX_AGE_MS) {Lt->cur.prox_valid=0;Lt->cur.prox=0;}
+    portEXIT_CRITICAL(&ext_lock);
     if (Lt->gest_want && ext_idle(now, Lt->last_gest_call)) Lt->gest_want = 0;
     if (Lt->gest_want != Lt->gest_on) {
         Lt->gest_on = Lt->gest_want;
@@ -184,10 +192,10 @@ uint32_t light_service(uint32_t now)
     Lt->next = now + 400;
     uint8_t st = 0, c[8], p = 0;
     if (!ext_rd(Lt->dev, R_STATUS, &st, 1)) {
-        if (++Lt->errors > 5) { portENTER_CRITICAL(&ext_lock); Lt->cur.valid = 0; portEXIT_CRITICAL(&ext_lock); }
+        Lt->errors++;Lt->status_errors++;Lt->last_error_op=1;Lt->last_error_ms=ext_ms();
         return 400;
     }
-    Lt->errors = 0;
+    Lt->status_errors = 0;
     hal_light v;
     portENTER_CRITICAL(&ext_lock);
     v = Lt->cur;
@@ -195,26 +203,33 @@ uint32_t light_service(uint32_t now)
     if ((st & 0x01) && ext_rd(Lt->dev, R_CDATA, c, 8)) {
         float C = (float)(c[0] | c[1] << 8), R = (float)(c[2] | c[3] << 8);
         float Gc = (float)(c[4] | c[5] << 8), B = (float)(c[6] | c[7] << 8);
+        float raw[]={C,R,Gc,B};sports_emit(SP_LIGHT_RAW,raw,4);
         float ir = (R + Gc + B - C) * 0.5f;
         if (ir < 0) ir = 0;
         float g = Gc - ir;
         if (g < 0) g = 0;
         v.lux = g * EXT_APDS_LUX_DF * EXT_APDS_WINDOW_GA / (ATIME_MS * (float)GAINS[Lt->again]);
         v.valid = 1;
+        v.sample_ms=ext_ms();Lt->als_errors=0;
         int ng = Lt->again;
         if (C > 37925 * 0.9f && ng > 0) ng--;
         else if (C < 37925 * 0.04f && ng < 3) ng++;
         if (ng != Lt->again) { Lt->again = ng; set_ctrl(); }
-    }
+    } else {Lt->als_errors++;Lt->errors++;Lt->last_error_op=2;Lt->last_error_ms=ext_ms();}
     if ((st & 0x02) && ext_rd(Lt->dev, R_PDATA, &p, 1)) {
         if (p < Lt->prox_base) Lt->prox_base += ((float)p - Lt->prox_base) * 0.5f;
         else Lt->prox_base += 0.04f;                        /* ~1 count / 10 s upward drift */
         int pr = (int)((float)p - Lt->prox_base);
         v.prox = pr < 0 ? 0 : pr > 255 ? 255 : pr;
-    }
+        v.prox_valid=1;v.prox_ms=ext_ms();Lt->prox_errors=0;
+    } else {Lt->prox_errors++;Lt->errors++;Lt->last_error_op=3;Lt->last_error_ms=ext_ms();}
+    now=ext_ms();
+    if(v.valid && ext_elapsed(now,v.sample_ms)>NOS_LIGHT_MAX_AGE_MS)v.valid=0;
+    if(v.prox_valid && ext_elapsed(now,v.prox_ms)>NOS_LIGHT_MAX_AGE_MS){v.prox_valid=0;v.prox=0;}
     portENTER_CRITICAL(&ext_lock);
     Lt->cur = v;
     portEXIT_CRITICAL(&ext_lock);
+    {float sv[]={ (float)v.valid,v.lux,(float)v.prox };sports_emit(SP_LIGHT,sv,3);}
     return Lt->gest_on ? 15 : 400;
 }
 
@@ -225,13 +240,16 @@ int hal_light_get(hal_light *out)
     portENTER_CRITICAL(&ext_lock);
     v = Lt->cur;
     portEXIT_CRITICAL(&ext_lock);
+    uint32_t now=ext_ms();
+    if(v.valid && ext_elapsed(now,v.sample_ms)>NOS_LIGHT_MAX_AGE_MS)v.valid=0;
+    if(v.prox_valid && ext_elapsed(now,v.prox_ms)>NOS_LIGHT_MAX_AGE_MS){v.prox_valid=0;v.prox=0;}
     if (out) *out = v;
     return v.valid;
 }
 
 int hal_light_gesture(void)
 {
-    if (!Lt) return GEST_NONE;
+    if (!Lt || ext_shutdown_requested()) return GEST_NONE;
     Lt->last_gest_call = ext_ms();
     int g = GEST_NONE;
     portENTER_CRITICAL(&ext_lock);
@@ -243,7 +261,7 @@ int hal_light_gesture(void)
 /* Register writes happen on the ext task; this only flips the request. */
 void hal_light_gesture_enable(int on)
 {
-    if (!Lt) return;
+    if (!Lt || (on && ext_shutdown_requested())) return;
     Lt->last_gest_call = ext_ms();
     Lt->gest_want = on ? 1 : 0;
 }
@@ -252,7 +270,18 @@ void light_debug(void)
 {
     if (!Lt) { printf("EXT light absent (no APDS-9960 at 0x39)\n"); return; }
     hal_light v; hal_light_get(&v);
-    printf("EXT light id=0x%02x valid=%d lux=%.1f prox=%d base=%.1f again=%dx gest_on=%d gestures=%u queued=%d\n",
+    printf("EXT light id=0x%02x valid=%d lux=%.1f prox=%d base=%.1f again=%dx gest_on=%d gestures=%u queued=%d prox_valid=%d als_ms=%u prox_ms=%u errors=%u/%u/%u last_error_op=%d last_error_ms=%u\n",
            Lt->id, v.valid, (double)v.lux, v.prox, (double)Lt->prox_base, GAINS[Lt->again], Lt->gest_on,
-           (unsigned)Lt->gestures, Lt->qn);
+           (unsigned)Lt->gestures, Lt->qn,v.prox_valid,(unsigned)v.sample_ms,(unsigned)v.prox_ms,
+           Lt->status_errors,Lt->als_errors,Lt->prox_errors,Lt->last_error_op,(unsigned)Lt->last_error_ms);
+}
+int light_shutdown_poll(uint32_t now)
+{
+    (void)now;
+    if(!Lt)return 1;
+    Lt->suspended=1;
+    if(!ext_wr(Lt->dev,R_ENABLE,0))return -1;
+    Lt->gest_on=Lt->gest_want=Lt->sess=Lt->qn=0;
+    portENTER_CRITICAL(&ext_lock);Lt->cur.valid=Lt->cur.prox_valid=0;Lt->cur.prox=0;portEXIT_CRITICAL(&ext_lock);
+    return 1;
 }

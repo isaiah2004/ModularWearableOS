@@ -14,7 +14,7 @@
  *
  * Each sensor test is probe -> read -> plausibility, with real thresholds (DI[].check):
  * accel |g| 0.80-1.20, RTC advancing with uptime, rail 3.00-4.40 V, BME280 -20-60 C /
- * 0-100 % / 300-1100 hPa, lux >= 0 and not frozen, |B| 20-70 uT, HR IR live + skin,
+ * 0-100 % / 300-1100 hPa, lux/proximity plausibility, |B| 20-70 uT, HR IR live + skin,
  * new NMEA data from the GPS (a fix isn't needed), LTE answering AT, a mic floor that is
  * neither silent nor railed. Tests only poll the cached HAL getters (no bus calls in
  * tick) and their clocks advance only while the app is on screen, so a cover can't time
@@ -40,8 +40,11 @@
 #define PRESS_HOLD  0.05f
 #define PRESS_TRAVEL 8
 #define ROW_GAP 24
-#define FADE_S 0.15f              /* view cross-fade out; the next view then builds */
-#define MORPH_S 0.28f
+/* Motion (docs/MOTION30.html): whole frames throughout. A view fades out over 3 frames
+ * (62/38/12 % ink, perceptual) and the next one builds from the 4th; text swaps fade the
+ * old out, then the new in, never both at once. */
+#define FADE_F 4                  /* frames of a view's fade-out; the next view builds from frame 4 */
+#define LEAD (1.0f / M_FPS)       /* clocks started from input begin one frame in: input moves now */
 
 enum { D_BUTTON = 0, D_TOUCH, D_IMU, D_RTC, D_BATT, D_SD,
        D_HAPTIC, D_MIC, D_SPK, D_GPS, D_LTE, D_ENV, D_LIGHT, D_MAG, D_HR, D_N };
@@ -68,7 +71,7 @@ static const dinfo DI[D_N] = {
     { "Cellular", "CELLULAR", "LTE", DOT_ICON_SIGNAL, EXT_LTE, { "ANSWERS AT IN 25 s", 0 } },
     { "Climate", "CLIMATE", "CLIMATE", DOT_ICON_THERMO, EXT_ENV,
       { "-20 TO 60\xB0" "C, 0-100%", "300 TO 1100 hPa" } },
-    { "Light", "LIGHT", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, { "0 LUX OR MORE", "READING NOT FROZEN" } },
+    { "Light", "LIGHT", "LIGHT", DOT_ICON_SUN, EXT_LIGHT, { "LUX >= 0, PROX 0-255", "PLAUSIBILITY ONLY" } },
     { "Compass", "COMPASS", "MAG", DOT_ICON_COMPASS, EXT_MAG, { "FIELD 20 TO 70 uT", "READING NOT FROZEN" } },
     { "Heart rate", "HEART RATE", "HR", DOT_ICON_HEART, EXT_HR, { "IR SIGNAL LIVE AND", "SKIN CONTACT IN 8 s" } },
 };
@@ -78,7 +81,7 @@ enum { ST_WAIT = 0, ST_RUN, ST_ASK, ST_PASS, ST_FAIL, ST_ABSENT, ST_SKIP };   /*
 typedef struct {
     int st;
     float el;                 /* test clock, s: advances only while the app is on screen */
-    float t_done;             /* nos_t when it resolved (rows cross-fade) */
+    nos_time_t t_done;             /* nos_t when it resolved (rows cross-fade) */
     char why[28];             /* the row's sub-line: the reading, or why it failed */
     char rd[2][40];           /* raw values for the row page */
 } dres;
@@ -101,16 +104,16 @@ static struct {
 static struct {
     int inited;
     int running, done;
-    float t_done;
+    nos_time_t t_done;
     uint32_t step_frame;
     int queue[4], nq, qi;     /* the cards of this run */
     int view, pview;          /* -1 the list, else the D_* card on screen */
-    float sw_t, build_t;      /* view switch time; the view's entry build clock */
+    nos_time_t sw_t; nos_time_t build_t;      /* view switch time; the view's entry build clock */
     int npass, nfail, ntested, nskip;
     char hero[12];
-    char cnt_from[16], cnt_to[16]; float cnt_t;   /* "8 OF 13" tested parts resolved */
-    int pend; float pend_t;   /* a list fading out before a RE-RUN or the fails-first re-layout */
-    float title_off0, title_t0;   /* the title slides back from this scroll after a reset */
+    char cnt_from[16], cnt_to[16]; nos_time_t cnt_t;   /* "8 OF 13" tested parts resolved */
+    int pend; nos_time_t pend_t;   /* a list fading out before a RE-RUN or the fails-first re-layout */
+    float title_off0; nos_time_t title_t0;   /* the title slides back from this scroll after a reset */
     int covered;              /* a row page is on top */
 } G;
 enum { PEND_NONE = 0, PEND_RERUN, PEND_RELAYOUT };
@@ -339,6 +342,9 @@ static void test_light(dres *r)
 {
     hal_light l;
     if (hal_light_get(&l) && l.valid) {
+        if (!isfinite(l.lux) || l.lux < 0 || l.prox < 0 || l.prox > 255) {
+            WHY(D_LIGHT, "INVALID LIGHT SAMPLE"); res(D_LIGHT, ST_FAIL); return;
+        }
         if (!T.lt_n || l.lux < T.lt_min) T.lt_min = l.lux;
         if (!T.lt_n || l.lux > T.lt_max) T.lt_max = l.lux;
         if (!T.lt_n || l.prox < T.lt_pmin) T.lt_pmin = l.prox;
@@ -348,11 +354,12 @@ static void test_light(dres *r)
     }
     if (r->el < 4.0f) return;
     RD(D_LIGHT, 0, "%.0f TO %.0f LUX", T.lt_min, T.lt_max);
-    RD(D_LIGHT, 1, "PROX %d-%d  %d READS", T.lt_pmin, T.lt_pmax, T.lt_n);
+    RD(D_LIGHT, 1, "PROX %d-%d  %d POLLS", T.lt_pmin, T.lt_pmax, T.lt_n);
     if (!T.lt_n) { WHY(D_LIGHT, "NO SAMPLE IN 4 s"); res(D_LIGHT, ST_FAIL); }
-    else if (!isfinite(T.lt_min) || T.lt_min < 0) { WHY(D_LIGHT, "%.0f LUX, INVALID", T.lt_min); res(D_LIGHT, ST_FAIL); }
-    else if (T.lt_n >= 10 && T.lt_max == T.lt_min && T.lt_pmax == T.lt_pmin) { WHY(D_LIGHT, "READING FROZEN"); res(D_LIGHT, ST_FAIL); }
-    else { WHY(D_LIGHT, "%.0f LUX", T.lt_last); res(D_LIGHT, ST_PASS); }
+    /* The HAL exposes no acquisition timestamp/sequence for light. Equal
+     * cached values cannot prove a frozen stream, including fresh darkness.
+     * This verdict checks plausibility; it makes no liveness claim. */
+    else { WHY(D_LIGHT, "%.0f LUX, PLAUSIBLE", T.lt_last); res(D_LIGHT, ST_PASS); }
 }
 
 static void test_mag(dres *r)
@@ -402,8 +409,8 @@ static void go_view(int v)
     card_keep();                     /* the outgoing card fades as it was, not reset */
     G.pview = G.view;
     G.view = v;
-    G.sw_t = nos_t;
-    G.build_t = nos_t + FADE_S;
+    G.sw_t = nos_t - LEAD;                       /* the fade shows on this frame */
+    G.build_t = G.sw_t + M_FRAMES(FADE_F - 1);   /* frame FADE_F is the build's first */
     card_reset();
 }
 
@@ -449,8 +456,8 @@ static void run_start(int mode)
     list_init();
     count_set(1);
     G.pview = VIEW_NONE; G.view = G.queue[0]; G.sw_t = nos_t;
-    G.build_t = mode == 1 ? nos_enter_t() : nos_t;
-    G.title_t0 = nos_t;
+    G.build_t = mode == 1 ? nos_enter_t() : nos_t - LEAD;   /* after a fade-out: no blank frame */
+    G.title_t0 = G.build_t;
     if (mode == 1) G.title_off0 = 0;
     card_reset();
 }
@@ -524,6 +531,22 @@ static void diag_step(float dt)
 
 /* ======================================================================= helpers */
 static float q8(float x) { return floorf(m_clamp(x, 0, 1) * 8.0f + 0.5f) / 8.0f; }
+/* ink of something fading out from t0: 100, 62, 38, 12 %, then gone (frame FADE_F) */
+static float fade_out(nos_time_t t0) { return m_ink(1.0f - m_frame_k(t0) / (float)FADE_F); }
+static int fading_since(nos_time_t t0) { return m_frame_k(t0) < FADE_F; }
+/* a text swap k frames in: the old one goes over 2 frames, the new one comes in over
+ * `in` frames after it (4 frames in all for a digit, 6 for a result line) */
+static void swap_inks(int k, int in, float *kout, float *kin)
+{
+    *kout = k >= 2 ? 0.0f : m_ink(1.0f - k / 2.0f);
+    *kin = k < 2 ? 0.0f : m_ink((k - 1) / (float)in);
+}
+#define SWAP_DIGIT 3              /* "2 OF 4", "12 OF 13": 4 frames */
+#define SWAP_RESULT 5             /* a row's TESTING -> its result: 6 frames */
+/* EASE_STEADY as frame tables (R3): the peak step <= 1.56x the average, no creep */
+static const mframes MF_STEADY4 = { 4, { 38, 70, 92, 100 } };
+static const mframes MF_STEADY5 = { 5, { 31, 58, 80, 95, 100 } };
+static const mframes MF_STEADY6 = { 6, { 26, 50, 70, 86, 97, 100 } };
 static float qfade(float yc)
 {
     float d = fabsf(yc - UI_CY);
@@ -555,8 +578,11 @@ static float hero_pitch(const char *s)
     for (const char *c = s; *c; c++) n += *c != ':' && *c != '.';
     return n <= 4 ? UI_HERO_PITCH : UI_HEROW_PITCH;
 }
+/* set (in tick only) while the list bakes a fling-blur band: the blink holds still there,
+ * invisible under the blur, so a band is not re-baked twice a second */
+static int s_bake;
 /* 2 Hz blink of a test in progress: discrete, two levels */
-static uint16_t run_col(void) { return fmodf(nos_t, 1.0f) < 0.5f ? C_SEC : C_DIS; }
+static uint16_t run_col(void) { return s_bake || fmod(nos_t, 1.0f) < 0.5f ? C_SEC : C_DIS; }
 /* the status dot of a part: white pass, ring fail, grey absent, blinking in progress */
 static void status_dot(gfx_fb *fb, float x, float y, float d, int st, float k)
 {
@@ -585,14 +611,14 @@ static void pill(gfx_fb *fb, float cx, float cy, float w, const char *label, int
 static const int TGT[2][2] = { { 150, 150 }, { 316, 380 } };
 typedef struct {
     int tgt;                      /* touch: target in play */
-    float hit_t, miss_t;
+    nos_time_t hit_t; nos_time_t miss_t;
     int miss_x, miss_y, missed;
-    float play_t;                 /* haptic / speaker: last play */
+    nos_time_t play_t;                 /* haptic / speaker: last play */
     int played;
     int pressed;                  /* 1 left / single, 2 right, 3 the icon */
-    float flash_t; int flash_b;
+    nos_time_t flash_t; int flash_b;
     int held;                     /* button card: the side button is down (or was, at the press) */
-    float t_in;                   /* nos_t the card came up */
+    nos_time_t t_in;                   /* nos_t the card came up */
 } cstate;
 static cstate C, Cp;              /* the card on screen; the one fading out */
 
@@ -711,6 +737,7 @@ static void touch_down(int x, int y)
 
 static int card_input(const nos_input *in)
 {
+    if(in->type==IN_CANCEL) {C.pressed=C.held=0;return 1;}
     int d = G.view;
     if (in->type == IN_BTN || in->type == IN_BTN_LONG || in->type == IN_BTN_DOUBLE) {
         if (d == D_BUTTON) {
@@ -775,20 +802,20 @@ static int card_index(int d)
 /* "1 OF 4": stays put across cards; only the digit swaps (out, then in) */
 static void draw_step(gfx_fb *fb, float k)
 {
-    float p = nos_t - G.sw_t;
-    int fading = G.pview >= 0 && G.view >= 0 && p < FADE_S;
+    int fading = G.pview >= 0 && G.view >= 0 && fading_since(G.sw_t);
     int cur = card_index(G.view) + 1, old = fading ? card_index(G.pview) + 1 : cur;
-    char tail[12], a[4], b[4];
+    char tail[16], a[4], b[4];
     snprintf(tail, sizeof tail, " OF %d", G.nq);
     snprintf(a, sizeof a, "%d", old);
     snprintf(b, sizeof b, "%d", cur);
     int wd = ui_label_width(b), wt = ui_label_width(tail);
     int x0 = UI_CX - (wd + wt) / 2;
     ui_label(fb, x0 + wd, 104, tail, ui_dim(C_DIS, k), UI_LEFT);
-    if (fading) {
-        float h = p / FADE_S;
-        if (h < 0.5f) ui_label(fb, x0, 104, a, ui_dim(C_DIS, k * q8(1.0f - h * 2.0f)), UI_LEFT);
-        else ui_label(fb, x0, 104, b, ui_dim(C_DIS, k * q8(h * 2.0f - 1.0f)), UI_LEFT);
+    if (fading) {                                /* in place: the old digit out, then the new in */
+        float ko, ki;
+        swap_inks(m_frame_k(G.sw_t), SWAP_DIGIT, &ko, &ki);
+        if (ko > 0) ui_label(fb, x0, 104, a, ui_dim(C_DIS, k * ko), UI_LEFT);
+        if (ki > 0) ui_label(fb, x0, 104, b, ui_dim(C_DIS, k * ki), UI_LEFT);
     } else ui_label(fb, x0, 104, b, ui_dim(C_DIS, k), UI_LEFT);
 }
 
@@ -806,7 +833,8 @@ static void draw_card(gfx_fb *fb, int d, float bp, float k, const cstate *c, int
     if (d == D_TOUCH) {
         for (int i = 0; i < 2; i++) {
             float x = (float)TGT[i][0], y = (float)TGT[i][1];
-            float p = q8((bp - i * 0.15f) / 0.5f);
+            /* the dots grow one a frame from the build (R9), 5 frames each on MF_STEADY5 */
+            float p = out || bp >= 1 ? 1.0f : mf_at(&MF_STEADY5, m_stagger_k(m_frame_k(G.build_t), i, 1));
             if (p <= 0) continue;
             if (i < c->tgt) dot_disc(fb, x, y, 18.0f * p, ui_dim(C_DIS, k));
             else if (i == c->tgt) {
@@ -817,7 +845,7 @@ static void draw_card(gfx_fb *fb, int d, float bp, float k, const cstate *c, int
         }
         if (c->missed) dot_disc(fb, (float)c->miss_x, (float)c->miss_y, 8.0f, ui_dim(C_DIS, k));
         float ms = nos_t - c->miss_t;
-        if (ms < 0.8f) ui_label(fb, UI_CX, 330, "MISSED", ui_dim(C_PRI, k * q8((0.8f - ms) / 0.2f)), UI_CENTER);
+        if (ms < 0.8f) ui_label(fb, UI_CX, 330, "MISSED", ui_dim(C_PRI, k * m_ink((24 - m_frame_k(c->miss_t)) / 6.0f)), UI_CENTER);
     } else {
         int icon = DI[d].icon;
         float since = nos_t - c->play_t;
@@ -865,7 +893,7 @@ static struct {
     int8_t unit_e[NLE_MAX * 6];
     int nunits;
     int was_moving;
-    int flash_e; float flash_t;
+    int flash_e; nos_time_t flash_t;
 } DL;
 
 static void add_e(int kind, int d, const char *label) { DL.e[DL.n++] = (lentry){ (uint8_t)kind, (uint8_t)d, label }; }
@@ -912,16 +940,23 @@ static void list_init(void)
 }
 static float dlist_off(void) { return floorf(ui_list_offset(&DL.L) + 0.5f); }
 
+/* build-in: rows rise 14 px and fade in, one 80 px band a frame from the top down (6
+ * bands, R9), each over 5 frames: the rise on MF_STEADY5 in whole pixels, the ink in
+ * perceptual steps. Returns the ink (0 = not drawn yet). */
 static float lbuild(float y, float *dy)
 {
-    int k = (int)((y - 60.0f) / 80.0f);
-    if (k < 0) k = 0;
-    if (k > 5) k = 5;
-    float p = m_clamp((nos_t - G.build_t - k * 0.034f) / 0.20f, 0, 1);
-    float e = floorf(bezier_ease(&EASE_STANDARD, p) * 8.0f + 0.5f) / 8.0f;
-    *dy = (1.0f - e) * 14.0f;
-    return e;
+    int band = (int)((y - 60.0f) / 80.0f);
+    if (band < 0) band = 0;
+    if (band > 5) band = 5;
+    int k = m_stagger_k(m_frame_k(G.build_t), band, 1);
+    *dy = floorf((1.0f - mf_at(&MF_STEADY5, k)) * 14.0f + 0.5f);
+    return m_ink(k / 5.0f);
 }
+/* the summary's 15 dots grow in pairs, one pair a frame (8 starts, R9) from frame 2 */
+static float sum_dot(int d) { return mf_at(&MF_STEADY4, m_stagger_k(m_frame_k(G.build_t) - 2, d / 2, 1)); }
+/* when the result hero builds: with the list if the run was over as it came in, else
+ * once the in-progress state has faded (frame FADE_F after the finish) */
+static nos_time_t hero_t0(void) { return G.t_done <= G.build_t ? G.build_t : G.t_done + M_FRAMES(FADE_F - 1); }
 
 /* `built`: draw as fully built (a list fading out) */
 static void draw_summary(gfx_fb *fb, float y, float k, int built)
@@ -929,18 +964,16 @@ static void draw_summary(gfx_fb *fb, float y, float k, int built)
     char b[40];
     /* the hero builds straight away when the run was already done as the list came in */
     int direct = G.done && G.t_done <= G.build_t;
-    float hero_t0 = direct ? G.build_t : G.t_done + FADE_S;
-    float p = G.done ? nos_t - G.t_done : -1;
     /* in progress: the state, then it fades for the hero; a list fading out for the
      * fails-first re-layout still shows the state, so the hero builds once, in the new list */
-    if (!G.done || G.pend == PEND_RELAYOUT || (!direct && p < FADE_S && !built)) {
-        float sk = G.done && G.pend != PEND_RELAYOUT ? q8(1.0f - p / FADE_S) : 1.0f;
+    if (!G.done || G.pend == PEND_RELAYOUT || (!direct && fading_since(G.t_done) && !built)) {
+        float sk = G.done && G.pend != PEND_RELAYOUT ? fade_out(G.t_done) : 1.0f;
         ui_state(fb, UI_CX, (int)(y + 44), G.running || G.done ? "TESTING" : "STOPPED", ui_dim(C_SEC, k * sk));
         /* "12 OF 13" tested parts resolved: steps out, then in, as each resolves */
-        float mp = (nos_t - G.cnt_t) / 0.12f;
-        if (mp >= 1) ui_label(fb, UI_CX, (int)(y + 78), G.cnt_to, ui_dim(C_PRI, k * sk), UI_CENTER);
-        else if (mp < 0.5f) ui_label(fb, UI_CX, (int)(y + 78), G.cnt_from, ui_dim(C_PRI, k * sk * q8(1.0f - 2.0f * mp)), UI_CENTER);
-        else ui_label(fb, UI_CX, (int)(y + 78), G.cnt_to, ui_dim(C_PRI, k * sk * q8(2.0f * mp - 1.0f)), UI_CENTER);
+        float ko, ki;
+        swap_inks(m_frame_k(G.cnt_t), SWAP_DIGIT, &ko, &ki);
+        if (ko > 0) ui_label(fb, UI_CX, (int)(y + 78), G.cnt_from, ui_dim(C_PRI, k * sk * ko), UI_CENTER);
+        if (ki > 0) ui_label(fb, UI_CX, (int)(y + 78), G.cnt_to, ui_dim(C_PRI, k * sk * ki), UI_CENTER);
         /* the long waits say what they wait for */
         int nrun = 0, first = -1, cards = 0;
         for (int d = 0; d < D_N; d++) {
@@ -953,7 +986,7 @@ static void draw_summary(gfx_fb *fb, float y, float k, int built)
             ui_label(fb, UI_CX, (int)(y + 108), b, ui_dim(C_DIS, k * sk), UI_CENTER);
         }
     } else {
-        float bp = built ? 1.0f : m_clamp((nos_t - hero_t0) / UI_ENTRY_S, 0, 1);
+        float bp = built ? 1.0f : m_clamp((nos_t - hero_t0()) / UI_ENTRY_S, 0, 1);
         float pitch = hero_pitch(G.hero);
         dot_style hs = { DOT_FONT_TALL, pitch, pitch * 0.8f, ui_dim(C_WHITE, k), 0, 1, 1 };
         float yy = y + 2 + (UI_HEROW_PITCH - pitch) * 9.0f * 0.5f - (pitch > UI_HEROW_PITCH ? 4 : 0);
@@ -985,7 +1018,7 @@ static void draw_summary(gfx_fb *fb, float y, float k, int built)
     const float pd = 16.0f;
     float x0 = UI_CX - (D_N - 1) * pd * 0.5f - 4.0f;
     for (int d = 0; d < D_N; d++) {
-        float q = built ? 1.0f : q8((nos_t - G.build_t - 0.08f - d * 0.012f) / 0.12f);
+        float q = built ? 1.0f : sum_dot(d);
         if (q <= 0) continue;
         float gx = d >= D_BOARD_N ? 8.0f : 0.0f;
         status_dot(fb, x0 + d * pd + gx, y + 142, 8.0f * q, R[d].st, k);
@@ -1013,16 +1046,19 @@ static void draw_row(gfx_fb *fb, int d, float y, float h, int pressed, float k)
     }
     int gap = cl - (tx + nw);                      /* the value fades out before 8 px */
     float vk = gap >= ROW_GAP ? 1.0f : q8((gap - 8) / (float)(ROW_GAP - 8));
-    float kc = resolved(r->st) ? q8((nos_t - r->t_done) / 0.2f) : 0;   /* result cross-fade */
-    if (r->st == ST_ABSENT && r->t_done < 0) kc = 1;
-    if (G.done && G.nfail && r->t_done < G.t_done) kc = 1;            /* re-laid out: settled */
+    /* the sub-line swaps from TESTING to the result: out, then in (never both at once) */
+    float ko = 1, kc = 0;
+    if (resolved(r->st)) swap_inks(m_frame_k(r->t_done), SWAP_RESULT, &ko, &kc);
+    if ((r->st == ST_ABSENT && r->t_done < 0) || (G.done && G.nfail && r->t_done < G.t_done)) {
+        ko = 0; kc = 1;                                                /* absent / re-laid out: settled */
+    }
     status_dot(fb, tx - 19, cy - 11, r->st == ST_FAIL ? 12 : 10, r->st, k);
     int absent = r->st == ST_ABSENT;
     ui_text(fb, UI_F_BODY, tx, cap_base(UI_F_BODY, cy - 11), DI[d].name, ui_dim(absent ? C_SEC : C_PRI, k), UI_LEFT, 0);
     int sb = cap_base(UI_F_LABEL, cy + 17);
-    if (kc < 1) {
+    if (ko > 0) {
         const char *s = r->st == ST_ASK ? "WAITING FOR YOU" : r->st == ST_WAIT ? "WAITING" : "TESTING";
-        dlab(fb, tx, sb, s, ui_dim(r->st == ST_RUN ? C_SEC : C_DIS, k * (1.0f - kc)), UI_LEFT);
+        dlab(fb, tx, sb, s, ui_dim(r->st == ST_RUN || resolved(r->st) ? C_SEC : C_DIS, k * ko), UI_LEFT);
     }
     if (kc > 0) {
         uint16_t sc = r->st == ST_FAIL ? C_PRI : absent || r->st == ST_SKIP ? C_DIS : C_SEC;
@@ -1041,35 +1077,104 @@ static int list_pressed(void)
     return -1;
 }
 
-static void draw_list(gfx_fb *fb, float k, int built)
+/* entry e with its top at y; `band`: baked for the fling blur (no bezel fade, never pressed) */
+static void draw_lentry(gfx_fb *fb, int e, float y, float k, int built, int pressed, int band)
+{
+    float h = (float)(lunits(DL.e[e].kind) * MU);
+    float bdy = 0, bk = built ? 1.0f : lbuild(y, &bdy);
+    if (bk <= 0) return;
+    y += floorf(bdy + 0.5f);
+    float cy = y + h * 0.5f;
+    float rk = (band ? 1.0f : qfade(cy)) * bk * k;
+    const lentry *le = &DL.e[e];
+    if (le->kind == LK_SUM) draw_summary(fb, y, rk, built);
+    else if (le->kind == LK_HDR) {
+        int lx, rx;
+        row_cols(cy, &lx, &rx);
+        ui_label(fb, lx, (int)(y + h - 16), le->label, ui_dim(C_DIS, rk), UI_LEFT);
+    } else if (le->kind == LK_ROW) draw_row(fb, le->d, y, h, pressed, rk);
+    else if (G.done && rk > 0) {
+        float bk2 = built ? 1.0f : q8((nos_t - hero_t0()) / UI_ENTRY_S);
+        if (bk2 > 0) pill(fb, UI_CX, y + 60, UI_BTN_W, "RE-RUN", BTN_SECONDARY, pressed, rk * bk2);
+    }
+}
+
+static void draw_list_body(gfx_fb *fb, float k, int built)
 {
     float off = dlist_off();
     int pe = k >= 1 ? list_pressed() : -1;
     for (int e = 0; e < DL.n; e++) {
         float h = (float)(lunits(DL.e[e].kind) * MU);
         float y = MTOP + DL.start[e] * MU - off;
+        if(y+h+32+fb->oy<fb->y_base) continue;
+        if(y-32+fb->oy>=fb->y_base+fb->h) break;
         if (y + h < 0) continue;
         if (y > GFX_H) break;
-        float bdy = 0, bk = built ? 1.0f : lbuild(y, &bdy);
-        if (bk <= 0) continue;
-        y += floorf(bdy + 0.5f);
-        float cy = y + h * 0.5f;
-        float rk = qfade(cy) * bk * k;
-        const lentry *le = &DL.e[e];
-        if (le->kind == LK_SUM) draw_summary(fb, y, rk, built);
-        else if (le->kind == LK_HDR) {
-            int lx, rx;
-            row_cols(cy, &lx, &rx);
-            ui_label(fb, lx, (int)(y + h - 16), le->label, ui_dim(C_DIS, rk), UI_LEFT);
-        } else if (le->kind == LK_ROW) draw_row(fb, le->d, y, h, e == pe, rk);
-        else if (G.done && rk > 0) {
-            float hero_t0 = G.t_done <= G.build_t ? G.build_t : G.t_done + FADE_S;
-            float bk2 = built ? 1.0f : q8((nos_t - hero_t0) / UI_ENTRY_S);
-            if (bk2 > 0) pill(fb, UI_CX, y + 60, UI_BTN_W, "RE-RUN", BTN_SECONDARY, e == pe, rk * bk2);
-        }
+        draw_lentry(fb, e, y, k, built, e == pe, 0);
     }
-    float content = (float)(MTOP + DL.nunits * MU + DL.L.bottom_pad);
-    if (k >= 1) ui_scrollbar(fb, DL.L.sc.x, content, GFX_H, DL.L.bar_alpha);
+}
+static void draw_list(gfx_fb *fb,float k,int built)
+{
+    draw_list_body(fb,k,built);
+    float content=(float)(MTOP+DL.nunits*MU+DL.L.bottom_pad);
+    if(k>=1) ui_scrollbar(fb,DL.L.sc.x,content,GFX_H,DL.L.bar_alpha);
+}
+static void diag_live_body(gfx_fb *fb,void *ctx)
+{
+    (void)ctx;draw_list_body(fb,1,0);
+}
+
+/* ---- fling blur (ui.h): the result list in 90 px content bands, baked with their context */
+#define BAND_H 90
+static float s_band_prev;
+static int s_band_lv;
+static void band_draw(gfx_fb *fb, int i, int x0, int y, int x1, int h, void *ctx)
+{
+    (void)x0; (void)x1; (void)ctx;
+    int saved_bake = s_bake;
+    s_bake = 1;
+    for (int e = 0; e < DL.n; e++) {
+        float eh = (float)(lunits(DL.e[e].kind) * MU);
+        float ey = (float)y + (float)(DL.start[e] * MU - i * BAND_H);
+        if (ey + eh < y - 24 || ey > y + h + 24) continue;
+        draw_lentry(fb, e, ey, 1.0f, 0, 0, 1);
+    }
+    s_bake = saved_bake;
+}
+static void band_range(float off, int *i0, int *i1)
+{
+    *i0 = (int)floorf((off - MTOP) / BAND_H);
+    *i1 = (int)floorf((off - MTOP + GFX_H) / BAND_H);
+    if (*i0 < 0) *i0 = 0;
+    if (*i1 > (DL.nunits * MU + BAND_H - 1) / BAND_H - 1) *i1 = (DL.nunits * MU + BAND_H - 1) / BAND_H - 1;   /* past the content: no band */
+}
+/* the list on the glass by itself: not a card, not fading, not a pending re-layout */
+static int list_alone(void)
+{
+    return G.view == VIEW_LIST && !G.pend && !(G.pview != VIEW_NONE && fading_since(G.sw_t));
+}
+static void band_tick(float dt)
+{
+    float off = dlist_off(), fr = dt * M_FPS, st = (off - s_band_prev) / (fr > 0.5f ? fr : 1.0f);
+    s_band_prev = off;
+    s_band_lv = 0;
+    if (!list_alone() || G.covered) return;      /* the cache only works for the list on screen */
+    int i0, i1, x0, x1;
+    band_range(off, &i0, &i1);
+    ui_row_span(UI_CY + BAND_H * 0.5f, 6.0f, &x0, &x1);
+    ui_fblur_tick(&DL, DL.L.dragging, st, i0, i1,
+                  (DL.nunits * MU + BAND_H - 1) / BAND_H, BAND_H, x0, x1, 1, band_draw, 0);
+    s_band_lv = ui_fblur_active(&DL);
+}
+/* a fast glide: the blurred bands, then the title and the bar on top. 0 = draw live */
+static int draw_list_blur(gfx_fb *fb)
+{
+    float off = dlist_off();
+    int b0, b1;
+    band_range(off, &b0, &b1);
+    if (!s_band_lv || list_pressed() >= 0 || !list_alone()) return 0;
+    ui_fblur_draw_bands(fb,&DL,b0,b1,MTOP-(int)off,BAND_H,qfade,diag_live_body,0);
+    return 1;
 }
 
 static const nos_screen scr_diag_row;
@@ -1095,7 +1200,7 @@ static int list_input(const nos_input *in)
             if (fabsf(in->y - by) <= UI_BTN_H * 0.5f + 4 && fabsf(in->x - (float)UI_CX) <= UI_BTN_W * 0.5f + 10) {
                 DL.flash_e = e; DL.flash_t = nos_t;
                 nos_feedback(FB_TAP);
-                G.pend = PEND_RERUN; G.pend_t = nos_t;   /* the list fades out as it is, then the run restarts */
+                G.pend = PEND_RERUN; G.pend_t = nos_t - LEAD;   /* the list fades out as it is (from this frame), then the run restarts */
                 G.title_off0 = dlist_off();
             }
         }
@@ -1128,40 +1233,123 @@ static void diag_leave(void)
     run_abort();
     G.inited = 0;
 }
+static void diag_probe(void);
+static float title_scroll(void);
 static void diag_tick(float dt)
 {
     ui_list_tick(&DL.L, dt);
     diag_step(dt);
-    if (G.pend && nos_t - G.pend_t >= FADE_S) {
+    if (G.pend && !fading_since(G.pend_t)) {
         if (G.pend == PEND_RERUN) run_start(2);
         else {                                   /* fails to the top: rebuild in the new order */
-            G.title_off0 = dlist_off(); G.title_t0 = nos_t;
+            G.title_off0 = dlist_off();
             list_init();
-            G.build_t = nos_t;
+            G.build_t = G.title_t0 = nos_t - LEAD;   /* the build's first frame is this one */
             G.pend = 0;
         }
     }
     if (!G.pend && G.view != VIEW_LIST && G.view >= 0) card_tick();
+    band_tick(dt);
+    diag_probe();
+}
+
+/* the title rides the list scroll; after a reset it comes back from where it was over 6
+ * frames on MF_STEADY6 (R3) */
+static float title_scroll(void)
+{
+    float ts = G.view == VIEW_LIST || G.pend ? dlist_off() : 0;
+    int k = m_frame_k(G.title_t0);
+    if (!G.pend && k < MF_STEADY6.n) ts = fmaxf(ts, fminf(G.title_off0, 60.0f) * (1.0f - mf_at(&MF_STEADY6, k)));
+    return ts;
+}
+
+#ifdef GFX_COST_MODEL
+/* motion audit: a build-in value is on the glass only once it shows (`vis`); its first
+ * visible frame reports where it starts (`from`) as the move's origin */
+static void probe_vis(const char *name, int cls, int vis, float px, float from, int *seen)
+{
+    if (!vis) { *seen = 0; return; }
+    if (!*seen) nos_motion_probe(name, cls, from);
+    *seen = 1;
+    nos_motion_probe(name, cls, px);
+}
+#endif
+/* motion audit (docs/NOS_SIM.md): what animates, as drawn; sim only */
+static void diag_probe(void)
+{
+#ifdef GFX_COST_MODEL
+    int fading = G.pview != VIEW_NONE && fading_since(G.sw_t);
+    if (fading) nos_motion_probe("diag.view.out.ink", MC_FADE, fade_out(G.sw_t) * 100.0f);
+    if (G.pend) nos_motion_probe("diag.pend.ink", MC_FADE, fade_out(G.pend_t) * 100.0f);
+    if (!fading && !G.pend && G.view >= 0) {
+        float bp = m_clamp((nos_t - G.build_t) / UI_ENTRY_S, 0, 1);
+        nos_motion_probe("diag.card.ink", MC_FADE, q8((bp - 0.3f) / 0.7f) * 100.0f);
+        static int tseen[2];
+        if (G.view == D_TOUCH)
+            for (int i = 0; i < 2; i++) {
+                float r = (i < C.tgt ? 18.0f : i == C.tgt ? 30.0f : 0.0f) *
+                          (bp >= 1 ? 1.0f : mf_at(&MF_STEADY5, m_stagger_k(m_frame_k(G.build_t), i, 1)));
+                probe_vis(i ? "diag.tgt1" : "diag.tgt0", MC_MICRO, r > 0, r, 0, &tseen[i]);
+            }
+    }
+    if (!fading && !G.pend && G.view == VIEW_LIST) {
+        static int seen[5];
+        if (m_frame_k(G.build_t) <= 1) seen[0] = seen[1] = 0;  /* a fresh build */
+        float bdy, e = lbuild(60.0f, &bdy);
+        probe_vis("diag.build0", MC_MICRO, e > 0, bdy, 14, &seen[0]);
+        probe_vis("diag.build0.ink", MC_FADE, e > 0, e * 100.0f, 0, &seen[1]);
+        float e5 = lbuild(460.0f, &bdy);
+        probe_vis("diag.build5", MC_MICRO, e5 > 0, bdy, 14, &seen[2]);
+        probe_vis("diag.dot0", MC_MICRO, sum_dot(0) > 0, 8.0f * sum_dot(0), 0, &seen[3]);
+        probe_vis("diag.dot14", MC_MICRO, sum_dot(14) > 0, 8.0f * sum_dot(14), 0, &seen[4]);
+        int last = -1;
+        for (int d = 0; d < D_N; d++) if (resolved(R[d].st) && (last < 0 || R[d].t_done > R[last].t_done)) last = d;
+        if (last >= 0 && R[last].t_done > 0) {
+            float ko, ki;
+            int k = m_frame_k(R[last].t_done);
+            swap_inks(k, SWAP_RESULT, &ko, &ki);
+            if (k < 2) nos_motion_probe("diag.row.out.ink", MC_FADE, ko * 100.0f);
+            else nos_motion_probe("diag.row.in.ink", MC_FADE, ki * 100.0f);
+        }
+        float ko, ki;
+        int k = m_frame_k(G.cnt_t);
+        swap_inks(k, SWAP_DIGIT, &ko, &ki);
+        if (k < 2) nos_motion_probe("diag.count.out.ink", MC_FADE, ko * 100.0f);
+        else if (k <= SWAP_DIGIT + 2) nos_motion_probe("diag.count.in.ink", MC_FADE, ki * 100.0f);
+    }
+    if (fading && G.pview >= 0 && G.view >= 0) {
+        float ko, ki;
+        int k = m_frame_k(G.sw_t);
+        swap_inks(k, SWAP_DIGIT, &ko, &ki);
+        if (k < 2) nos_motion_probe("diag.step.out.ink", MC_FADE, ko * 100.0f);
+        else nos_motion_probe("diag.step.in.ink", MC_FADE, ki * 100.0f);
+    }
+    {   /* the title: rides the list, slides back after a reset */
+        float k = 1.0f - m_clamp(title_scroll() / 60.0f, 0, 1);
+        int cls = DL.L.dragging ? MC_FINGER : DL.L.sc.moving ? MC_MOMENTUM : MC_MICRO;
+        nos_motion_probe("diag.title", cls, (float)lroundf((1 - k) * 18.0f));
+    }
+#endif
 }
 static void diag_draw(gfx_fb *fb)
 {
-    /* the title rides the list scroll; after a reset it slides in from where it was */
-    float ts = G.view == VIEW_LIST || G.pend ? dlist_off() : 0;
-    float tp = (nos_t - G.title_t0) / UI_ENTRY_S;
-    if (tp < 1 && !G.pend) ts = fmaxf(ts, fminf(G.title_off0, 48.0f) * (1.0f - q8(tp)));
-    ui_title(fb, "DIAGNOSTICS", ts);
-    if (G.pend) { draw_list(fb, q8(1.0f - (nos_t - G.pend_t) / FADE_S), 1); return; }
-    float p = nos_t - G.sw_t;
-    int fading = G.pview != VIEW_NONE && p < FADE_S;
+    if (draw_list_blur(fb)) {                  /* opaque bands: the title and the bar go on top */
+        ui_title(fb, "DIAGNOSTICS", title_scroll());
+        ui_scrollbar(fb, DL.L.sc.x, (float)(MTOP + DL.nunits * MU + DL.L.bottom_pad), GFX_H, DL.L.bar_alpha);
+        return;
+    }
+    ui_title(fb, "DIAGNOSTICS", title_scroll());
+    if (G.pend) { draw_list(fb, fade_out(G.pend_t), 1); return; }
+    int fading = G.pview != VIEW_NONE && fading_since(G.sw_t);
     if (G.view >= 0 || (fading && G.pview >= 0)) {
         float sk = 1;
-        if (fading && G.view < 0) sk = q8(1.0f - p / FADE_S);          /* the last card: the step goes too */
+        if (fading && G.view < 0) sk = fade_out(G.sw_t);                /* the last card: the step goes too */
         else if (!fading && G.pview == VIEW_NONE) sk = q8((m_clamp((nos_t - G.build_t) / UI_ENTRY_S, 0, 1) - 0.3f) / 0.7f);
         if (sk > 0) draw_step(fb, sk);
     }
     if (fading) {
-        if (G.pview == VIEW_LIST) draw_list(fb, q8(1.0f - p / FADE_S), 1);
-        else draw_card(fb, G.pview, 1, q8(1.0f - p / FADE_S), &Cp, 1);
+        if (G.pview == VIEW_LIST) draw_list(fb, fade_out(G.sw_t), 1);
+        else draw_card(fb, G.pview, 1, fade_out(G.sw_t), &Cp, 1);
         return;
     }
     float bp = m_clamp((nos_t - G.build_t) / UI_ENTRY_S, 0, 1);
@@ -1170,11 +1358,15 @@ static void diag_draw(gfx_fb *fb)
 }
 static int diag_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) {
+        C.pressed = C.held = 0; DL.was_moving = 0; DL.flash_e = -1;
+        return ui_list_input(&DL.L, in);
+    }
     int btn = in->type == IN_BTN || in->type == IN_BTN_LONG || in->type == IN_BTN_DOUBLE;
     if (G.pend) return !btn;
     /* touches wait out a view cross-fade; the side button never does (the button card
      * takes a press from its first frame) */
-    if (!btn && nos_t - G.sw_t < FADE_S && G.pview != VIEW_NONE) return 1;
+    if (!btn && fading_since(G.sw_t) && G.pview != VIEW_NONE) return 1;
     if (G.view != VIEW_LIST) return card_input(in);
     if (btn) return 0;
     return list_input(in);
@@ -1184,7 +1376,7 @@ const nos_screen scr_diag = { "DIAG", diag_enter, diag_leave, diag_tick, diag_dr
 
 /* ======================================================================= row page */
 int set_modules_absent_copy(uint32_t ext, const char **body, const char **foot);   /* set_modules.c */
-static struct { int d; float t0; } RV;
+static struct { int d; nos_time_t t0; } RV;
 
 static void row_enter(void)
 {
@@ -1209,9 +1401,11 @@ static void row_draw(gfx_fb *fb)
     dot_icon_anim(fb, DI[d].icon, UI_CX, 126, 3.6f, 2.9f, C_WHITE, m_clamp(bp / 0.7f, 0, 1), DOT_REVEAL_CENTER);
     float tk = q8((bp - 0.3f) / 0.7f);
     if (tk <= 0) return;
-    float kc = resolved(r->st) ? q8((nos_t - r->t_done) / 0.2f) : 0;
-    if (kc < 1) ui_state(fb, UI_CX, 214, r->st == ST_ASK || r->st == ST_WAIT ? "WAITING" : "TESTING",
-                         ui_dim(C_SEC, tk * (1.0f - kc)));
+    /* the state swaps to the verdict as the test resolves: out, then in */
+    float ko = 1, kc = 0;
+    if (resolved(r->st)) swap_inks(m_frame_k(r->t_done), SWAP_RESULT, &ko, &kc);
+    if (ko > 0) ui_state(fb, UI_CX, 214, r->st == ST_ASK || r->st == ST_WAIT ? "WAITING" : "TESTING",
+                         ui_dim(C_SEC, tk * ko));
     if (kc > 0) {
         /* the verdict in words, the one size up; the reason only when it failed */
         const char *s = r->st == ST_PASS ? "Passed" : r->st == ST_SKIP ? "Skipped" : "Failed";
@@ -1223,10 +1417,12 @@ static void row_draw(gfx_fb *fb)
         }
     }
     ui_label(fb, UI_CX, 286, "READING", ui_dim(C_DIS, tk), UI_CENTER);
-    if (kc > 0 && (r->rd[0][0] || r->rd[1][0])) {
+    int has_rd = r->rd[0][0] || r->rd[1][0];
+    if (kc > 0 && has_rd) {
         for (int i = 0; i < 2; i++)
             if (r->rd[i][0]) dlab(fb, UI_CX, 310 + i * 24, r->rd[i], ui_dim(C_PRI, tk * kc), UI_CENTER);
-    } else dlab(fb, UI_CX, 310, UI_NONE, ui_dim(C_DIS, tk), UI_CENTER);
+    } else if (ko > 0 || !has_rd)
+        dlab(fb, UI_CX, 310, UI_NONE, ui_dim(C_DIS, tk * (has_rd && resolved(r->st) ? ko : 1.0f)), UI_CENTER);
     ui_label(fb, UI_CX, 370, "CHECK", ui_dim(C_DIS, tk), UI_CENTER);
     for (int i = 0; i < 2; i++)
         if (DI[d].check[i]) dlab(fb, UI_CX, 394 + i * 22, DI[d].check[i], ui_dim(C_SEC, tk), UI_CENTER);

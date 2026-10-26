@@ -1,10 +1,10 @@
 /* out_baro.c — Barometer / altimeter / local climate (BME280 on the strap), outdoor team.
  *
  * Three pages in a horizontal pager (SCR_HDRAG; back swipe from the left edge):
- *   1 PRESSURE  hPa in dot-matrix, 3 h trend, 24 h dot chart whose "now" column is
- *               topped by the screen's one red dot; when it falls > 3 hPa in 3 h a
- *               red dot + [ STORM ] line fades in above the (kept) trend line and
- *               takes the red.
+ *   1 PRESSURE  hPa in dot-matrix, 3 h trend, 24 h column chart (solid columns on
+ *               one baseline) whose "now" column wears the screen's one red cap; when
+ *               it falls > 3 hPa in 3 h a red dot + [ STORM ] line fades in under the
+ *               chart (the trend line is kept) and takes the red.
  *   2 ALTITUDE  metres, sea-level reference, CALIBRATE pushes the sea-level picker
  *               (scr_baro_cal: drag / - + with auto-repeat, Use GPS when the GPS has a
  *               3D fix, Set; back = cancel).
@@ -12,8 +12,15 @@
  * Sensors are read in tick() into statics; draw() only reads them. Live values change
  * at most once a second, with a digit morph.
  *
+ * Motion (docs/MOTION30.html): the pager is a pixel spring (1 px snap, no creep); the
+ * chart's columns grow up from the baseline left to right (two a frame, 10 frames each,
+ * whole pixels, the red cap riding the newest), the humidity bar fills whole dots over
+ * 7 frames; values morph over whole frames and flip like an odometer while they count;
+ * fades use the 16 perceptual ink levels.
+ *
  * Sim preview knob: NOS_STORM=1 (sim builds only) forces a -3.6 hPa / 3 h trend. */
 #include "nos.h"
+#include "diag_log.h"
 #include "ui.h"
 #include "dot.h"
 #include "motion.h"
@@ -21,6 +28,7 @@
 #include "hal_ext.h"
 #include "prefs.h"
 #include "apps/nos_apps.h"
+#include "scroll_diag.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,7 +38,15 @@
 #define PAGE_W 466.0f
 #define NHIST  144
 #define NCOL   24
-#define CROWS  7
+/* the 24 h column chart: 24 solid columns 6 px wide, 4 px apart, on one baseline */
+#define CW     6
+#define CGAP   4
+#define CPITCH 10.0f
+#define CBASE  342              /* baseline row (the columns stand on it) */
+#define CMINH  6                /* a reading always shows (the lowest hour) */
+#define CMAXH  66
+#define CGROW  10               /* entry: each column grows over 10 frames (EASE_STEADY) ... */
+#define CSTAG  2                /* ... two columns a frame, left to right: 20 frames in all */
 
 /* ------------------------------------------------------------- pager */
 typedef struct { mspring sp; int n, page, dragging; float x0; } pager;
@@ -38,10 +54,12 @@ static void pg_init(pager *p, int n, int page)
 {
     memset(p, 0, sizeof *p);
     p->n = n; p->page = page;
-    msp_init(&p->sp, page * PAGE_W, SPRING_PAGE);
+    msp_init_px(&p->sp, page * PAGE_W, SPRING_PAGE);   /* pixels: ends with a 1 px snap */
 }
 static int pg_input(pager *p, const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { p->dragging = 0; p->sp.v = 0; msp_to(&p->sp, p->page * PAGE_W); return 1; }
+
     switch (in->type) {
     case IN_DOWN: if (p->sp.moving) { p->sp.v = 0; p->sp.moving = 0; } p->x0 = p->sp.x; return 0;
     case IN_DRAG_START:
@@ -84,14 +102,18 @@ static int pg_tick(pager *p, float dt)
 }
 static float pg_pos(const pager *p) { return floorf(p->sp.x + 0.5f); }
 
-/* ------------------------------------------------------------- morphing value */
-typedef struct { char cur[16], prev[16]; float t0, dur; } mval;
+/* ------------------------------------------------------------- morphing value
+ * A lone change morphs (whole frames, starting one step in so the frame of the change
+ * already shows it); a value that changes again before its morph ends is counting:
+ * it flips each time like an odometer (R8) instead of restarting half-done morphs. */
+typedef struct { char cur[16], prev[16]; nos_time_t t0, tc; float dur; } mval;
 static void mv_set(mval *m, const char *s, float dur)
 {
     if (!strcmp(m->cur, s)) return;
-    if (strlen(m->cur) == strlen(s) && m->cur[0]) { strcpy(m->prev, m->cur); m->t0 = nos_t; }
+    int counting = nos_t - m->tc < dur;
+    if (strlen(m->cur) == strlen(s) && m->cur[0] && !counting) { strcpy(m->prev, m->cur); m->t0 = nos_t - M_FRAMES(1); }
     else { strcpy(m->prev, s); m->t0 = -10; }
-    m->dur = dur;
+    m->dur = dur; m->tc = nos_t;
     snprintf(m->cur, sizeof m->cur, "%s", s);
 }
 static void mv_draw(gfx_fb *fb, const dot_style *st, float x, float y, const mval *m, float build)
@@ -122,27 +144,28 @@ static void round_btn(gfx_fb *fb, float cx, float cy, float r, int icon, int pre
 }
 
 /* ------------------------------------------------------------- state */
-typedef struct { int shown, init, pend; float t; } plug_t;   /* see plug_tick() */
+typedef struct { int shown, init, pend; nos_time_t t; } plug_t;   /* see plug_tick() */
 
 static struct {
     int present, valid;      /* shown: flip after the unplug fade */
     plug_t pl;
     hal_env env;
     float *hist; int nhist;
-    float hist_t;            /* nos_t of the last history read */
-    float val_t;             /* nos_t of the last displayed-value refresh (1 Hz) */
-    uint8_t cols[NCOL];
+    nos_time_t hist_t;            /* nos_t of the last history read */
+    nos_time_t val_t;             /* nos_t of the last displayed-value refresh (1 Hz) */
+    uint8_t cols[NCOL];      /* column heights 0..255 of the chart (0 = no reading) */
     int ncols;
+    int colh[NCOL];          /* column heights shown, px (prepared in tick) */
     float lo, hi;            /* chart range */
     float d3h; int have3h;   /* change over 3 h */
-    int storm; float storm_t; int hist_read;
+    int storm; nos_time_t storm_t; int hist_read;
     float sea;               /* sea-level reference shown (stable, see s_sea) */
     pager pg;
-    float t0;                /* entry build start */
+    nos_time_t t0;                /* entry build start */
     mval m_hpa, m_alt, m_temp;
     int pressed;             /* control id under the finger */
-    float press_until;       /* pressed state shows >= 3 frames */
-    float saved_t;
+    nos_time_t press_until;       /* pressed state shows >= 3 frames */
+    nos_time_t saved_t;
     int inited;
 } B;
 
@@ -152,7 +175,15 @@ enum { P_NONE = 0, P_CAL, P_MINUS, P_PLUS, P_GPS, P_SET };
  * wobbles in the last digit, so it only follows a real change (> 0.35 hPa) or a Set. */
 static float s_sea;
 
-static float q8(float k) { return floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f; }
+#define MORPH_S M_FRAMES(8)      /* live value digit morph */
+#define FILL_N  7                /* humidity entry fill: whole dots over 7 frames */
+/* rows of an entry fill shown k whole frames after the build began (frame 0 shows 1) */
+static int fill_rows(nos_time_t t0, int n)
+{
+    int k = m_frame_k(t0);
+    if (k < 0) return 0;
+    return k + 1 >= FILL_N ? n : (n * (k + 1) + FILL_N - 1) / FILL_N;
+}
 static uint16_t fadec(uint16_t c, float k) { return k >= 1.0f ? c : ui_mix(C_BG, c, k); }
 /* a label whose text already has the right case (units keep theirs) */
 static int lbl(gfx_fb *fb, int x, int y, const char *s, uint16_t col, int align)
@@ -214,9 +245,8 @@ static void read_history(void)
     for (int c = 0; c < nh; c++) {
         float v = c == nh - 1 && B.valid ? B.env.pressure_hpa : mean[c];
         if (v <= 0) continue;
-        float f = (v - lo) / (hi - lo);
-        int cells = 1 + (int)floorf(f * (CROWS - 1) + 0.5f);   /* at least one dot */
-        B.cols[NCOL - nh + c] = (uint8_t)(cells * 255 / CROWS);
+        float f = m_clamp((v - lo) / (hi - lo), 0, 1);
+        B.cols[NCOL - nh + c] = (uint8_t)(1 + (int)floorf(f * 254.0f + 0.5f));   /* >= 1: shown */
     }
     /* 3 h trend: 18 samples of 10 min */
     B.have3h = B.nhist > 18;
@@ -226,7 +256,7 @@ static void read_history(void)
     } else B.d3h = 0;
     if (storm_knob()) { B.have3h = 1; B.d3h = -3.6f; }
     int storm = B.have3h && B.d3h < -3.0f;
-    if (storm != B.storm) { B.storm = storm; B.storm_t = B.hist_read ? nos_t : -10; }   /* fades unless on entry */
+    if (storm != B.storm) { B.storm = storm; B.storm_t = B.hist_read ? nos_t - M_FRAMES(1) : -10; }   /* fades unless on entry; one step in */
     B.hist_read = 1;
 }
 
@@ -238,10 +268,10 @@ static void refresh_values(void)
     float d = sea_from(B.env.pressure_hpa, B.env.altitude_m);
     if (s_sea <= 0 || fabsf(d - s_sea) > 0.35f) s_sea = d;
     B.sea = s_sea;
-    fmt1(t, sizeof t, B.env.pressure_hpa); mv_set(&B.m_hpa, t, 0.28f);
-    snprintf(t, sizeof t, "%d", (int)lroundf(B.env.altitude_m)); mv_set(&B.m_alt, t, 0.28f);
+    fmt1(t, sizeof t, B.env.pressure_hpa); mv_set(&B.m_hpa, t, MORPH_S);
+    snprintf(t, sizeof t, "%d", (int)lroundf(B.env.altitude_m)); mv_set(&B.m_alt, t, MORPH_S);
     float tc = nos_prefs.units_metric ? B.env.temp_c : B.env.temp_c * 9.0f / 5.0f + 32.0f;
-    snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(tc * 10.0f + 0.5f) / 10.0f)); mv_set(&B.m_temp, t, 0.28f);
+    snprintf(t, sizeof t, "%.1f\xB0", (double)(floorf(tc * 10.0f + 0.5f) / 10.0f)); mv_set(&B.m_temp, t, MORPH_S);
 }
 
 static void baro_enter(void)
@@ -288,16 +318,53 @@ static int plug_phase(gfx_fb *fb, const plug_t *p)
     return ph;
 }
 
+/* The chart's shown column heights. Entry (and a re-plug): the columns grow up from the
+ * baseline left to right, two a frame, each over CGROW frames on EASE_STEADY (frame 0
+ * already shows the first step): a 0.67 s sweep in whole frames, whole pixels. After it,
+ * a new reading moves its column at most 2 px a frame (never a jump). */
+static void chart_tick(void)
+{
+    int k = m_frame_k(B.t0);
+    for (int i = 0; i < NCOL; i++) {
+        int tgt = B.cols[i] ? CMINH + (int)floorf((float)(B.cols[i] - 1) / 254.0f * (float)(CMAXH - CMINH) + 0.5f) : 0;
+        int j = i - (NCOL - B.ncols);                /* from the oldest hour shown */
+        int ki = k + 1 - (j > 0 ? j : 0) / CSTAG;
+        if (ki < CGROW) {
+            float g = ki <= 0 ? 0.0f : bezier_ease(&EASE_STEADY, (float)ki / (float)CGROW);
+            B.colh[i] = (int)floorf((float)tgt * g + 0.5f);
+        } else if (B.colh[i] < tgt) B.colh[i] = B.colh[i] + 2 < tgt ? B.colh[i] + 2 : tgt;
+        else if (B.colh[i] > tgt) B.colh[i] = B.colh[i] - 2 > tgt ? B.colh[i] - 2 : tgt;
+    }
+}
+
 static void baro_tick(float dt)
 {
     if (plug_tick(&B.pl, (hal_ext_present() & EXT_ENV) != 0)) B.t0 = nos_t - PLUG_STEP;
     B.present = B.pl.shown;
     if (B.pl.pend) return;                         /* the old content is fading */
-    B.valid = B.present && hal_env_get(&B.env) && B.env.valid;
+    B.valid = B.present && hal_env_get(&B.env) && B.env.valid && isfinite(B.env.pressure_hpa) &&
+              B.env.pressure_hpa > 0 && isfinite(B.env.temp_c) && isfinite(B.env.altitude_m);
     if (B.valid && nos_t - B.hist_t > 5.0f) { read_history(); B.hist_t = nos_t; }
     if (B.valid && nos_t - B.val_t >= 1.0f) { refresh_values(); B.val_t = nos_t; }
     pg_tick(&B.pg, dt);
     if (B.pressed && nos_t > B.press_until && B.press_until > 0) { B.pressed = 0; B.press_until = 0; }
+    chart_tick();
+#ifdef GFX_COST_MODEL
+    /* motion audit: the pager, the chart's first / newest / tallest column (px), the
+     * storm line's ink */
+    if (B.valid) {
+        nos_motion_probe("baro.pager", B.pg.dragging ? MC_FINGER : MC_MOMENTUM, pg_pos(&B.pg));
+        int cmax = 0;
+        for (int i = 0; i < NCOL; i++) if (B.colh[i] > cmax) cmax = B.colh[i];
+        if (B.pg.page == 0) {
+            nos_motion_probe("baro.chart", MC_COMPONENT, (float)cmax);
+            nos_motion_probe("baro.chart.col0", MC_COMPONENT, (float)B.colh[NCOL - B.ncols < NCOL ? NCOL - B.ncols : 0]);
+            nos_motion_probe("baro.chart.now", MC_COMPONENT, (float)B.colh[NCOL - 1]);
+        }
+        float su = (nos_t - B.storm_t) / M_FRAMES(6);
+        nos_motion_probe("baro.storm.ink", MC_FADE, m_ink(B.storm ? su : 1.0f - su) * 100.0f);
+    }
+#endif
 }
 
 /* ------------------------------------------------------------- pages */
@@ -319,8 +386,8 @@ static void page_pressure(gfx_fb *fb)
     /* storm: a red dot + [ STORM ] under the chart (the screen's one red), 16 px
      * below the axis labels, fading in / out over 0.2 s; the trend that triggered
      * it stays readable up top */
-    float su = (nos_t - B.storm_t) / 0.2f;
-    float sk = q8(B.storm ? su : 1.0f - su);
+    float su = (nos_t - B.storm_t) / M_FRAMES(6);
+    float sk = m_ink(B.storm ? su : 1.0f - su);
     if (sk > 0) {
         int w = ui_text_width(UI_F_LABEL, "[ STORM ]", 2) + 20;
         dot_disc(fb, UI_CX - w / 2 + 4, 402 - 6, 9, fadec(C_RED, sk));
@@ -338,24 +405,30 @@ static void page_pressure(gfx_fb *fb)
     mv_draw(fb, &st, UI_CX, 142, &B.m_hpa, b);
     ui_text(fb, UI_F_LABEL, UI_CX, 242, "hPa", C_SEC, UI_CENTER, 2);
     /* 24 h chart */
-    const float pitch = 10.0f, d = 7.0f;
-    float x0 = UI_CX - NCOL * pitch * 0.5f, y0 = 272;
+    float x0 = UI_CX - NCOL * CPITCH * 0.5f;
     if (B.ncols < 2) {
         ui_state(fb, UI_CX, 320, "COLLECTING", C_DIS);
         return;
     }
-    uint8_t v[NCOL];
-    for (int i = 0; i < NCOL; i++) v[i] = (uint8_t)(B.cols[i] * m_clamp(b * 1.6f - i * 0.02f, 0, 1));
-    dot_columns(fb, x0, y0, NCOL, CROWS, pitch, d, v, C_PRI, C_LINE);
-    /* "now": only the top lit dot of the last column is red (white while a storm
-     * warning holds the red) */
-    int cells = (v[NCOL - 1] * CROWS + 127) / 255;
-    if (cells > 0) {
-        float cx = x0 + (NCOL - 1) * pitch + pitch * 0.5f, cy = y0 + (CROWS - cells) * pitch + pitch * 0.5f;
-        dot_disc(fb, cx, cy, d + 1.0f, ui_mix(C_RED, C_WHITE, sk));
+    /* solid columns on one baseline, one rect each (only a column that changed repaints);
+     * the last hour (now) in white, the rest grey; the shared baseline runs under all */
+    gfx_fill_rect(fb, (int)x0, CBASE, NCOL * (int)CPITCH - CGAP, 2, C_LINE2);
+    int hn = 0;
+    for (int i = 0; i < NCOL; i++) {
+        int h = B.colh[i];
+        if (h <= 0) continue;
+        int cx = (int)x0 + i * (int)CPITCH;
+        gfx_fill_rect(fb, cx, CBASE - h, CW, h, i == NCOL - 1 ? C_PRI : C_SEC);
+        if (i == NCOL - 1) hn = h;
+    }
+    /* "now": a red cap on the newest column, riding its top as it grows (white while a
+     * storm warning holds the red) */
+    if (hn > 0) {
+        int cx = (int)x0 + (NCOL - 1) * (int)CPITCH, ch = hn < CW ? hn : CW;
+        gfx_fill_rect(fb, cx, CBASE - hn, CW, ch, ui_mix(C_RED, C_WHITE, sk));
     }
     ui_label(fb, (int)x0, 370, "-24H", C_DIS, UI_LEFT);
-    ui_label(fb, (int)(x0 + NCOL * pitch), 370, "NOW", C_DIS, UI_RIGHT);
+    ui_label(fb, (int)(x0 + NCOL * CPITCH - CGAP), 370, "NOW", C_DIS, UI_RIGHT);
 }
 
 static void page_altitude(gfx_fb *fb)
@@ -366,14 +439,20 @@ static void page_altitude(gfx_fb *fb)
     mv_draw(fb, &st, UI_CX, 118, &B.m_alt, b);
     lbl(fb, UI_CX, 228, "m", C_SEC, UI_CENTER);
     char t[40];
-    if (nos_t - B.saved_t < 1.6f) ui_state(fb, UI_CX, 284, "SAVED", C_PRI);
+    /* [ SAVED ] holds 1.5 s, then fades through to the reference: out 56-19 %, in 19-56-100 % */
+    int f = m_frame_k(B.saved_t + 1.5f);
+    if (f < 2) ui_state(fb, UI_CX, 284, "SAVED", fadec(C_PRI, f < 0 ? 1.0f : m_ink(1.0f - (float)(f + 1) / 3.0f)));
     else {
         snprintf(t, sizeof t, "SEA LEVEL %.1f", (double)(floorf(B.sea * 10 + 0.5f) / 10));
-        ui_label_unit(fb, UI_CX, 284, t, "hPa", C_DIS, UI_CENTER);
+        ui_label_unit(fb, UI_CX, 284, t, "hPa", fadec(C_DIS, f >= 4 ? 1.0f : m_ink((float)(f - 1) / 3.0f)), UI_CENTER);
     }
     btn(fb, UI_CX, UI_BTN_Y, UI_BTN_W, "Calibrate", 0, B.pressed == P_CAL, 1);
 }
 
+static int humidity_available(void)
+{
+    return B.valid && B.env.humidity_valid && isfinite(B.env.humidity);
+}
 static void page_local(gfx_fb *fb)
 {
     ui_title(fb, "LOCAL", 0);
@@ -388,9 +467,15 @@ static void page_local(gfx_fb *fb)
     if (b >= 0.5f) ui_label(fb, (int)(hx + wh * 0.5f + 6), 118 + 14, unit, C_SEC, UI_LEFT);
     ui_label(fb, UI_CX, 222, "TEMPERATURE", C_SEC, UI_CENTER);
     /* humidity as 20 whole dots (5% each) */
+    if (!humidity_available()) {
+        ui_label(fb, UI_CX, 326, "HUMIDITY UNAVAILABLE", C_DIS, UI_CENTER);
+        ui_label(fb, UI_CX, 386, "ON WRIST", C_DIS, UI_CENTER);
+        return;
+    }
     float h = m_clamp(B.env.humidity, 0, 100);
     const float pitch = 14.0f;
-    dot_bar(fb, UI_CX - 9.5f * pitch, 284, 20, pitch, 8.0f, floorf(h / 5.0f + 0.5f) * b, C_PRI, C_LINE2);
+    int hl = (int)floorf(h / 5.0f + 0.5f), hr = fill_rows(B.t0, 20);      /* whole dots on the chart's beat */
+    dot_bar(fb, UI_CX - 9.5f * pitch, 284, 20, pitch, 8.0f, (float)(hl < hr ? hl : hr), C_PRI, C_LINE2);
     char t[24];
     snprintf(t, sizeof t, "HUMIDITY %d%%", (int)lroundf(h));
     ui_label(fb, UI_CX, 326, t, C_SEC, UI_CENTER);
@@ -437,6 +522,10 @@ static void baro_draw_body(gfx_fb *fb)
         else if (i == 1) page_altitude(&sub);
         else page_local(&sub);
     }
+    /* motion blur on the pages as they slide (nos.h), not on the page dots */
+    static nos_mb_track mb;
+    float mbs = nos_mblur_step(nos_mb_track_step(&mb, pos), B.pg.dragging);
+    if (mbs > 0 && mbs < PAGE_W * 0.5f) nos_mblur_h(fb, 0, GFX_W, mbs);
     ui_page_dots(fb, UI_CX, UI_DOTS_Y, NPAGE, pos / PAGE_W);
 }
 
@@ -444,6 +533,8 @@ extern const nos_screen scr_baro_cal;
 
 static int baro_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { B.pressed = 0; B.press_until = 0; pg_input(&B.pg, in); return 1; }
+
     if (!B.valid) return 0;
     if (pg_input(&B.pg, in)) { B.pressed = 0; return 1; }
     int on_cal = B.pg.page == 1 && !B.pg.sp.moving && abs(in->x - UI_CX) < UI_BTN_W / 2 &&
@@ -474,11 +565,11 @@ const nos_screen scr_baro = { "BAROMETER", baro_enter, 0, baro_tick, baro_draw, 
 static struct {
     float v;
     mval m;
-    float t0;
-    int pressed; float press_t0, press_until, rep_t;
+    nos_time_t t0;
+    int pressed; nos_time_t press_t0, press_until, rep_t;
     int repeated;
     int drag; float last_dy, acc;
-    int gps_ok; float gps_alt, gps_t;   /* gps_t: when the fix arrived (enable fade) */
+    int gps_ok; nos_time_t gps_t; float gps_alt;   /* gps_t: when the fix arrived (enable fade) */
     hal_env env;
     char alt_txt[24];
 } K;
@@ -487,7 +578,7 @@ static void cal_show(void)
 {
     char t[16];
     fmt1(t, sizeof t, K.v);
-    mv_set(&K.m, t, 0.12f);
+    mv_set(&K.m, t, M_FRAMES(4));
 }
 static void cal_step(float d)
 {
@@ -518,7 +609,7 @@ static void cal_tick(float dt)
     hal_env_get(&K.env);
     hal_gps g;
     int ok = hal_gps_get(&g) && g.valid && g.fix3d;
-    if (ok && !K.gps_ok) K.gps_t = nos_t;
+    if (ok && !K.gps_ok) K.gps_t = nos_t - M_FRAMES(1);   /* the fade starts one step in */
     K.gps_ok = ok;
     K.gps_alt = g.alt_m;
     /* hold on - / +: auto-repeat at 8 Hz after 400 ms, whole hPa after 2 s */
@@ -532,6 +623,12 @@ static void cal_tick(float dt)
     }
     if ((K.pressed == P_SET || K.pressed == P_GPS) && K.press_until > 0 && nos_t > K.press_until) K.pressed = 0;
     snprintf(K.alt_txt, sizeof K.alt_txt, "ALTITUDE %d", (int)lroundf(alt_from(K.env.pressure_hpa, K.v)));
+#ifdef GFX_COST_MODEL
+    {
+        float gk = K.gps_ok ? m_clamp((nos_t - K.gps_t) / M_FRAMES(4), 0, 1) : 0;
+        nos_motion_probe("baro.cal.gps.ink", MC_FADE, floorf(gk * 8.0f + 0.5f) / 8.0f * 100.0f);
+    }
+#endif
 }
 
 static void cal_draw(gfx_fb *fb)
@@ -545,7 +642,7 @@ static void cal_draw(gfx_fb *fb)
     round_btn(fb, UI_CX + PM_DX, PM_Y, 34, DOT_ICON_PLUS, K.pressed == P_PLUS);
     ui_label_unit(fb, UI_CX, 316, K.alt_txt, "m", C_DIS, UI_CENTER);
     /* both buttons always: Use GPS waits disabled for a 3D fix, then fades in place */
-    float gk = K.gps_ok ? m_clamp((nos_t - K.gps_t) / 0.15f, 0, 1) : 0;
+    float gk = K.gps_ok ? m_clamp((nos_t - K.gps_t) / M_FRAMES(4), 0, 1) : 0;
     btn(fb, UI_BTN_PAIR_X0, UI_BTN_Y, UI_BTN_PAIR_W, "Use GPS", 0, K.pressed == P_GPS && K.gps_ok, gk);
     btn(fb, UI_BTN_PAIR_X1, UI_BTN_Y, UI_BTN_PAIR_W, "Set", 1, K.pressed == P_SET, 1);
 }
@@ -563,6 +660,8 @@ static int cal_hit(int x, int y)
 
 static int cal_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { K.pressed = K.drag = 0; K.press_until = 0; return 1; }
+
     switch (in->type) {
     case IN_DOWN:
         K.pressed = cal_hit(in->x, in->y);
@@ -582,7 +681,10 @@ static int cal_input(const nos_input *in)
             nos_feedback(FB_TAP);
             K.press_until = nos_t + 0.1f;
         } else if (h == P_SET) {
+            uint32_t request = diag_action_request(DIAG_DOMAIN_SENSOR, DIAG_ACT_SET, EXT_ENV);
+            diag_action_context(request, (int32_t)diag_log_name_id("SEA LEVEL"), 0);
             hal_env_set_sea_level(K.v);
+            diag_action_result(request, DIAG_RESULT_PENDING, 1); /* void HAL setter has no save ACK */
             s_sea = K.v; B.sea = K.v;
             B.saved_t = nos_t;
             nos_feedback(FB_SUCCESS);
@@ -612,3 +714,9 @@ static int cal_input(const nos_input *in)
 }
 
 const nos_screen scr_baro_cal = { "SEA LEVEL", cal_enter, cal_leave, cal_tick, cal_draw, cal_input, 0 };
+
+/* UI-task diagnostic: return the actual pager state without ticking/drawing. */
+void out_baro_scroll_snapshot(nos_scroll_snapshot *s)
+{
+    *s = (nos_scroll_snapshot){ 4, 1, B.pg.page, NPAGE, B.pg.dragging, B.pg.sp.x, (NPAGE - 1) * PAGE_W };
+}

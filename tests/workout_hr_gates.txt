@@ -1,0 +1,33 @@
+# Invalid/off-wrist/poor/stale samples do not enter the average or peak.
+wait 100
+set step_rate 0
+set hr_sample 140 0.95 1
+workout start 5
+wait 5000
+expect workout hr_valid 1
+workout info hr_good
+set hr_sample 0 0.95 1
+wait 2000
+expect workout hr_valid 0
+set hr_sample 220 0.10 1
+wait 2000
+expect workout hr_valid 0
+set hr_sample 160 0.95 0
+wait 2000
+expect workout hr_valid 0
+set hr_sample 300 0.95 1
+wait 2000
+expect workout hr_valid 0
+set hr_sample 160 0.95 1
+set hr_age 10000
+wait 5000
+expect workout hr_valid 0
+workout info hr_invalid
+set hr_age 0
+wait 5000
+expect workout hr_valid 1
+workout info hr_returned
+workout finish
+wait 200
+expect workout save 2
+

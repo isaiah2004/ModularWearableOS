@@ -1,0 +1,61 @@
+# Passive collection continues before opening the monitor.
+open! home
+wait 6000
+open! background
+wait 1000
+expect top BACKGROUND JOBS
+shot overview
+tap 233 145
+wait 1000
+expect top JOB DETAILS
+shot motion
+tap 233 160
+wait 40
+shot rotation
+tap 360 263
+wait 2000
+shot inspected
+tap 233 425
+wait 40
+shot readings
+tap 342 348
+wait 40
+shot older
+tap 341 425
+wait 40
+shot events
+tap 125 425
+wait 40
+tap 233 381
+wait 1000
+expect top IMU
+pop
+wait 40
+expect top JOB DETAILS
+pop
+wait 40
+expect top BACKGROUND JOBS
+tap 233 267
+wait 1000
+shot calories
+tap 233 381
+wait 1000
+expect top ENERGY
+pop
+wait 40
+pop
+wait 40
+present 0
+wait 2000
+tap 336 398
+wait 40
+shot writers
+tap 336 398
+wait 40
+shot optional
+tap 233 145
+wait 1000
+shot no_module
+tap 233 425
+wait 40
+shot missing_readings

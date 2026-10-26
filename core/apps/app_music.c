@@ -161,11 +161,13 @@ static void draw_cover(gfx_fb *fb, uint16_t tint, unsigned ver)
 {
     int cx = (int)GFX_CX, cy = (int)GFX_CY, half = COV_SIDE / 2, r = (int)COV_RAD;
     int apx = 0; unsigned gen = 0;
-    const uint16_t *art = hal_media_cover(&apx, &gen);
+    const uint16_t *pinned = hal_media_cover_acquire(&apx, &gen);
+    const uint16_t *art = pinned;
     if (art && apx != COV_SIDE) art = NULL;             /* size must match for a 1:1 blit */
     unsigned h = ver ^ (art ? (0x9e3779b9u + gen * 2654435761u) : 0u);
-    if (gfx_rec_cmd(fb, cx - half - 1, cy - half - 1, cx + half + 2, cy + half + 2, h))
-        return;
+    if (gfx_rec_cmd(fb, cx - half - 1, cy - half - 1, cx + half + 2, cy + half + 2, h)) {
+        hal_media_cover_release(pinned);return;
+    }
     uint16_t flat = gfx_blend565(tint, GFX_BLACK, 96);
     for (int y = -half; y <= half; y++) {
         int ay = y < 0 ? -y : y, xw = half;
@@ -176,6 +178,7 @@ static void draw_cover(gfx_fb *fb, uint16_t tint, unsigned ver)
         if (art) blit_row(fb, cx - xw, cy + y, &art[(y + half) * COV_SIDE + (half - xw)], 2 * xw + 1);
         else     gfx_fill_rect(fb, cx - xw, cy + y, 2 * xw + 1, 1, flat);
     }
+    hal_media_cover_release(pinned);
 }
 
 /* small filled triangle: tip at (tx,ty), pointing along unit (nx,ny) */

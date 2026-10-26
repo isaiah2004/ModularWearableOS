@@ -6,15 +6,19 @@
  * (the other rings stay full white, so there is one red element). In the centre the
  * time in the grotesk hero face at ~74 px cap, the date (or the battery while low /
  * charging) above, and the three values below with mono caps labels.
- * Build-in: from the fill shown last time to now (never a stale replay). Wake from
- * AOD (6 frames): the step dots grow and the outlined time fills in, then the rings,
- * values and labels fade up over the last 3 frames (no frame adds over ~25 % light).
+ * Build-in: from the fill shown last time to now (never a stale replay), each ring over
+ * 9 frames on EASE_STEADY a frame after the one outside it, in whole segments; the date
+ * and values fade up in 6 perceptual ink steps. Wake from AOD (6 frames): the step dots
+ * grow and the outlined time fills in, then the rings, values and labels fade up over
+ * the last 3 frames in perceptual ink steps (3/16, 9/16, 1). Minute change: the changed
+ * digits roll mechanically (three held steps on twos), never a slide.
  *
  * The rings are cached: they live in four quadrant sprites (PSRAM) and a segment is
  * re-rasterised into its quadrant only when its colour changes (a few per hour), so
  * a full redraw (pager slide) is four blits, and the build-in — segments lighting one
  * by one clockwise — costs a handful of segment rasters per frame plus the blit of the
- * quadrant that changed. Without PSRAM it falls back to drawing segments directly.
+ * quadrant that changed. During cold preparation/resource pressure the basic clock
+ * and values remain available; partial ring sprites are never displayed.
  * Tap anywhere on the rings or values: the Activity app. The time is nf_hero scaled to
  * 0.66 once into PSRAM masks (fk_sfont); changed digits roll at the minute. */
 #include "faces/face_kit.h"
@@ -41,11 +45,11 @@ typedef struct {
     unsigned key[4];
     uint16_t drawn[NRING][NSEG];          /* colour currently in the sprite, 0 = none */
     int16_t  span[GFX_H][NRING][2];       /* per row and ring: the ring's left span [x0, x1) */
-    int      ok;
+    int      ok, allocated, clear_y, span_y;
 } seg_cache;
 
 static seg_cache *G;
-static int   s_alloc_failed;
+static int   s_cold = 1;                 /* incomplete sprites are never published */
 static float s_shown[NRING];              /* displayed fill in segments (0..120) */
 static float s_target[NRING];
 static int   s_val[NRING];                /* steps, kcal, active minutes */
@@ -130,19 +134,41 @@ static int qy(int q) { return (q & 2) ? Q : 0; }
 
 static void cache_init(void)
 {
-    if (G || s_alloc_failed) return;
-    G = (seg_cache *)hal_big_alloc(sizeof *G);
-    if (!G) { s_alloc_failed = 1; return; }
-    memset(G, 0, sizeof *G);
-    for (int q = 0; q < 4; q++)
-        if (!sprite_alloc(&G->q[q], q & 1 ? GFX_W - Q : Q, q & 2 ? GFX_H - Q : Q)) { s_alloc_failed = 1; G = 0; return; }
-    for (int q = 0; q < 4; q++) {
-        memset(G->q[q].px, 0, (size_t)G->q[q].w * (size_t)G->q[q].h * 2);
+    if (!G) {
+        G = (seg_cache *)hal_big_alloc(sizeof *G);
+        if (G) memset(G, 0, sizeof *G);
+        return;
+    }
+    if (G->ok) return;
+    if (G->allocated < 4) {
+        int q = G->allocated;
+        if (!sprite_alloc(&G->q[q], q & 1 ? GFX_W - Q : Q, q & 2 ? GFX_H - Q : Q)) {
+            for (int j = 0; j < q; j++) hal_big_free(G->q[j].px);
+            hal_big_free(G); G = 0;
+            return;
+        }
         G->key[q] = 0x5E600000u + (unsigned)q * 4096u;
+        G->allocated++;
+        return;
+    }
+    /* Each slice clears at most 16 rows across the four quadrants. No incomplete
+     * sprite is published to draw(), and allocation failures remain retryable. */
+    if (G->clear_y < GFX_H) {
+        int end = G->clear_y + 16;
+        if (end > GFX_H) end = GFX_H;
+        for (; G->clear_y < end; G->clear_y++) {
+            int y = G->clear_y, q0 = y < Q ? 0 : 2, sy = y < Q ? y : y - Q;
+            for (int q = q0; q < q0 + 2; q++)
+                memset(G->q[q].px + sy * G->q[q].w, 0, (size_t)G->q[q].w * 2);
+        }
+        return;
     }
     /* the bands the segments can touch (2 px clear of their AA), as spans per row and
      * ring: the sprites are black everywhere else, so the blit copies only these */
-    for (int y = 0; y < GFX_H; y++)
+    int end = G->span_y + 16;
+    if (end > GFX_H) end = GFX_H;
+    for (; G->span_y < end; G->span_y++) {
+        int y = G->span_y;
         for (int k = 0; k < NRING; k++) {
             const float ri = k_r[k] - SEG_TH * 0.5f - 2.0f, ro = k_r[k] + SEG_TH * 0.5f + 2.0f;
             float dy = (float)y + 0.5f - UI_CY, ady = dy < 0 ? -dy : dy;
@@ -155,13 +181,14 @@ static void cache_init(void)
             }
             G->span[y][k][0] = (int16_t)x0; G->span[y][k][1] = (int16_t)x1;
         }
-    G->ok = 1;
+    }
+    G->ok = G->span_y == GFX_H;
 }
 
 /* bring the sprites up to date with the displayed fills */
 static void cache_update(void)
 {
-    if (!G || !G->ok) return;
+    if (!G || !G->ok || s_cold) return;
     int budget = RASTER_BUDGET;
     for (int i = 0; i < NSEG; i++)                 /* clockwise, all rings together */
         for (int r = 0; r < NRING; r++) {
@@ -180,7 +207,6 @@ static fk_sfont s_font;                     /* nf_hero at 0.66: an ~74 px cap ti
 static fk_wake  s_w;
 static fk_morph s_tm;
 static fk_xfade s_date;
-static int      s_cold = 1;                 /* sprites hold nothing yet */
 static float    s_from[NRING];
 
 #define T_SCALE 0.66f
@@ -205,6 +231,9 @@ static void cold_track(int n)
     }
 }
 
+/* the date and values during the build-in: 6 perceptual ink steps */
+static float lab_k(float e) { return e >= 1.0f ? 1.0f : m_ink((float)(fk_build_k(e) + 1) / 6.0f); }
+
 static void enter(void)
 {
     /* the sprites still show the last visit's fill: animate from there, never from 0
@@ -219,8 +248,7 @@ static void tick(const face_ctx *c, float dt)
     fk_aod_update(c);
     fk_wake_tick(&s_w, c);
     fk_unread_tick(c);
-    cache_init();
-    fk_sfont_build(&s_font, UI_F_HERO, T_SCALE);
+    face_segment_warm();
     int stale = fk_wake_stale(&s_w);
     char tb[8], db[16];
     fk_time(tb, c->dt.hour, c->dt.minute);
@@ -233,7 +261,7 @@ static void tick(const face_ctx *c, float dt)
     int steps = c->steps > 0 ? c->steps : a->steps;
     int goal = c->step_goal > 0 ? c->step_goal : a->goal > 0 ? a->goal : 8000;
     float kcal = a->kcal > 0 ? a->kcal : (float)steps * 0.04f;
-    int act = a->active_min > 0 ? a->active_min : steps / 110;
+    int act = a->active_min;
     s_val[0] = steps; s_val[1] = (int)(kcal + 0.5f); s_val[2] = act;
     float goals[3] = { (float)goal, 400.0f, 30.0f };
     float vals[3] = { (float)steps, kcal, (float)act };
@@ -243,20 +271,38 @@ static void tick(const face_ctx *c, float dt)
         if (f > cap) f = cap;
         s_target[r] = (float)(int)f;                          /* whole segments */
     }
-    if (G && G->ok && s_cold) {
-        /* first use: the rest of the empty track (the warm-up may have done most of
-         * it), once, before anything is blitted */
+    if (s_cold) {
+        /* Cold entry stays sliced like background warm-up. The ROM clock remains
+         * visible while the font and complete empty track are prepared. */
         for (int r = 0; r < NRING; r++) s_shown[r] = s_from[r] = 0;
-        cold_track(NRING * NSEG);
     }
     /* AOD shows the steps as dots at their target, so the rings wake at the fill on
      * screen; a face that was off the glass shows its fill as it is now */
     if (c->aod || (stale && e >= 1.0f))
         for (int r = 0; r < NRING; r++) s_shown[r] = s_from[r] = s_target[r];
+#ifdef GFX_COST_MODEL
+    {
+        float k = fk_wake_k(&s_w, c);
+        fk_probe_common("seg", &s_w, c);
+        fk_probe_xfade("seg", "date", &s_date, c->t);
+        fk_probe("seg", "dot.d", MC_MICRO, 3.0f + 3.0f * m_clamp(k / 0.5f, 0, 1));
+        if (!c->aod) {
+            fk_probe("seg", "rings", MC_FADE, 100.0f * m_ink(m_clamp((k - 0.5f) / 0.5f, 0, 1)));
+            if (k >= 1.0f) {
+                fk_probe("seg", "lab", MC_FADE, 100.0f * lab_k(e));
+                int rk = fk_frames(c->t, s_tm.t0);
+                if (s_font.ok && strlen(s_tm.from) == strlen(s_tm.to))
+                    for (int i = 0; s_tm.to[i]; i++)
+                        if (s_tm.from[i] != s_tm.to[i]) fk_probe_roll("seg", i, rk, s_font.cap);
+            }
+        }
+    }
+#endif
     if (c->aod) { cache_update(); return; }
     for (int r = 0; r < NRING; r++) {
         if (e < 1.0f) {
-            float q = fk_ease(m_clamp((e - 0.08f * (float)r) / 0.75f, 0, 1));
+            /* 9 frames each, the inner rings 1 and 2 frames behind (R9) */
+            float q = bezier_ease(&EASE_STEADY, m_clamp((float)(fk_build_k(e) + 1 - r) / 9.0f, 0, 1));
             s_shown[r] = (float)(int)(s_from[r] + (s_target[r] - s_from[r]) * q + 0.5f);
         } else if (s_shown[r] != s_target[r]) {               /* live changes land within 0.4 s */
             float d = s_target[r] - s_shown[r];
@@ -276,9 +322,11 @@ static void tick(const face_ctx *c, float dt)
  * scaled font a glyph a frame, then the ring sprites, then their empty track */
 void face_segment_warm(void)
 {
-    if (!s_cold || s_alloc_failed) return;
-    if (!s_font.ok && !s_font.failed) { fk_sfont_build_step(&s_font, UI_F_HERO, T_SCALE); return; }
-    if (!G) { cache_init(); return; }
+    static nos_time_t prepared_t = -1.0f;
+    if (!s_cold || prepared_t == nos_t) return;
+    prepared_t = nos_t;              /* picker/active/background share one slice */
+    if (!s_font.ok) { fk_sfont_build_step(&s_font, UI_F_HERO, T_SCALE); return; }
+    if (!G || !G->ok) { cache_init(); return; }
     if (G->ok) cold_track(WARM_SEGS);
 }
 
@@ -293,7 +341,10 @@ static int red_used(void) { return s_shown[0] > NSEG; }
 /* the time in the scaled hero face; changed digits roll (k < 1: outline filling in) */
 static void draw_time(gfx_fb *fb, const face_ctx *c, float k, float dx, float dy)
 {
-    if (!s_font.ok) return;
+    if (!s_font.ok) {
+        fk_clock_fallback(fb, c, UI_CX + (int)dx, Y_T + (int)dy);
+        return;
+    }
     int w = fk_stext_width(&s_font, s_tm.to);
     int x = UI_CX - w / 2 + (int)dx, y = Y_T + (int)dy;
     if (k < 1.0f) {
@@ -303,15 +354,15 @@ static void draw_time(gfx_fb *fb, const face_ctx *c, float k, float dx, float dy
         fk_stext(fb, &s_font, x, y, s_tm.to, ui_mix(C_BG, C_WHITE, k), UI_LEFT);
         return;
     }
-    float p = fk_morph_p(&s_tm, c->t, 0.30f);
-    if (p >= 1.0f || strlen(s_tm.from) != strlen(s_tm.to)) {
+    int rk = fk_frames(c->t, s_tm.t0);
+    if (rk >= fk_roll_frames() || strlen(s_tm.from) != strlen(s_tm.to)) {
         fk_stext(fb, &s_font, x, y, s_tm.to, C_WHITE, UI_LEFT);
         return;
     }
     for (int i = 0; s_tm.to[i]; i++) {
         char one[2] = { s_tm.to[i], 0 };
         int cw = fk_stext_width(&s_font, one);
-        fk_roll(fb, 0, &s_font, x, y, cw, s_font.cap, s_tm.from[i], s_tm.to[i], p, C_WHITE);
+        fk_roll(fb, 0, &s_font, x, y, cw, s_font.cap, s_tm.from[i], s_tm.to[i], rk, C_WHITE);
         x += cw;
     }
 }
@@ -458,6 +509,7 @@ static void blit_quad(gfx_fb *fb, const sprite *s, int x, int y, unsigned key, c
 
 static void blit_rings(gfx_fb *fb, float a, float g)
 {
+    if (s_cold) return;               /* never display uninitialized/partial sprites */
     if (G && G->ok) {
         gfx_fb d = *fb;
         if (a < 1.0f) nos_ink_dim(&d, a);
@@ -500,7 +552,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
          * Wake (6 frames): the dots grow and the time fills in; from the half-way frame
          * the rings, values and labels fade up in 3 even steps while "STEPS" has gone,
          * so no single frame adds more than about a quarter of the light */
-        float kr = c->aod ? 0.0f : m_clamp((k - 0.5f) / 0.5f, 0, 1);
+        float kr = c->aod ? 0.0f : m_ink(m_clamp((k - 0.5f) / 0.5f, 0, 1));   /* 3/16 9/16 1 */
         float kd = m_clamp(k / 0.5f, 0, 1);
         if (kr > 0.0f) blit_rings(fb, kr, 1.0f);
         int lit = (int)s_target[0];
@@ -519,7 +571,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
             if (st_a) fk_status(fb, c->aod ? c : &cw, xd, yd, lc, UI_CENTER);
             else ui_label(fb, xd, yd, s_date.to, lc, UI_CENTER);
         } else if (k < 0.5f) {
-            float o = 1.0f - k / 0.5f;
+            float o = m_ink(1.0f - k / 0.5f);
             if (st_a) fk_status(fb, &ca, xd, yd, ui_dim(C_DIS, o), UI_CENTER);
             else ui_label(fb, xd, yd, s_date.to, ui_dim(C_DIS, o), UI_CENTER);
         } else {
@@ -530,14 +582,14 @@ static void draw(gfx_fb *fb, const face_ctx *c)
         if (k < 0.5f) {
             char v[16]; fmt_k(v, sizeof v, s_val[0]);
             snprintf(b, sizeof b, "%s STEPS", v);
-            ui_label(fb, UI_CX + (int)dx, Y_VAL + (int)dy, b, ui_dim(C_DIS, 1.0f - k / 0.5f), UI_CENTER);
+            ui_label(fb, UI_CX + (int)dx, Y_VAL + (int)dy, b, ui_dim(C_DIS, m_ink(1.0f - k / 0.5f)), UI_CENTER);
         }
         if (kr > 0.0f) draw_values(fb, kr);
         fk_unread(fb, c, ui_mix(C_SEC, unread_rest, k), C_BG, dx, dy + 74.0f);
         return;
     }
     blit_rings(fb, 1.0f, fk_ghost(c));
-    float la = e >= 1.0f ? 1.0f : (float)(int)(fk_ease(e * 1.4f) * 4.0f) / 4.0f;
+    float la = lab_k(e);
     draw_time(fb, c, 1.0f, 0, 0);
     /* the date row; the battery takes it over while low or charging */
     if (fk_status_shown(c)) fk_status(fb, c, UI_CX, Y_DATE, ui_dim(C_SEC, la), UI_CENTER);

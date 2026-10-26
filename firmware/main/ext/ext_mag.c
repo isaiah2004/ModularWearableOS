@@ -1,3 +1,4 @@
+#include "sports.h"
 /* ext_mag.c — GY-271 compass: QMC5883L at 0x0D, or HMC5883L at 0x1E.
  *
  * QMC5883L: continuous 50 Hz, +-8 G (3000 LSB/G = 30 LSB/uT), OSR 512.
@@ -45,7 +46,7 @@ typedef struct {
     i2c_master_dev_handle_t dev;
     int chip;                     /* 1 QMC5883L, 2 HMC5883L */
     float lsb_ut;
-    int running, calibrating, errors;
+    int running, calibrating, errors, shutdown_pending;
     uint32_t last_get, next, last_ok;
     float raw[3];
     mag_cal cal;
@@ -91,7 +92,7 @@ void mag_init(void)
     M->dev = d; M->chip = chip;
     M->lsb_ut = chip == 1 ? 30.0f : 8.2f;
     if (chip == 2) { ext_wr(d, 0x00, 0x70); ext_wr(d, 0x01, 0x40); }
-    if (!chip_run(0)) { i2c_master_bus_rm_device(d); free(M); M = NULL; return; }
+    if (!chip_run(0)) { i2c_master_bus_rm_device(d); nos_mem_free(M); M = NULL; return; }
     mag_cal c;
     if (hal_store_load("ext_mag", &c, sizeof c) && c.magic == MAG_MAGIC) M->cal = c;
     else cal_defaults(&M->cal);
@@ -183,12 +184,14 @@ static void compute(uint32_t now)
     portENTER_CRITICAL(&ext_lock);
     M->cur = o;
     portEXIT_CRITICAL(&ext_lock);
+    {float sv[]={ (float)o.valid,o.heading_deg,o.field_ut,(float)o.calibrated,o.cal_progress };sports_emit(SP_MAG,sv,5);}
     M->last_ok = now;
 }
 
 uint32_t mag_service(uint32_t now)
 {
     if (!M) return 1000;
+    if(M->shutdown_pending){if(!chip_run(0))return 100;M->shutdown_pending=0;M->running=0;}
     int want = M->calibrating || !ext_idle(now, M->last_get);
     if (want != M->running) {
         if (chip_run(want)) M->running = want;
@@ -204,6 +207,7 @@ uint32_t mag_service(uint32_t now)
     if (ok < 0) { if (++M->errors > 10) { portENTER_CRITICAL(&ext_lock); M->cur.valid = 0; portEXIT_CRITICAL(&ext_lock); } return 50; }
     if (!ok) return 50;
     M->errors = 0;
+    sports_emit(SP_MAG_RAW,r,3);
     memcpy(M->raw, r, sizeof r);
     if (M->calibrating) cal_track(r);
     compute(now);
@@ -214,19 +218,19 @@ int hal_mag_get(hal_mag *out)
 {
     if (!M) { if (out) memset(out, 0, sizeof *out); return 0; }
     uint32_t now = ext_ms();
-    M->last_get = now;
+    if(!ext_shutdown_requested())M->last_get = now;
     hal_mag v;
     portENTER_CRITICAL(&ext_lock);
     v = M->cur;
     portEXIT_CRITICAL(&ext_lock);
-    if ((uint32_t)(now - M->last_ok) > 500) v.valid = 0;
+    if (ext_elapsed(now,M->last_ok) > 500) v.valid = 0;
     if (out) *out = v;
     return v.valid;
 }
 
 void hal_mag_calibrate(int start)
 {
-    if (!M) return;
+    if (!M || (start && ext_shutdown_requested())) return;
     M->last_get = ext_ms();
     if (start) {
         portENTER_CRITICAL(&ext_lock);
@@ -255,6 +259,17 @@ void hal_mag_calibrate(int start)
     M->cal = c;
     hal_store_save("ext_mag", &c, sizeof c);           /* caller context: internal stack */
 }
+int mag_shutdown_poll(uint32_t now)
+{
+    (void)now;
+    if(!M)return 1;
+    M->shutdown_pending=1;M->calibrating=0;
+    if(!chip_run(0))return -1;
+    M->shutdown_pending=0;
+    M->running=M->calibrating=0;
+    portENTER_CRITICAL(&ext_lock);M->cur.valid=0;portEXIT_CRITICAL(&ext_lock);
+    return 1;
+}
 
 static int parse_axis(const char *s, int8_t *out)
 {
@@ -263,24 +278,28 @@ static int parse_axis(const char *s, int8_t *out)
     return 1;
 }
 
-void mag_debug_cmd(const char *a)
+int mag_debug_request(const char *a)
 {
-    if (!M) { printf("EXT mag absent\n"); return; }
-    if (!strncmp(a, "cal", 3)) { hal_mag_calibrate(1); printf("EXT mag calibrating: draw figure-8s, then `ext mag done`\n"); return; }
-    if (!strncmp(a, "done", 4)) { hal_mag_calibrate(0); printf("EXT mag calibrated=%d\n", M->cal.valid); return; }
+    if (!M || !a || ext_shutdown_requested()) { printf("EXT mag unavailable\n"); return 0; }
+    if (!strcmp(a, "cal")) { hal_mag_calibrate(1); printf("EXT mag calibrating: draw figure-8s, then `ext mag done`\n"); return 1; }
+    if (!strcmp(a, "done")) { hal_mag_calibrate(0); printf("EXT mag calibrated=%d\n", M->cal.valid); return 1; }
     if (!strncmp(a, "map ", 4)) {
         mag_cal c = M->cal;
         const char *p = a + 4;
-        int ok = strlen(p) >= 6 && parse_axis(p, &c.map[0]) && parse_axis(p + 2, &c.map[1]) && parse_axis(p + 4, &c.map[2]);
-        if (ok && p[6] == ' ') ok = parse_axis(p + 7, &c.fwd);
-        if (!ok) { printf("EXT mag map: e.g. `ext mag map +x-y-z +x`\n"); return; }
+        size_t length=strlen(p);
+        int ok = (length==6||length==9) && parse_axis(p, &c.map[0]) && parse_axis(p + 2, &c.map[1]) && parse_axis(p + 4, &c.map[2]);
+        if (ok && length==9) ok = p[6]==' '&&parse_axis(p + 7, &c.fwd);
+        if(ok)ok=abs(c.map[0])!=abs(c.map[1])&&abs(c.map[0])!=abs(c.map[2])&&abs(c.map[1])!=abs(c.map[2]);
+        if (!ok) { printf("EXT mag map: e.g. `ext mag map +x-y-z +x`\n"); return 0; }
+        if(!hal_store_save_checked("ext_mag",&c,sizeof c)){printf("EXT mag map save failed\n");return 0;}
         M->cal = c;
-        hal_store_save("ext_mag", &c, sizeof c);
         printf("EXT mag map saved\n");
-        return;
+        return 1;
     }
     printf("EXT mag cmds: cal | done | map <+x+y+z> [<fwd>]\n");
+    return 0;
 }
+void mag_debug_cmd(const char *a) { (void)mag_debug_request(a); }
 
 void mag_debug(void)
 {

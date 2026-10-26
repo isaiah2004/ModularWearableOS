@@ -9,6 +9,7 @@
 #define NOS_FACE_H
 #include "gfx.h"
 #include "hal.h"
+#include "animation_time.h"
 
 typedef struct {
     hal_datetime dt;        /* latched this frame (dt.millis valid) */
@@ -20,7 +21,7 @@ typedef struct {
     float lite;             /* 0..1 picker lite draw (dimmed or sliding): ghost / unlit detail fades out */
     int  weather_valid; float temp_c; int wx_cond;
     int  next_alarm_min;    /* minutes to next alarm, -1 none */
-    float t;                /* nos_t */
+    nos_time_t t;           /* monotonic animation clock */
     int  aod;               /* draw the always-on variant */
     float enter;            /* 0..1 build-in progress after the face appears/wakes */
 } face_ctx;

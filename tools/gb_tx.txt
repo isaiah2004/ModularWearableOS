@@ -1,0 +1,8 @@
+# Every watch -> Gadgetbridge line, captured for tools/gb_rx_check.py:
+#   $env:NOS_PHONE_TX='build/gb_tx.bin'; build\nos_sim.exe --script tools/gb_tx.txt
+#   python tools/gb_rx_check.py build/gb_tx.bin
+wait 4s
+log connected: ver + status sent
+phone sim tx
+wait 3s
+log act stream

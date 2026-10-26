@@ -1,0 +1,45 @@
+skipboot
+imu start 100
+imu background 0
+imu stall 1
+imu background 6000
+imu stall 0
+imu stop
+imu background 0
+expect imu samples 512
+expect imu dropped 88
+expect imu state 0
+imu start 100
+imu background 0
+imu fault 1
+imu background 1000
+expect imu errors 100
+expect imu samples 0
+imu fault 0
+imu background 1000
+expect imu samples 100
+imu stop
+imu background 0
+expect imu state 0
+set sd 0
+imu start 25
+imu background 0
+expect imu state 4
+expect imu samples 0
+set sd 1
+imu start 50
+imu background 0
+imu background 1000
+set sd 0
+imu background 20
+expect imu state 4
+set sd 1
+imu start 25
+imu background 0
+imu background 1000
+imu stop
+imu background 0
+expect imu state 0
+expect imu samples 25
+imu status
+quit

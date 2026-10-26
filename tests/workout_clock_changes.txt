@@ -1,0 +1,19 @@
+# RTC corrections and midnight do not change monotonic active time.
+wait 100
+present 0
+set step_rate 0
+workout start 5
+wait 5000
+time 23:59:59
+date 2026-10-20
+wait 2000
+time 00:00:00
+date 2020-01-01
+wait 3000
+expect workout elapsed 9900 10100
+expect workout total 9900 10100
+workout finish
+wait 200
+expect workout save 2
+workout info corrected_clock
+

@@ -1,0 +1,34 @@
+# Outdoor mode remains a timer/step session when strap sensors disappear.
+wait 100
+present 0
+set step_rate 120
+workout start 0
+wait 10000
+expect workout state 1
+expect workout gps_status 0
+expect workout hr_valid 0
+expect workout distance_valid 0
+expect workout distance 0
+expect workout steps 19 21
+workout info no_modules
+present 0x1FF
+set hr_sample 160 0.95 1
+set gps_motion 2
+wait 8000
+expect workout gps_status 2
+expect workout hr_valid 1
+workout info modules_returned
+set extfail 0x108
+wait 4000
+expect workout gps_status 1
+expect workout hr_valid 0
+expect workout speed_valid 0
+workout info modules_faulted
+set extfail 0
+wait 3000
+expect workout gps_status 2
+expect workout hr_valid 1
+workout info faults_cleared
+workout finish
+wait 300
+expect workout save 2

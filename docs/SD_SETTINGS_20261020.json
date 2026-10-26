@@ -1,0 +1,25 @@
+{
+  "storage": "SD card /watch/settings.0.bin and /watch/settings.1.bin",
+  "startup": "Newest valid checksummed SD checkpoint loads into nos_prefs RAM. Existing NVS preferences migrate on first sync.",
+  "sync": "After 2 seconds without edits or 10 seconds dirty, during a safe persistence window; failures retry every 5 seconds. Explicit flush bypasses delay.",
+  "durability": "Alternate slot, sequence number, full-record checksum, fflush, fsync, close, readback verification. Previous valid slot is preserved.",
+  "fallback": "NVS mirror for a card-absent boot. Failed SD writes stay dirty in RAM. NVS initialization recovery errors no longer prevent SD boot or erase settings.",
+  "tests": [
+    "RAM debounce, bounded dirty age, rate-limited retry, reboot round trip",
+    "SD round trip, unchanged checkpoint, corruption, truncated write, repair and wrong size"
+  ],
+  "hardware_validation": {
+    "status": "passed",
+    "migration": "Original full preference hash 6ba18519 retained on SD",
+    "control_center": "DND change automatically synced; full hash 41e4154a loaded from SD after reboot",
+    "restored": "Original full hash 6ba18519, Solar face 8",
+    "sports": "2975 records written, zero dropped or errors",
+    "log": "build/sd-prefs-device.log",
+    "flash_log": "build/sd-prefs-flash.log"
+  },
+  "firmware": {
+    "bytes": 7648704,
+    "sha256": "b781f331f8b8dfbe2889d8e190ec8209cd484d8f73684fa80416c955ce84f41d"
+  },
+  "source_delta_archive": "build/recovery-20261020/sd-settings-update.zip"
+}

@@ -6,15 +6,18 @@
  * edge stays straight ("10", "11", "09" all start on the same line). Red appears only
  * as an alert: heart rate out of range, else a low battery.
  *
- * Motion: digits roll like an odometer — on a minute change only the changed digits
- * roll (clipped to the digit cell, 300 ms EASE_MECH); the build-in rolls all four in
- * with a 2-frame stagger and the data rows fade in (4 steps, 2 frames apart). Wake
- * from AOD: the outlined AOD digits fill in (4 steps) — the time never leaves.
+ * Motion (docs/MOTION30.html R8, whole frames): digits roll like a mechanical counter —
+ * on a minute change only the changed digits turn, clipped to the digit cell, in three
+ * held steps on twos (a third of the cell at frames 0 and 2, home at 4: a mechanism,
+ * not a 40 px-a-frame slide); the build-in turns all four in, 2 frames apart, and the
+ * data rows fade in (4 perceptual steps, 2 frames apart). Wake from AOD: the outlined
+ * AOD digits fill in (6 frames) — the time never leaves.
  * Cost: still frames repaint nothing; a roll repaints one ~100 x 130 px digit cell.
  * Taps: HR -> Heart, STP -> Activity, TMP -> Weather (press rects: face_ext.h). */
 #include "faces/face_kit.h"
 #include "nos.h"
 #include "svc.h"
+#include "prefs.h"
 #include "apps/nos_apps.h"
 #include <stdio.h>
 #include <string.h>
@@ -23,20 +26,29 @@
 #define Y_HH    224                     /* baselines */
 #define Y_MM    358
 #define X_COL   300                     /* data column */
-#define ROLL_S  0.30f
 #define CAP_H   114                     /* nf_hero cap height + overshoot */
 
 static struct {
     char from[5], to[5];                /* HHMM */
-    float t0[4];
+    nos_time_t t0[4];
     int init;
     int bpm, steps, batt, charging;
-    int wx; float temp;
+    int wx; float temp; char temp_unit;
     fk_wake w;
     uint16_t red;                       /* C_RED, easing to C_PRI while recording */
 } S;
 
 static void enter(void) { S.init = 0; }
+/* build-in: digit i turns in from frame 2i; data row r fades in from frame 3 + 2r over
+ * 4 frames in perceptual ink steps (1/8, 3/8, 5/8, 1) */
+static int build_roll_k(float e, int i) { return fk_build_k(e) - 2 * i; }
+static float row_a(float e, int r)
+{
+    if (e >= 1.0f) return 1.0f;
+    int t = fk_build_k(e) - 3 - 2 * r + 1;
+    return t <= 0 ? 0.0f : t >= 4 ? 1.0f : m_ink((float)t / 4.0f);
+}
+static int nrows(void);
 
 static void tick(const face_ctx *c, float dt)
 {
@@ -66,7 +78,22 @@ static void tick(const face_ctx *c, float dt)
     S.batt = c->battery;
     S.charging = c->charging;
     S.wx = c->weather_valid;
-    S.temp = c->temp_c;
+    S.temp = nos_prefs.units_metric ? c->temp_c : c->temp_c * 1.8f + 32.0f;
+    S.temp_unit = nos_prefs.units_metric ? 'C' : 'F';
+#ifdef GFX_COST_MODEL
+    fk_probe_common("split", &S.w, c);
+    if (!c->aod && fk_wake_k(&S.w, c) >= 1.0f) {
+        float e = fk_build(&S.w, c);
+        for (int i = 0; i < 4; i++) {
+            if (e < 1.0f) fk_probe_roll("split", i, build_roll_k(e, i), CAP_H);
+            else if (S.from[i] != S.to[i]) fk_probe_roll("split", i, fk_frames(c->t, S.t0[i]), CAP_H);
+        }
+        for (int r = 0; r < nrows(); r++) {
+            char n[8]; snprintf(n, sizeof n, "row%d", r);
+            fk_probe("split", n, MC_FADE, 100.0f * row_a(e, r));
+        }
+    }
+#endif
 }
 
 /* optical nudge for a digit in a cell: the tabular "1" moves to the stack's edge
@@ -107,7 +134,7 @@ static int row_text(int k, int n, char b[16], const char **labp, uint16_t *vcolp
         break;
     case 2:
         lab = "TMP";
-        snprintf(b, 16, "%d\xB0", (int)(S.temp + (S.temp < 0 ? -0.5f : 0.5f)));
+        snprintf(b, 16, "%d\xB0%c", (int)(S.temp + (S.temp < 0 ? -0.5f : 0.5f)), S.temp_unit);
         break;
     default:
         if (S.batt > 0 || S.charging) snprintf(b, 16, "%d", S.batt);
@@ -163,7 +190,7 @@ static void draw(gfx_fb *fb, const face_ctx *c)
                 ui_label(fb, val_x() + (int)dx, y, b, C_DIS, UI_LEFT);
             }
         } else
-            for (int r = 0; r < n; r++) data_row(fb, r, n, k, c, dx, dy);
+            for (int r = 0; r < n; r++) data_row(fb, r, n, m_ink(k), c, dx, dy);   /* from black: perceptual */
         /* grey in AOD, reaching its rest colour (red unless an alarm owns the red) */
         fk_unread(fb, c, ui_mix(C_SEC, (hr_alarm() || bat_alarm()) ? C_PRI : fk_red(c, C_PRI), k), C_BG, dx, dy);
         return;
@@ -172,20 +199,16 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     for (int i = 0; i < 4; i++) {
         int x = X_DIG + (i & 1) * cw, base = i < 2 ? Y_HH : Y_MM;
         uint16_t col = i < 2 ? C_WHITE : C_DIS;
-        float p;
+        int k;
         char from = S.from[i];
-        if (e < 1.0f) { p = m_clamp((e - 0.07f * (float)i) / 0.6f, 0, 1); from = 0; }
-        else p = m_clamp((c->t - S.t0[i]) / ROLL_S, 0, 1);
+        if (e < 1.0f) { k = build_roll_k(e, i); from = 0; }
+        else k = fk_frames(c->t, S.t0[i]);
         fk_roll2(fb, UI_F_HERO, 0, x, base, cw, CAP_H, from, S.to[i],
-                 nudge(from, i & 1), nudge(S.to[i], i & 1), p, col);
+                 nudge(from, i & 1), nudge(S.to[i], i & 1), k, col);
     }
     /* data column: rows fade in over 4 frames each, 2 frames apart */
     for (int r = 0; r < n; r++) {
-        float a = 1.0f;
-        if (e < 1.0f) {
-            float t = e * 12.0f - 3.0f - 2.0f * (float)r;   /* frames since this row's start */
-            a = m_clamp((float)(int)(t + 1.0f) / 4.0f, 0, 1);
-        }
+        float a = row_a(e, r);
         if (a > 0.0f) data_row(fb, r, n, a, c, 0, 0);
     }
     fk_unread(fb, c, (hr_alarm() || bat_alarm()) ? C_PRI : fk_red(c, C_PRI), C_BG, 0, 0);

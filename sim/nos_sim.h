@@ -36,6 +36,7 @@ extern char sim_store_dir[260];       /* where store_*.dat files live */
 /* Queue a companion notification: delivered by hal_notification_poll(). 1 = queued. */
 int  sim_notify_push(const char *app, const char *title);
 extern int sim_steps;                 /* hal_step_count base value */
+void sim_step_rate_set(float steps_per_minute); /* deterministic workout replay */
 
 /* Optional extra `set KEY VALUE` handling by the hal_ext simulation (nos_ext_sim.c):
  * return 1 if the key was handled. Keys handled by the sim itself: time, date, tz,
@@ -71,11 +72,19 @@ gif_w  *gif_open(const char *path, int w, int h);
 /* Add a frame given as an RGB image of the GIF's size. delay in 1/100 s. */
 void    gif_add(gif_w *g, const sim_img *im, int delay_cs);
 void    gif_close(gif_w *g);
-/* Exact 30 fps pacing in centiseconds: 3,3,4,3,3,4... (frame index -> delay). */
-int     gif_delay_30fps(int frame_index);
+/* GIF centiseconds distributed over the requested cadence: 40 fps -> 2,3,... */
+int     gif_delay_fps(int frame_index, int fps);
 
 /* round-mask coverage 0-255 of panel pixel (x, y) */
 uint8_t sim_mask(int x, int y);
+
+/* sim/nos_motion.c: the motion audit (nos_motion_probe -> motion.csv / motion.txt) */
+void sim_motion_dir(const char *dir);
+void sim_motion_on(int on);
+int  sim_motion_enabled(void);
+void sim_motion_frame(uint32_t frame, const char *section);   /* after every nos_frame_run */
+int  sim_motion_bad(const char *section, char *why, int n);    /* failed moves begun in section (NULL = all) */
+void sim_motion_finish(FILE *summary);                         /* judge open moves, write motion.txt */
 
 /* sim/nos_phone_sim.c: fake phone link */
 void nos_phone_sim_set(int connected);

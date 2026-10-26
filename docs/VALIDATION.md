@@ -1,4 +1,13 @@
-# Validation record — 2026-09-12
+# Current validation entry point
+
+Use [HOST_VALIDATION.md](HOST_VALIDATION.md) and `tools/validation_matrix.json` for
+current NOS v0.5 Alpha. Run `python tools/validate.py --profile host`, then the
+full offline profile with an explicitly built strict NOS simulator. Each run
+retains machine-readable results, exact test inventory, failures and skips.
+Hardware runs require an explicit port and expected ELF identity and are never
+part of offline test import/discovery. Image sizes/hashes below are historical.
+
+# Historical validation record — 2026-09-12
 
 ## Touch-test follow-up
 

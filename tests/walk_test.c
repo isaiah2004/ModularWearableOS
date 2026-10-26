@@ -44,6 +44,12 @@ int main(void)
     assert(s.steps==0); /* A brief gesture must not earn the entry reward. */
     signal(&s,10000,2500,2,.25f,45);
     assert(s.steps==0); /* An observation gap cannot join two short gestures. */
+    /* A personalized entry count changes acceptance latency, while still
+     * requiring cadence and waveform checks. */
+    walk_init(&s);s.entry_peaks=4;signal(&s,0,2500,2,.25f,45);
+    assert(s.walking && s.steps>=4);
+    walk_init(&s);s.entry_peaks=12;signal(&s,0,2500,2,.25f,45);
+    assert(!s.walking && s.steps==0);
     walk_init(&s); signal(&s,UINT32_MAX-5000u,30000,2,.25f,45);
     assert(s.steps>=50 && s.steps<=61 && s.active_seconds>=24);
     hal_imu m=sample(0,0,0,0);

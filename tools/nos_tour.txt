@@ -8,16 +8,32 @@ mark home
 wait 800
 shot 00_home
 film 01_home_pager 12
-flick 380 233 120 233 140
-wait 600
-shot 02_home_page2
 flick 120 233 380 233 140
 wait 600
+expect home_page 6
+flick 120 233 380 233 140
+wait 600
+expect home_page 5
+shot 02_home_music
+flick 380 233 120 233 140
+wait 600
+expect home_page 6
+flick 380 233 120 233 140
+wait 600
+expect home_page 0
+flick 380 233 120 233 140
+wait 600
+expect home_page 1
+shot 02_home_apps
+flick 120 233 380 233 140
+wait 600
+expect home_page 0
 
 mark control
 gif 03_control_drop 24
 drag 233 8 233 330 300
 wait 600
+expect top CONTROL
 shot 04_control
 home
 wait 700

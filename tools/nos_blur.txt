@@ -1,0 +1,110 @@
+# Live/cached blur acceptance at watch-model costs, no board or serial access.
+set mblur 2
+face 8
+notify Messages|Ana|See you at 7? Bring the charger please
+notify Calendar|Standup|10:30 in Room 4
+notify Slack|Hardware|New boards arrived
+wait 5000
+mark rest
+wait 2000
+expect nolate
+expect bluridle
+mark home_pager
+# From Face, rightward finger travel reveals Timer then Music to its left.
+slide 70 380 430 380 400 100
+wait 700
+expect home_page 6
+slide 70 380 430 380 400 100
+wait 700
+expect home_page 5
+slide 430 380 70 380 400 100
+wait 700
+expect home_page 6
+slide 430 380 70 380 400 100
+wait 700
+expect home_page 0
+expect nolate
+expect blurlive
+mark control
+drag 233 8 233 360 300
+wait 700
+expect top CONTROL
+home
+wait 700
+expect nolate
+expect blurlive
+mark notifs
+open notifs
+wait 400
+drag 233 400 233 80 600
+wait 700
+flick 233 80 233 400 160
+wait 700
+expect nolate
+home_now
+mark settings_immediate
+open settings
+wait 400
+drag 233 350 233 180 400
+wait 700
+expect nolate
+mark settings_warm
+wait 2500
+flick 233 400 233 80 160
+wait 700
+flick 233 80 233 400 160
+wait 700
+expect nolate
+home_now
+mark about
+open about
+wait 400
+flick 233 400 233 80 160
+wait 1000
+expect nolate
+home_now
+mark modules
+open modules
+wait 400
+flick 233 400 233 80 160
+wait 1000
+expect nolate
+home_now
+mark activity
+open activity
+wait 500
+flick 233 400 233 80 160
+wait 700
+flick 233 80 233 400 160
+wait 700
+expect nolate
+home_now
+mark heart
+open heart
+wait 500
+flick 233 400 233 80 160
+wait 700
+flick 233 80 233 400 160
+wait 700
+expect nolate
+home_now
+mark weather
+open weather
+wait 500
+flick 233 400 233 80 160
+wait 700
+expect nolate
+home_now
+mark navigation
+open nav
+wait 500
+flick 400 233 80 233 160
+wait 700
+flick 80 233 400 233 160
+wait 700
+expect nolate
+home_now
+mark final_rest
+wait 2000
+expect nolate
+expect bluridle

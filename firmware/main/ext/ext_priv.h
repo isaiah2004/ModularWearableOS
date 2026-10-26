@@ -52,13 +52,26 @@ extern uint32_t ext_present_bits;    /* EXT_* bits that answered */
 static inline uint32_t ext_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 /* wrap-safe "has `t` passed" */
 static inline int ext_due(uint32_t now, uint32_t t) { return (int32_t)(now - t) >= 0; }
-static inline int ext_idle(uint32_t now, uint32_t last) { return (uint32_t)(now - last) > NOS_EXT_IDLE_MS; }
+/* A concurrent renewal may be newer than a service-loop snapshot. Treat it as
+ * fresh, including across UINT32 rollover, rather than unsigned underflow. */
+static inline uint32_t ext_elapsed(uint32_t now,uint32_t last)
+{ int32_t elapsed=(int32_t)(now-last);return elapsed>0?(uint32_t)elapsed:0; }
+static inline int ext_idle(uint32_t now, uint32_t last) { return ext_elapsed(now,last)>NOS_EXT_IDLE_MS; }
+int ext_shutdown_requested(void);        /* getters must not renew/start new streams */
 
-void *ext_psram_calloc(size_t n);    /* zeroed PSRAM, falls back to NULL (never internal) */
+#include "psram.h"
+#define ext_psram_calloc(n) ext_psram_calloc_owned((n), __FILE__)
+void *ext_psram_calloc_owned(size_t n, const char *owner);    /* zeroed PSRAM, falls back to NULL (never internal) */
 
 /* I2C on the board's shared bus (SDA47/SCL48). The IDF master driver serialises
  * transactions per bus internally, so it is safe against board.c's touch/IMU task. */
 i2c_master_bus_handle_t board_i2c_bus(void);
+/* Shared SD adapter: acquire once per open file/reservation; serialize each I/O.
+ * Names predate the audio worker, but the lease is reference-counted. */
+int board_sd_asset_acquire(void);
+void board_sd_asset_release(void);
+void board_sd_asset_lock(void);
+void board_sd_asset_unlock(void);
 int  ext_i2c_open(uint8_t addr, i2c_master_dev_handle_t *dev);   /* probe + add; 1 = answered */
 int  ext_rd(i2c_master_dev_handle_t d, uint8_t reg, void *out, size_t n);  /* 1 = ok */
 int  ext_wr(i2c_master_dev_handle_t d, uint8_t reg, uint8_t v);
@@ -72,9 +85,11 @@ int  ext_wr_buf(i2c_master_dev_handle_t d, uint8_t reg, const uint8_t *v, size_t
 void     haptic_init(void);
 void     haptic_debug(void);
 int      haptic_active(void);        /* motor driven now (compass skips samples) */
+int      haptic_shutdown_poll(uint32_t now);
 
 void     audio_init(void);
-uint32_t audio_service(uint32_t now);    /* SD file I/O for playback / recording */
+uint32_t audio_service(uint32_t now);    /* dedicated extf worker only; never sensor task */
+int      audio_shutdown_poll(uint32_t now);
 void     audio_debug(void);
 int      audio_amp_on(void);
 UBaseType_t audio_stack_free(void);
@@ -82,27 +97,35 @@ UBaseType_t audio_stack_free(void);
 void     gps_init(void);
 uint32_t gps_service(uint32_t now);
 void     gps_debug(void);
+int      gps_shutdown_poll(uint32_t now);
 
 void     lte_init(void);
 uint32_t lte_service(uint32_t now);
 void     lte_debug(void);
+int      lte_shutdown_poll(uint32_t now);
 
 void     env_init(void);
 uint32_t env_service(uint32_t now);
 void     env_debug(void);
+int      env_shutdown_poll(uint32_t now);
 
 void     light_init(void);
 uint32_t light_service(uint32_t now);
 void     light_debug(void);
+int      light_shutdown_poll(uint32_t now);
 
 void     mag_init(void);
 uint32_t mag_service(uint32_t now);
 void     mag_debug(void);
+int      mag_shutdown_poll(uint32_t now);
 void     mag_debug_cmd(const char *args);
+int      mag_debug_request(const char *args);
 
 void     hr_init(void);
 uint32_t hr_service(uint32_t now);
 void     hr_debug(void);
+int      hr_shutdown_poll(uint32_t now);
 
 void     lte_debug_cmd(const char *args);
+int      lte_debug_request(const char *args);
 #endif

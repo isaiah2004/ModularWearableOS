@@ -1,0 +1,255 @@
+{
+  "schema": 1,
+  "date": "2026-10-22",
+  "status": "implemented_verified_with_performance_limit",
+  "board": "Waveshare ESP32-S3-Touch-AMOLED-1.43C",
+  "port": "COM4",
+  "wifi": {
+    "provisioned_from_ignored_env": true,
+    "connected": true,
+    "credentials_in_report": false
+  },
+  "implementation": {
+    "source": "firmware/main/nos_display_te.c",
+    "gpio": 8,
+    "enabled_by_default": true,
+    "edge": "rising",
+    "co5300_35h": "00",
+    "co5300_44h": "0000",
+    "gate": "once immediately before the first DMA submission in each painted frame",
+    "missing_edge_fallback_ms": 25,
+    "static_semaphore": true,
+    "irq_disabled_in_panel_sleep": true,
+    "b_board_gpio_or_wait": false,
+    "clock_hz": 40000000,
+    "usb_status": "te",
+    "usb_temporary_toggle": "te 0 / te 1"
+  },
+  "c_build": {
+    "bundle_id": "c8b53777ad8fbb7f34a43fb75cc9cb79767b3272f22e8c645551b3e85151ed0c",
+    "source_tree_sha256": "cd80e85ffdc89bfbddf6e472d3c042248681ff791639dd091b6bc927bb534848",
+    "firmware_elf_sha256": "24247406a53a4fc02c683fa4ac981c7585fdb0a1e9f78a3638d72e17e475953d",
+    "budget": {
+      "app_bytes": 7740544,
+      "app_headroom_bytes": 516992,
+      "app_limit_bytes": 8257536,
+      "app_offset": 65536,
+      "app_partition": "factory",
+      "flash_bytes": 8388608,
+      "nvs_preserved": true
+    },
+    "features": {
+      "Background jobs": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/sys_background.c",
+        "symbol": "scr_background"
+      },
+      "Developer tools": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/set_developer.c",
+        "symbol": "scr_developer"
+      },
+      "Energy": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_energy.c",
+        "symbol": "scr_energy"
+      },
+      "Integrated home pager": {
+        "linked": true,
+        "registry": "nos/apps/sys_home.c",
+        "source": "nos/apps/sys_home.c",
+        "symbol": "scr_home"
+      },
+      "Sensor logs": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_energy.c",
+        "symbol": "scr_sports_logs"
+      },
+      "Solar/Orrery": {
+        "linked": true,
+        "registry": "nos/faces/faces.c",
+        "source": "nos/faces/face_orrery.c",
+        "symbol": "face_orrery"
+      },
+      "Sports": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_workout.c",
+        "symbol": "scr_workout"
+      },
+      "Voice chat": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/con_chat.c",
+        "symbol": "scr_chat"
+      }
+    }
+  },
+  "b_compile_check": {
+    "bundle_id": "f881f7787997b138f8046c433abbf5489313a68813943c6e3ece45ad3c25b72d",
+    "source_tree_sha256": "cd80e85ffdc89bfbddf6e472d3c042248681ff791639dd091b6bc927bb534848",
+    "budget": {
+      "app_bytes": 7831456,
+      "app_headroom_bytes": 32864,
+      "app_limit_bytes": 7864320,
+      "app_offset": 131072,
+      "app_partition": "ota_0",
+      "flash_bytes": 16777216,
+      "nvs_preserved": true
+    }
+  },
+  "tests": {
+    "passed": 68,
+    "failed": 0,
+    "device_checks": {
+      "physical_te_edges": true,
+      "te_enabled_and_working": true,
+      "every_wait_observed_a_fresh_edge": true,
+      "no_te_timeouts": true,
+      "edge_to_first_chunk_under_1ms": true,
+      "sleep_disables_te_irq": true,
+      "wake_restores_te": true,
+      "mic_and_speaker_with_te": true,
+      "current_firmware_identity": true,
+      "display_no_fault": true,
+      "no_allocation_failures": true,
+      "voice_key_preserved": true,
+      "wifi_connected": true,
+      "preferences_preserved": true
+    },
+    "source_level_fault_cases": [
+      "stale latched pulse",
+      "delayed notification without an edge",
+      "missing pulse",
+      "GPIO initialization failure",
+      "sleep/wake rearm",
+      "B-board no route",
+      "one wait across multiple stripes and chunks"
+    ]
+  },
+  "te_sample": {
+    "v": "1",
+    "gpio": "8",
+    "ready": "1",
+    "enabled": "1",
+    "awake": "1",
+    "error": "0",
+    "edges": "5878",
+    "period_us": "16513",
+    "age_us": "2285",
+    "waits": "421",
+    "synced": "421",
+    "timeouts": "0",
+    "last_wait_us": "6643",
+    "max_wait_us": "16494",
+    "total_wait_us": "3984777",
+    "phase_us": "14",
+    "max_phase_us": "244"
+  },
+  "observed_panel_hz": 60.55834796826743,
+  "audio_sample": {
+    "available": "1",
+    "configured": "1",
+    "tier": "0",
+    "state": "6",
+    "busy": "0",
+    "turns": "0",
+    "input_ms": "3000",
+    "output_ms": "0",
+    "record_ms": "3000",
+    "peak": "234",
+    "nonzero": "30427",
+    "cost_usd": "0.00000000",
+    "last_usd": "0.00000000",
+    "estimated": "0",
+    "http": "0",
+    "generation": "5",
+    "stack_free": "7080",
+    "selftest": "0"
+  },
+  "performance": {
+    "scenario": "twelve alternating 350ms vertical Settings swipes with 480ms spacing",
+    "benchmarks": [
+      {
+        "te_enabled": false,
+        "ui_frames": 323,
+        "painted_frames": 299,
+        "painted_intervals": 287,
+        "ui_frames_per_second": 54.86921845338452,
+        "p95_ms": 20,
+        "intervals_over_30fps_floor": 0,
+        "te_waits": 0,
+        "mean_te_wait_us": 0
+      },
+      {
+        "te_enabled": true,
+        "ui_frames": 192,
+        "painted_frames": 168,
+        "painted_intervals": 156,
+        "ui_frames_per_second": 32.2180517744092,
+        "p95_ms": 36,
+        "intervals_over_30fps_floor": 71,
+        "te_waits": 169,
+        "mean_te_wait_us": 12384.639053254437
+      }
+    ],
+    "strict_30fps_interval_floor_passed": false,
+    "note": "TE reduces scrolling throughput; full-frame payload at 40MHz quad SPI requires at least 21.7ms. Synchronizing frame starts does not guarantee tear-free scanout. No optical tearing measurement was performed."
+  },
+  "preservation": {
+    "nvs_excluded_from_flash": true,
+    "preference_hash": "bad1c42c",
+    "preferences_match": true,
+    "voice_key_preserved": true,
+    "fps_cap": 60,
+    "brightness": 52,
+    "te_enabled_at_end": true,
+    "home_and_automatic_sleep_restored": true
+  },
+  "references": [
+    "https://files.waveshare.com/wiki/ESP32-S3-Touch-AMOLED-1.43C/ESP32-S3-Touch-AMOLED-1.43C-Schematic.pdf",
+    "https://dl.espressif.com/AE/esp-iot-solution/CO5300_Datasheet_V0.00.pdf"
+  ],
+  "evidence": [
+    {
+      "path": "build/c143-te-before.json",
+      "sha256": "705cacdacd76231374eb686214908fafa85a6ad21316616ced1fc1293562ad0f"
+    },
+    {
+      "path": "build/c143-te-tests.log",
+      "sha256": "28b2dc2c87de4d160eaa36747f1879c7c435a6522a9dd87a9468b236c355acf3"
+    },
+    {
+      "path": "build/c143-te-build.log",
+      "sha256": "451b029624fa3bb6d83a4aae29c0479af13859d07aa10f5dd731dc3b24389fb4"
+    },
+    {
+      "path": "build/c143-te-b-compat-build.log",
+      "sha256": "91d4a013271cf8a20117c973d3b1e20a629748e39a2ac84b079f8c70db587ff6"
+    },
+    {
+      "path": "build/c143-te-flash.log",
+      "sha256": "e3aca4fea13a109408dec10f501666396540616df63d83c311864c3faee01af8"
+    },
+    {
+      "path": "build/c143-te-flash-wire.jsonl",
+      "sha256": "082752a8fffe0f024da3b9b6aff9115a7c00f156a3de861be40d497037ae090d"
+    },
+    {
+      "path": "build/c143-te-device-verification.json",
+      "sha256": "b55a737df939534e8f6337ac652a2bab3698a9fed90697a49e1cb279a72a0e79"
+    },
+    {
+      "path": "build/c143-te-device-verification.log",
+      "sha256": "9d2ba1a29eed58ad7a11a868ef525789354a158500614522af73eb9f37506566"
+    },
+    {
+      "path": "build/c143-te-device-wire.jsonl",
+      "sha256": "8f4fa41f9c835aaee8c4c3bb44a383b9995562dd9f6970a96413511c22b7547e"
+    }
+  ]
+}

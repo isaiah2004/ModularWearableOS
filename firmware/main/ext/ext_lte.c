@@ -51,6 +51,7 @@ static const char *const POLL_CMDS[] = { "AT+CSQ", "AT+CEREG?", "AT+CREG?", "AT+
 typedef struct {
     int state, enabled, probing, step, tries, installed;
     uint32_t t_state, last_get, next_poll, next_inbox, next_cpin;
+    uint32_t rx_bytes,rx_discarded_bytes,pump_last,pump_gap_max;
     int poll_i;
     /* in-flight command */
     int cmd, result;
@@ -62,21 +63,26 @@ typedef struct {
     /* inbox */
     hal_sms sms[MAX_SMS]; int nsms;
     hal_sms tmp[MAX_SMS]; int ntmp; int in_text;
+    int sms_slot[MAX_SMS],tmp_slot[MAX_SMS];uint32_t sms_next_id;
     int cmgl_mode1_bad;
     /* outgoing */
     int send_pending; char send_to[24]; char send_text[161]; int sent_ok, sent_fail;
     char raw[96]; int raw_pending;
     int inbox_dirty;
+    struct {uint32_t id;int state;} send_result[8];
+    uint32_t send_next_id,send_id;unsigned send_result_head;
+    int send_cmgs,shutdown_phase,shutdown_ack;
+    uint32_t shutdown_t0;
 } lte_state;
 static lte_state *L;
 
 /* ---------------------------------------------------------------- pins / UART */
-static void key(int press)
+static int key(int press)
 {
 #if EXT_LTE_PWRKEY_ACTIVE_HIGH
-    gpio_set_level(EXT_PIN_LTE_KEY, press ? 1 : 0);
+    return gpio_set_level(EXT_PIN_LTE_KEY, press ? 1 : 0)==ESP_OK;
 #else
-    gpio_set_level(EXT_PIN_LTE_KEY, press ? 0 : 1);      /* open-drain: 1 = released (high-Z) */
+    return gpio_set_level(EXT_PIN_LTE_KEY, press ? 0 : 1)==ESP_OK; /* open-drain release */
 #endif
 }
 static int uart_on(void)
@@ -90,16 +96,20 @@ static int uart_on(void)
     uart_set_pin(LTE_UART, EXT_PIN_LTE_TX, EXT_PIN_LTE_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     uart_flush_input(LTE_UART);
     L->installed = 1;
+    L->pump_last=0;
     return 1;
 }
-static void uart_off(void)
+static int uart_off(void)
 {
-    if (!L->installed) return;
-    uart_driver_delete(LTE_UART);
+    if (!L->installed) return 1;
+    if(uart_driver_delete(LTE_UART)!=ESP_OK)return 0;
     L->installed = 0;
+    L->pump_last=0;
+    return 1;
 }
 
-static void go(int s) { L->state = s; L->t_state = ext_ms(); L->step = 0; L->tries = 0; }
+static void go(int s) { L->state = s; L->t_state = ext_ms(); L->step = 0; L->tries = 0;
+    if(s==L_INIT||s==L_KEY||s==L_BOOT)L->shutdown_ack=0; }
 
 static void at(const char *s, int kind, uint32_t tmo)
 {
@@ -107,6 +117,13 @@ static void at(const char *s, int kind, uint32_t tmo)
     uart_write_bytes(LTE_UART, "\r", 1);
     L->cmd = kind; L->result = R_NONE;
     L->deadline = ext_ms() + tmo;
+}
+static void send_status(int status)
+{
+    portENTER_CRITICAL(&ext_lock);
+    for(unsigned i=0;i<8;i++)if(L->send_result[i].id==L->send_id && L->send_result[i].state!=3)
+        L->send_result[i].state=status;
+    portEXIT_CRITICAL(&ext_lock);
 }
 
 /* ---------------------------------------------------------------- parsing */
@@ -196,16 +213,19 @@ static void line(char *s)
         L->st.sim = strstr(s, "READY") ? 1 : strstr(s, "PIN") || strstr(s, "PUK") ? 2 : 0;
     } else if (!strncmp(s, "+CMTI:", 6)) {
         L->inbox_dirty = 1;
-    } else if (!strncmp(s, "+CMGS:", 6)) {
-        L->sent_ok++;
+    } else if (!strncmp(s, "+CMGS:", 6) && L->cmd==C_CMGS_BODY) {
+        if(!L->send_cmgs)L->sent_ok++;
+        L->send_cmgs=1;
+        for(unsigned i=0;i<8;i++)if(L->send_result[i].id==L->send_id)L->send_result[i].state=3;
     } else if (!strcmp(s, "POWERED DOWN")) {
-        L->st.powered = 0;
+        L->st.powered = 0;L->shutdown_ack=1;
     }
     portEXIT_CRITICAL(&ext_lock);
     if (!strncmp(s, "+CMGL:", 6) && (L->cmd == C_CMGL || L->cmd == C_CMGL0)) {
         if (L->ntmp >= MAX_SMS) { L->in_text = 0; return; }
         hal_sms *m = &L->tmp[L->ntmp++];
         memset(m, 0, sizeof *m);
+        L->tmp_slot[L->ntmp-1]=atoi(s+6);
         char stat[16] = "";
         quoted(s, 0, stat, sizeof stat);
         quoted(s, 1, m->from, sizeof m->from);
@@ -220,14 +240,20 @@ static void line(char *s)
 
 static void pump(void)
 {
+    uint32_t now=ext_ms();
+    if(L->installed){uint32_t gap=L->pump_last?ext_elapsed(now,L->pump_last):0;
+        if(gap>L->pump_gap_max)L->pump_gap_max=gap;
+        L->pump_last=now;}
     uint8_t buf[96];
     int n;
     while (L->installed && (n = uart_read_bytes(LTE_UART, buf, sizeof buf, 0)) > 0) {
+        L->rx_bytes+=(uint32_t)n;
         for (int i = 0; i < n; i++) {
             char c = (char)buf[i];
             if (c == '\n') { L->rx[L->rxlen] = 0; line(L->rx); L->rxlen = 0; continue; }
             if (c == '\r') continue;
             if (L->rxlen < (int)sizeof L->rx - 1) L->rx[L->rxlen++] = c;
+            else L->rx_discarded_bytes++;
             if (L->rxlen == 2 && L->rx[0] == '>' && L->rx[1] == ' ' && L->cmd == C_CMGS_HDR) {
                 L->result = R_PROMPT; L->rxlen = 0;
             }
@@ -239,15 +265,31 @@ static void pump(void)
 static int newer(const hal_sms *a, const hal_sms *b) { return strcmp(a->when, b->when) > 0; }
 static void inbox_publish(void)
 {
+    portENTER_CRITICAL(&ext_lock);
+    for(int i=0;i<L->ntmp;i++) {
+        hal_sms *item=&L->tmp[i];
+        for(int j=0;j<L->nsms;j++)if(L->tmp_slot[i]==L->sms_slot[j] &&
+            !strcmp(item->from,L->sms[j].from)&&!strcmp(item->when,L->sms[j].when)&&!strcmp(item->text,L->sms[j].text)) {
+            item->id=L->sms[j].id;if(!L->sms[j].unread)item->unread=0;break;
+        }
+        if(!item->id){if(++L->sms_next_id==0)++L->sms_next_id;item->id=L->sms_next_id;}
+    }
+    portEXIT_CRITICAL(&ext_lock);
     for (int i = 1; i < L->ntmp; i++) {               /* newest first */
-        hal_sms v = L->tmp[i]; int j = i - 1;
-        while (j >= 0 && newer(&v, &L->tmp[j])) { L->tmp[j + 1] = L->tmp[j]; j--; }
-        L->tmp[j + 1] = v;
+        hal_sms v = L->tmp[i];int slot=L->tmp_slot[i]; int j = i - 1;
+        while (j >= 0 && newer(&v, &L->tmp[j])) { L->tmp[j + 1] = L->tmp[j];L->tmp_slot[j+1]=L->tmp_slot[j]; j--; }
+        L->tmp[j + 1] = v;L->tmp_slot[j+1]=slot;
     }
     int unread = 0;
     for (int i = 0; i < L->ntmp; i++) unread += L->tmp[i].unread;
     portENTER_CRITICAL(&ext_lock);
+    unread=0;
+    for(int i=0;i<L->ntmp;i++) {
+        for(int j=0;j<L->nsms;j++)if(L->tmp[i].id==L->sms[j].id&&!L->sms[j].unread){L->tmp[i].unread=0;break;}
+        unread+=L->tmp[i].unread;
+    }
     memcpy(L->sms, L->tmp, sizeof(hal_sms) * (size_t)L->ntmp);
+    memcpy(L->sms_slot,L->tmp_slot,sizeof(int)*(size_t)L->ntmp);
     L->nsms = L->ntmp;
     L->st.unread_sms = unread;
     portEXIT_CRITICAL(&ext_lock);
@@ -256,14 +298,30 @@ static void inbox_publish(void)
 /* ---------------------------------------------------------------- service */
 static int want_on(uint32_t now)
 {
+    portENTER_CRITICAL(&ext_lock);
     if (L->enabled && ext_idle(now, L->last_get) && !L->send_pending) L->enabled = 0;
-    return L->enabled || L->probing || L->send_pending;
+    int want=L->enabled || L->probing || L->send_pending;
+    portEXIT_CRITICAL(&ext_lock);
+    return want;
 }
 
 uint32_t lte_service(uint32_t now)
 {
     if (!L) return 1000;
     pump();
+    now=ext_ms();
+    /* Cancel releases admission, not an already-issued modem power-down. Keep
+     * its real ACK barrier in the normal FSM before honoring a future enable. */
+    if(L->shutdown_phase) {
+        if(L->shutdown_ack) {
+            if(!key(0)||!uart_off())return 100;
+            L->shutdown_phase=0;L->cmd=C_NONE;L->result=R_NONE;go(L_OFF);
+        } else {
+            int phase=L->shutdown_phase;L->shutdown_phase=0;
+            L->state=phase>=2?L_KEYOFF:L_PWROFF;
+            L->t_state=L->shutdown_t0-(phase==3?1000u:0u);
+        }
+    }
     int res = L->result;
     if (L->cmd != C_NONE && res == R_NONE) return 20;        /* waiting for a reply */
     int done = L->cmd;
@@ -325,10 +383,10 @@ uint32_t lte_service(uint32_t now)
                 return 50;
             }
             uart_write_bytes(LTE_UART, "\x1b", 1);            /* abort the prompt */
-            L->sent_fail++; L->send_pending = 0;
+            L->sent_fail++;send_status(4); L->send_pending = 0;
         }
         if (done == C_CMGS_BODY) {
-            if (res != R_OK) L->sent_fail++;
+            if (res != R_OK || !L->send_cmgs) {L->sent_fail++;send_status(4);}
             L->send_pending = 0;
         }
         if (!want_on(now)) {
@@ -338,10 +396,11 @@ uint32_t lte_service(uint32_t now)
         }
         if (L->raw_pending) { L->raw_pending = 0; at(L->raw, C_RAW, 5000); return 20; }
         if (L->send_pending && L->st.sim != 1 && (uint32_t)(now - L->t_state) > 20000) {
-            L->send_pending = 0; L->sent_fail++;              /* no usable SIM: give up */
+            L->send_pending = 0; L->sent_fail++;send_status(4); /* no usable SIM */
         }
         if (L->send_pending && L->st.sim == 1) {
             char c[48];
+            send_status(2);L->send_cmgs=0;
             snprintf(c, sizeof c, "AT+CMGS=\"%s\"", L->send_to);
             at(c, C_CMGS_HDR, 5000);
             return 20;
@@ -370,11 +429,9 @@ uint32_t lte_service(uint32_t now)
     case L_KEYOFF:                        /* PWRKEY held 1 s (power-off pulse) */
         if ((uint32_t)(now - L->t_state) < 1000) return 20;
         key(0);
-        portENTER_CRITICAL(&ext_lock);
-        L->st.powered = 0;
-        portEXIT_CRITICAL(&ext_lock);
-        uart_off();
-        go(L_OFF);
+        /* A pulse is a request, not proof of shutdown. Keep UART alive until the
+         * modem's POWERED DOWN notification is observed. */
+        if(L->shutdown_ack && uart_off())go(L_OFF);
         return 1000;
     }
     return 100;
@@ -396,15 +453,19 @@ void lte_init(void)
 
 void hal_lte_enable(int on)
 {
-    if (!L) return;
+    if (!L || (on && ext_shutdown_requested())) return;
+    portENTER_CRITICAL(&ext_lock);
     L->last_get = ext_ms();
     L->enabled = on ? 1 : 0;
+    portEXIT_CRITICAL(&ext_lock);
 }
 
 int hal_lte_get(hal_lte *out)
 {
     if (!L || !(ext_present_bits & EXT_LTE)) { if (out) memset(out, 0, sizeof *out); return 0; }
-    L->last_get = ext_ms();
+    portENTER_CRITICAL(&ext_lock);
+    if(!ext_shutdown_requested())L->last_get = ext_ms();
+    portEXIT_CRITICAL(&ext_lock);
     if (out) {
         portENTER_CRITICAL(&ext_lock);
         *out = L->st;
@@ -417,8 +478,8 @@ int hal_lte_get(hal_lte *out)
 int hal_lte_sms_list(hal_sms *out, int max)
 {
     if (!L || !(ext_present_bits & EXT_LTE) || !out || max <= 0) return 0;
-    L->last_get = ext_ms();
     portENTER_CRITICAL(&ext_lock);
+    if(!ext_shutdown_requested())L->last_get = ext_ms();
     int n = L->nsms < max ? L->nsms : max;
     memcpy(out, L->sms, sizeof(hal_sms) * (size_t)n);
     portEXIT_CRITICAL(&ext_lock);
@@ -435,16 +496,25 @@ void hal_lte_sms_mark_read(int i)
     }
     portEXIT_CRITICAL(&ext_lock);
 }
-
-int hal_lte_sms_send(const char *to, const char *text)
+void hal_lte_sms_mark_read_id(uint32_t id)
 {
-    if (!L || !(ext_present_bits & EXT_LTE) || !to || !text || L->send_pending) return 0;
+    if(!L||!id)return;
+    portENTER_CRITICAL(&ext_lock);
+    for(int i=0;i<L->nsms;i++)if(L->sms[i].id==id&&L->sms[i].unread){L->sms[i].unread=0;if(L->st.unread_sms>0)L->st.unread_sms--;break;}
+    portEXIT_CRITICAL(&ext_lock);
+}
+
+uint32_t hal_lte_sms_send_request(const char *to, const char *text)
+{
+    if (!L || !(ext_present_bits & EXT_LTE) || !to || !text || L->send_pending || ext_shutdown_requested()) return 0;
     int n = 0;
     for (const char *p = to; *p; p++) {
         if (!(isdigit((unsigned char)*p) || (*p == '+' && p == to))) return 0;
         n++;
     }
     if (n < 3 || n >= (int)sizeof L->send_to) return 0;
+    portENTER_CRITICAL(&ext_lock);
+    if(L->send_pending){portEXIT_CRITICAL(&ext_lock);return 0;}
     snprintf(L->send_to, sizeof L->send_to, "%s", to);
     int o = 0;
     for (const char *p = text; *p && o < 160; p++)
@@ -452,23 +522,68 @@ int hal_lte_sms_send(const char *to, const char *text)
     L->send_text[o] = 0;
     L->last_get = ext_ms();
     L->send_pending = 1;                  /* powers the modem if needed; stays on until sent */
-    return 1;
+    if(++L->send_next_id==0)++L->send_next_id;
+    L->send_id=L->send_next_id;L->send_cmgs=0;
+    unsigned slot=L->send_result_head++%8;
+    L->send_result[slot].id=L->send_id;L->send_result[slot].state=1;
+    uint32_t id=L->send_id;
+    portEXIT_CRITICAL(&ext_lock);
+    return id;
+}
+int hal_lte_sms_send(const char *to,const char *text){return hal_lte_sms_send_request(to,text)!=0;}
+int hal_lte_sms_send_status(uint32_t id)
+{
+    if(!L||!id)return 0;
+    int result=0;portENTER_CRITICAL(&ext_lock);
+    for(unsigned i=0;i<8;i++)if(L->send_result[i].id==id)result=L->send_result[i].state;
+    portEXIT_CRITICAL(&ext_lock);return result;
+}
+int lte_shutdown_poll(uint32_t now)
+{
+    if(!L)return 1;
+    L->enabled=L->probing=L->raw_pending=0;
+    if(L->send_pending){send_status(4);L->send_pending=0;}
+    if(!(ext_present_bits&EXT_LTE)){if(!key(0)||!uart_off())return -1;go(L_OFF);return 1;}
+    pump();now=ext_ms();
+    if(L->shutdown_ack){if(!key(0)||!uart_off())return -1;go(L_OFF);return 1;}
+    if(!L->shutdown_phase) {
+        if(!uart_on())return -1;
+        if(L->cmd==C_CMGS_HDR||L->cmd==C_CMGS_BODY)uart_write_bytes(LTE_UART,"\x1b",1);
+        at("AT+QPOWD=1",C_QPOWD,2000);L->shutdown_phase=1;L->shutdown_t0=now;return 0;
+    }
+    if(L->shutdown_phase==1&&ext_elapsed(now,L->shutdown_t0)>=8000) {
+        if(!key(1))return -1;
+        L->shutdown_phase=2;L->shutdown_t0=now;
+    } else if(L->shutdown_phase==2&&ext_elapsed(now,L->shutdown_t0)>=1000) {
+        if(!key(0))return -1;
+        L->shutdown_phase=3;L->shutdown_t0=now;
+    }
+    return L->shutdown_phase==3&&ext_elapsed(now,L->shutdown_t0)>5000?-1:0;
 }
 
-void lte_debug_cmd(const char *args)
+int lte_debug_request(const char *args)
 {
-    if (!L) return;
+    if (!L || !args || ext_shutdown_requested()) return 0;
     if (!strncmp(args, "at ", 3)) {
+        if(!args[3]||strlen(args+3)>=sizeof L->raw)return 0;
+        portENTER_CRITICAL(&ext_lock);
+        if(L->raw_pending||ext_shutdown_requested()){portEXIT_CRITICAL(&ext_lock);return 0;}
         snprintf(L->raw, sizeof L->raw, "%s", args + 3);
         L->raw_pending = 1;
+        portEXIT_CRITICAL(&ext_lock);
         hal_lte_enable(1);
         printf("EXT lte raw queued (modem must be READY)\n");
+        return 1;
     } else if (!strncmp(args, "sms ", 4)) {
         char to[24] = ""; int off = 0;
-        if (sscanf(args + 4, "%23s %n", to, &off) >= 1)
-            printf("EXT lte sms queued=%d\n", hal_lte_sms_send(to, args + 4 + off));
+        if (sscanf(args + 4, "%23s %n", to, &off) >= 1 && off && args[4+off]) {
+            int accepted=hal_lte_sms_send(to,args+4+off);
+            printf("EXT lte sms queued=%d\n",accepted);return accepted;
+        }
     }
+    return 0;
 }
+void lte_debug_cmd(const char *args) { (void)lte_debug_request(args); }
 
 void lte_debug(void)
 {
@@ -482,4 +597,7 @@ void lte_debug(void)
            " unread=%d inbox=%d sent=%d/%d key_active_high=%d\n",
            S[L->state], L->enabled, L->probing, s.powered, s.sim, s.registered, s.rssi_dbm, s.bars, s.op,
            s.tech, s.unread_sms, L->nsms, L->sent_ok, L->sent_fail, EXT_LTE_PWRKEY_ACTIVE_HIGH);
+    printf("EXT lte rx_bytes=%u discarded_bytes=%u pump_gap_max_ms=%u shutdown_phase=%d ack=%d\n",
+           (unsigned)L->rx_bytes,(unsigned)L->rx_discarded_bytes,(unsigned)L->pump_gap_max,
+           L->shutdown_phase,L->shutdown_ack);
 }

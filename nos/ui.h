@@ -30,10 +30,16 @@
 #define C_SEC     0x9CF3   /* #9C9C9C secondary text */
 #define C_PRI     0xEF7D   /* #EEEEEE primary text (neutral: 0xEF5D read pink) */
 #define C_WHITE   0xFFFF
-#define C_RED     0xD0C4   /* #D71921 Nothing red */
-#define C_RED_D   0xB083   /* #B01319 pressed red */
-#define C_GREEN   0x4CEB   /* #4A9E5C success (sparingly) */
-#define C_AMBER   0xD548   /* #D4A843 warning (sparingly) */
+/* The accents are variables: the light theme inverts the whole panel in hardware (DCS
+ * INVON, no pixel work), so while it is on they hold their own inverse and still show
+ * as themselves. Greys need nothing: inverted, they are the light theme. */
+extern uint16_t nos_c_red, nos_c_red_d, nos_c_green, nos_c_amber;
+#define C_RED     nos_c_red      /* #D71921 Nothing red (0xD0C4) */
+#define C_RED_D   nos_c_red_d    /* #B01319 pressed red (0xB083) */
+#define C_GREEN   nos_c_green    /* #4A9E5C success, sparingly (0x4CEB) */
+#define C_AMBER   nos_c_amber    /* #D4A843 warning, sparingly (0xD548) */
+/* 1 while the panel is inverted (the host's call, on every change; it also invalidates). */
+void ui_theme_inverted(int on);
 #define C_GHOST   0x18C3   /* unlit dot-matrix cells (neutral #181818) */
 
 /* ---- geometry ---- */
@@ -78,6 +84,39 @@ enum { UI_LEFT = 0, UI_CENTER = 1, UI_RIGHT = 2 };
 int  ui_text(gfx_fb *fb, const font_t *f, int x, int y, const char *s, uint16_t color,
              int align, int tracking);
 int  ui_text_width(const font_t *f, const char *s, int tracking);
+/* Circular baseline, clockwise from noon, glyph tops outward all round.
+ * Prepare only in tick/layout; begin replaces ALL live runs (single owner).
+ * A dense internal index pins exact 2-degree PSRAM masks until the next begin.
+ * Motion never builds masks: misses draw from the upright atlas with fixed-point
+ * nearest mapping. At rest, at most 24 exact masks build per begin. While
+ * pending(), capture again next tick and include run hashes in retained damage.
+ * Allocation failure uses direct preview without an idle retry loop. Invalid
+ * inputs or bounds above 32x32 return 0 and an empty run. Byte glyph codes.
+ * Drop succeeds only without pins; draw never allocates or calls libm. */
+#define UI_ARC_GLYPHS 16
+typedef struct {
+    int16_t x, y;
+    uint16_t slot, glyph;
+    uint8_t angle, w, h;
+    int8_t left, top;
+} ui_arc_glyph;
+typedef struct {
+    ui_arc_glyph glyph[UI_ARC_GLYPHS];
+    const font_t *font;
+    int16_t x0, y0, x1, y1;
+    uint16_t n;
+    unsigned hash, epoch;
+} ui_arc_text;
+void ui_text_arc_begin(void);
+void ui_text_arc_motion(int on);
+int ui_text_arc_retain(ui_arc_text *run);
+int ui_text_arc_pending(void);
+int ui_text_arc_prepare(ui_arc_text *run, const font_t *f, float cx, float cy,
+                        float radius, float angle, const char *s, int align, int tracking);
+void ui_text_arc(gfx_fb *fb, const ui_arc_text *run, uint16_t color);
+int ui_text_arc_drop(void);
+void ui_text_arc_stats(unsigned *bytes, unsigned *builds, unsigned *hits);
+
 /* ALL-CAPS mono label with the house tracking (converts to upper case). */
 int  ui_label(gfx_fb *fb, int x, int y, const char *s, uint16_t color, int align);
 int  ui_label_width(const char *s);       /* width of ui_label(s) incl. tracking */
@@ -161,14 +200,15 @@ struct ui_list {
     int bottom_pad;
     mscroll sc;
     int pressed;        /* row under the finger, -1 none */
-    float press_t;
+    nos_time_t press_t;
     int dragging;
     float bar_alpha;    /* scrollbar fade */
-    float bar_t;
+    nos_time_t bar_t;
     ui_row_fn draw_row;
     void (*on_tap)(int i);
     int  margin;        /* bezel margin for row spans */
     int  snap;          /* rows snap to row_h after a fling */
+    float fb_prev;      /* last frame's drawn offset (fling blur) */
 };
 void ui_list_init(ui_list *l, int n, int row_h, int top, ui_row_fn draw_row, void (*on_tap)(int));
 void ui_list_set_n(ui_list *l, int n);
@@ -178,9 +218,101 @@ void ui_list_draw(gfx_fb *fb, ui_list *l);
 float ui_list_offset(const ui_list *l);
 int  ui_list_at_top(const ui_list *l);
 
+/* ---- retained RGB565 directional motion cache ----
+ * Items survive owner changes in a bounded 2.6 MiB LRU pool. The cache stores
+ * full-color sharp content plus published/staging directional blur per item.
+ * A completed blur stays visible while a replacement shutter is generated.
+ * Work is sliced; visible items precede the next viewport. Blur includes drags.
+ * Level 0 can reuse the sharp cache. Invalidate synchronously when content changes;
+ * legacy callbacks also receive visible command-signature validation.
+ * bands=1 includes 24 context rows per side; bands=2 is a horizontal page.
+ * Cache misses return 0 for live rendering; callers must retain that fallback. */
+typedef void (*ui_blur_live_fn)(gfx_fb *fb,void *ctx);
+typedef void (*ui_blur_row_fn)(gfx_fb *fb, int i, int x0, int y, int x1, int h, void *ctx);
+/* All step arguments below are signed pixels per nominal NOS_FPS frame:
+ * offset_delta / (elapsed_seconds * M_FPS), including skipped tick intervals.
+ * These APIs recover physical speed with fabs(step) * M_FPS; do not convert
+ * callers to reference-30Hz steps or normalize a second time with nos_dt.
+ * Public levels 0..3 cross at 360/840/1680 px/s; early levels 0..4 cross at
+ * 150/300/960/1920 px/s, independently of the configured cadence. */
+int  ui_fblur_level(float step_px);
+#define UI_FBLUR_EARLY 0x10
+#define UI_FBLUR_PREWARM 0x20
+int ui_fblur_level_early(float step_px);
+void ui_fblur_idle(void); /* reclaim generic pixels on settled specialized-cache screens */
+void ui_fblur_release(void); /* UI-thread safe trim; later use can allocate again */
+void ui_fblur_mem(void);
+/* Read immediately after this owner's tick. This is its selected shutter,
+ * including held/disabled policy, not publication readiness. Generic callers
+ * must not gate it with the specialized 0..3 image ladder above. */
+int  ui_fblur_active(const void *id);
+int  ui_fblur_any_active(void); /* any cache owner requested directional blur this frame */
+/* Actual raster coverage in screen coordinates, clipped to completed stripes.
+ * Save/restore enable state around offscreen layer generation. Spans are merged,
+ * sorted [x0,x1); omitted spans on capacity overflow conservatively blur again. */
+int ui_fblur_coverage_enable(int enabled); /* returns previous state */
+int ui_fblur_row_spans(int y,int spans[][2],int capacity);
+/* Same conservative spans through exclusive until; no claims change while applying. */
+int ui_fblur_row_spans_run(int y,int spans[][2],int capacity,int *until);
+/* Revoke directional claims under sharp foreground chrome. Logical half-open
+ * bounds are clipped to this raster stripe; offscreen/record passes do nothing. */
+void ui_fblur_coverage_claim(const gfx_fb *fb,int x0,int y0,int x1,int y1);
+void ui_fblur_coverage_exclude(const gfx_fb *fb,int x0,int y0,int x1,int y1);
+/* Generic retained shutters are 2/8/16/40 px at 15/150/720/1800 px/s.
+ * UI_FBLUR_EARLY selects the early ladder above and its existing +1 level
+ * promotion (capped at 4). Held/disabled blur policy is applied after selection. */
+void ui_fblur_tick(const void *id, int held, float step, int i0, int i1, int n, int row_h,
+                   int x0, int x1, int bands, ui_blur_row_fn fn, void *ctx);
+int  ui_fblur_ready(const void *id, int i0, int i1);
+typedef struct { unsigned bytes,hits,misses,evictions,work_pixels,allocation_failures; } ui_blur_stats;
+void ui_fblur_stats(ui_blur_stats *out);
+void ui_fblur_invalidate(const void *id,int first,int last);
+/* Whole pages use bands=2 and their translated left coordinate when drawing. */
+int  ui_fblur_draw_at(gfx_fb *fb, const void *id, int i, int x, int y, float fade);
+int  ui_fblur_draw(gfx_fb *fb, const void *id, int i, int y, float fade);
+/* Mixed bands: published items blit; each cold band clips the original live body
+ * callback to its exact pixels. top is band0's actual logical y. Headers/bars
+ * belong after this call. Returns count of cached band draws in this stripe. */
+int ui_fblur_draw_bands(gfx_fb *fb,const void *id,int first,int last,int top,int row_h,
+                       float (*fade)(float),ui_blur_live_fn live,void *ctx);
+
+/* ---- smear for fast things the eye does not track (docs/MOTION30.html R7) ----
+ * A small object stepping more than ~16 px a frame (a seconds dot, a spinner, a burst
+ * dot, the jump frame of a cut) strobes into separate copies at 30 fps. Give it a ghost
+ * at the previous frame's position (45 % ink, an optional second at 20 %; ghosts last
+ * <= 2 frames) or stretch it along its velocity by half the step (film's 180 deg shutter).
+ * Cost: one extra primitive in dimmed ink, no per-pixel pass. Never smear a drag or
+ * anything the eye follows (it adds to the AMOLED hold blur).
+ *   tick():  ui_trail_push(&S.trail, x, y);          // every frame, also when still
+ *   draw():  ui_smear_disc(fb, &S.trail, r, C_PRI, 16, 1); gfx_fill_circle(fb, x, y, r, C_PRI);
+ * For hands, sprites or icons keep the angle/position in a trail and draw the thing a
+ * second time through `gfx_fb g = *fb; nos_ink_dim(&g, UI_GHOST1);` while
+ * ui_trail_step(&t, 0) is over 16 px. */
+typedef struct { float x[3], y[3]; int n; } ui_trail;   /* [0] this frame, [1] the last, [2] before */
+#define UI_GHOST1 0.45f      /* first ghost's ink */
+#define UI_GHOST2 0.20f      /* second ghost's ink (never fainter: AMOLED smears near-black) */
+void  ui_trail_push(ui_trail *t, float x, float y);     /* tick(): this frame's position */
+void  ui_trail_reset(ui_trail *t, float x, float y);    /* a jump that must not smear */
+float ui_trail_step(const ui_trail *t, int i);          /* px from position i+1 to i (0 if unknown) */
+/* Ghost discs at the previous 1-2 positions where the step that left them exceeds
+ * min_step px (16 = the tracking budget), drawn before the disc itself. ghosts = 1 or 2. */
+void  ui_smear_disc(gfx_fb *fb, const ui_trail *t, float r, uint16_t color, float min_step, int ghosts);
+/* Velocity stretch: a capsule from half a step behind to the disc (tapering to 70 %),
+ * in 45 % ink, when the last step exceeds min_step; draw the disc after it. */
+void  ui_smear_stretch(gfx_fb *fb, const ui_trail *t, float r, uint16_t color, float min_step);
+
+/* Ripple motion blur: the find screens' dot ripples drag tails of dimmer dots, the
+ * Matrix face's build-in wave gets a soft front. 0 off, 1 tails (default), 2 tails and
+ * burst (rings launch fast and glide out, the tail shrinking with their speed). The sim
+ * sets it with `set ripple_blur N` and the M key. */
+extern int ui_ripple_blur;
+
 /* ---- engine overlays (called by nos.c) ---- */
+/* y: the card's offset from its resting place (whole px). */
 void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, float y, int pressed);
-void ui_draw_toast(gfx_fb *fb, const char *text, float t01);
+/* off: px above its resting place (0 = shown; ui_toast_travel(text) = fully hidden). */
+void ui_draw_toast(gfx_fb *fb, const char *text, float off);
+float ui_toast_travel(const char *text);
 
 /* ---- formatting helpers ---- */
 void ui_fmt_time(char *out, int n, int h, int m);           /* honours 24 h pref */

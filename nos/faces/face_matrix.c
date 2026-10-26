@@ -12,12 +12,16 @@
  * Cost: cell levels are computed in tick() into a PSRAM array; draw() records one
  * damage command per run of 5 cells (bbox + hash of their levels), so a changing cell
  * repaints an 88 x 18 px box. Full redraw (pager): ~11 ms on the cost model.
- * Motion: build-in = a ripple from the centre switches cells on, digits light behind it;
- * wake from AOD (6 frames) = the AOD digit dots grow into the grid while the grid fades
- * up, the seconds ring and its head rising from it over the last 3 (no blank frame); minute change = the ring drains backwards while the changed digit
- * cells fade out/in through the levels, each line scanning from its top (6 frames). */
+ * Motion (docs/MOTION30.html: a dot field moves in whole cells, everything counts whole
+ * frames): build-in = a ripple from the centre switches cells on, 2 cells further each
+ * frame (8 frames), digits light behind it; wake from AOD (6 frames) = the AOD digit
+ * dots grow into the grid while the grid fades up, the seconds ring and its head
+ * rising from it over the last 3 (no blank frame); minute change = the ring drains
+ * backwards at 10 cells a frame (6 frames) while the changed digit cells step out/in
+ * through the levels, each line scanning down from its top one row a frame (9 frames). */
 #include "faces/face_kit.h"
 #include "nos.h"
+#include "prefs.h"
 #include <string.h>
 
 #define N      25
@@ -27,7 +31,8 @@
 #define D_AOD  6.5f
 #define R_CELL 12.4f
 #define CHUNK  5
-#define DRAIN_S 0.20f
+#define DRAIN_N 6                      /* frames: the full ring drains */
+#define WAVE_PER_F 2.0f                /* build-in ripple: cells a frame */
 #define BAT_ROW 22
 
 #define GHOST 0x18C3
@@ -60,8 +65,9 @@ typedef struct {
 } mx_state;
 
 static mx_state *M;
-static float s_change_t = -100.0f;
+static nos_time_t s_change_t = -100.0f;
 static int s_last_hm = -1;
+static int s_last_hour24 = -1;
 static float s_wake_k = 1.0f;          /* published by tick for draw */
 static uint8_t s_lo[N], s_hi[N];       /* first / one-past-last cell per row */
 static fk_wake s_w;
@@ -179,13 +185,18 @@ static void tick(const face_ctx *c, float dt)
     { face_ctx ca = *c; ca.aod = 1; s_bat_aod = fk_status_shown(&ca); }
     if (!M) return;
     int hm = c->dt.hour * 60 + c->dt.minute;
-    if (s_last_hm < 0) { pattern(M->now, c->dt.hour, c->dt.minute); memcpy(M->prev, M->now, N * N); }
+    if (s_last_hm < 0 || s_last_hour24 != !!nos_prefs.hour24) {
+        pattern(M->now, c->dt.hour, c->dt.minute);
+        memcpy(M->prev, M->now, N * N);
+        s_change_t = -100.0f;
+    }
     else if (hm != s_last_hm) {
         memcpy(M->prev, M->now, N * N);
         pattern(M->now, c->dt.hour, c->dt.minute);
         s_change_t = c->t;
     }
     s_last_hm = hm;
+    s_last_hour24 = !!nos_prefs.hour24;
     if (fk_wake_stale(&s_w)) {                       /* off the glass: no replayed change */
         memcpy(M->prev, M->now, N * N);
         s_change_t = -100.0f;
@@ -193,15 +204,24 @@ static void tick(const face_ctx *c, float dt)
 
     float e = fk_build(&s_w, c);
     int calm = c->aod;                               /* no ring / sparkle / status (the wake fades them up) */
-    float since = c->t - s_change_t;
     int sec = c->dt.second;
     int past10 = sec * 60;                            /* ring lit below this angle (0.1 deg) */
     int head = M->head[sec];
-    if (since < DRAIN_S && sec == 0) {               /* the full ring drains backwards */
-        past10 = (int)(3600.0f * (1.0f - fk_mech(since / DRAIN_S)));
+    int kc = fk_frames(c->t, s_change_t);           /* whole frames since the minute turned */
+    if (kc >= 0 && kc < DRAIN_N && sec == 0) {      /* the full ring drains backwards, evenly */
+        past10 = 3600 * (DRAIN_N - 1 - kc) / DRAIN_N;
         head = -1;
     }
-    float wave = e < 1.0f ? fk_ease(e / 0.8f) * (R_CELL + 3.0f) : 1e9f;
+    /* the ripple: whole cells per frame from the build-in's first frame */
+    float wave = e < 1.0f ? WAVE_PER_F * (float)(fk_build_k(e) + 1) : 1e9f;
+#ifdef GFX_COST_MODEL
+    fk_probe_common("matrix", &s_w, c);
+    fk_probe("matrix", "dot.d", MC_MICRO, D_AOD + (DOTD - D_AOD) * s_wake_k);
+    if (e < 1.0f && !calm) {
+        if (fk_build_k(e) == 0) fk_probe("matrix", "wave", MC_TRANSITION, 0.0f);   /* its origin */
+        fk_probe("matrix", "wave", MC_TRANSITION, (wave < R_CELL + 3.0f ? wave : R_CELL + 3.0f) * PITCH);
+    }
+#endif
 
     for (int r = 0; r < N; r++)
         for (int col = 0; col < N; col++) {
@@ -214,7 +234,7 @@ static void tick(const face_ctx *c, float dt)
                 if (M->now[i] == M->prev[i]) L = 3;
                 else {
                     int r0 = r < 12 ? 5 : 13;
-                    int step = (int)((since - (float)(r - r0) * 0.012f) * 30.0f);
+                    int step = kc + 1 - (r - r0);   /* one row a frame (R9), 3 levels each */
                     if (step < 0) step = 0;
                     if (step > 3) step = 3;
                     L = M->now[i] ? step : 3 - step;
@@ -227,8 +247,12 @@ static void tick(const face_ctx *c, float dt)
             if (e < 1.0f) {
                 float dx = (float)(col - CEN), dy = (float)(r - CEN);
                 float dist = gfx_fast_sqrt(dx * dx + dy * dy);
-                if (dist > wave) L = L_OFF;
+                /* ripple blur: the front (2 cells a frame) smears over the cells it
+                 * crossed: ghost and dim cells ahead of it, dim ones behind */
+                if (ui_ripple_blur && dist > wave) L = dist > wave + 2.0f ? L_OFF : dist > wave + 1.0f ? 0 : 1;
+                else if (dist > wave) L = L_OFF;
                 else if (dist > wave - 1.5f) L = 2;
+                else if (ui_ripple_blur && dist > wave - 3.0f && !M->now[i] && L < 1) L = 1;
                 else if (M->now[i]) {
                     float k = m_clamp((wave - dist - 1.5f) / 2.0f, 0, 1);
                     L = 1 + (int)(k * 2.0f + 0.5f);
@@ -239,9 +263,9 @@ static void tick(const face_ctx *c, float dt)
     if (e >= 1.0f && !calm) {
         /* sparkle: 3 slots, each breathes one background cell to the dim level */
         for (int j = 0; j < 3 && s_wake_k >= 1.0f; j++) {
-            float tt = c->t + (float)j * 0.83f;
-            int cyc = (int)(tt / 2.4f);
-            float ph = tt / 2.4f - (float)cyc;
+            nos_time_t tt = c->t + (double)j * 0.83;
+            int cyc = (int)(tt / 2.4);
+            float ph = (float)(tt / 2.4 - (double)cyc);
             if (ph > 0.5f) continue;
             unsigned h = hsh((unsigned)cyc * 7u + (unsigned)j, 0x5EEDu);
             int cell = (int)(h % (N * N));
@@ -254,7 +278,7 @@ static void tick(const face_ctx *c, float dt)
             int lit = bat_lit(c->battery);
             for (int k = 0; k < 5; k++) {
                 int L = k < lit ? 3 : 1;
-                if (c->charging && k == lit - 1 && c->battery < 100) L = fk_blink(c->dt.millis) > 0.5f ? 3 : 2;
+                if (c->charging && k == lit - 1 && c->battery < 100) L = fk_blink(c) > 0.5f ? 3 : 2;
                 M->lvl[BAT_ROW * N + 10 + k] = (uint8_t)L;
             }
         }
@@ -304,7 +328,10 @@ static void aod_battery(gfx_fb *fb, const face_ctx *c, float dx, float dy)
 
 static void draw(gfx_fb *fb, const face_ctx *c)
 {
-    if (!M || !M->built) return;
+    if (!M || !M->built) {
+        fk_clock_fallback(fb, c, UI_CX + fk_aod_dx, UI_CY + 24 + fk_aod_dy);
+        return;
+    }
     float dx, dy;
     fk_wake_off(&s_w, c, &dx, &dy);
     if (c->aod) {

@@ -47,27 +47,68 @@ sources), `docs/research/ZSWATCH_NOTES.md` (OS ideas, Gadgetbridge protocol).
 ## 3. Motion rules
 
 Nothing's motion is mechanical and precise: **click, not swoosh**. No bounce on
-anything the user operates.
+anything the user operates. At 30 fps smoothness comes from what each frame shows:
+the full rules, demos and evidence are in **`docs/MOTION30.html` ("Smooth at 30")**;
+every animation must meet its §14 budget, checked with the sim's motion audit
+(`docs/NOS_SIM.md`, "Motion audit").
 
-- Finger-driven: critically damped springs (`mspring`, `SPRING_PAGE`/`SHEET`/
-  `SNAPPY`), launched with the release velocity (`msp_kick`). Scrolling: `mscroll`
-  (iOS decay 0.998/ms, rubber band c=0.55, edge bounce by spring).
-- Non-interactive: `mtween` with `EASE_STANDARD` (arrivals), `EASE_ACCEL`
-  (departures), `EASE_MECH` (precise snaps). Micro 150-250 ms, transitions
-  300-420 ms.
-- Signature: **dot build-ins** (`dot_text_anim`, `dot_icon_anim`) when a screen
-  appears — hero numbers assemble from dots over ~10 frames; **digit morphs**
-  (`dot_text_morph`) when a value changes; dot bursts on tap feedback where it
-  helps; ring dots fill one by one.
-- Stagger lists by ≤ 2 frames per row, ≤ 8 rows.
+- **Step budget per frame** (466 px glass, ~67 px per degree): anything the eye tracks
+  moves <= 16 px a frame (5-10 is safe; thin text steps visibly at 1-2 px). Short
+  programmatic moves may peak at ~64 px a frame. Bigger only as a deliberate cut.
+- **By class** (`MC_*` in `nos.h`): finger-driven 1:1 (+ <= half a frame of prediction);
+  momentum follows the release, snap springs <= 64 px/f, 1 px snap; screen transitions
+  7-12 frames, <= 64 px/f; components (cards, banners, toasts) 7-9 frames, <= 64 (prefer
+  32); micro (toggles, pills, chips) 3-6 frames, <= 16; tracked continuous (scrolls,
+  hands, marquees) <= 16 px/f at whole-pixel speeds; discrete changes (digits, values)
+  morph in place; decorative loops <= 16, may run on twos; fades 3-9 frames in 16
+  perceptual ink levels.
+- **Whole frames.** Durations are frame counts (`M_FRAMES(n)`): 2 pop, 3 snap, 4-6 micro,
+  7-9 component, 10-12 screen. `mtw_start` rounds to whole frames so the last frame lands
+  exactly. Staggers are 1-2 whole frames per item, <= 8 items, from frame 0
+  (`m_stagger_k`). Fades use `m_ink(t)` levels (perceptual, 16 steps).
+- **Curves by their worst frame**: peak step <= ~1.6x the average, frame 1 >= ~15 % of
+  the move, last moving frame >= 1 px. Arrivals: `EASE_STEADY` or a frame table
+  (`MF_SNAP3` 60/90/100, `MF_MICRO4` 45/78/95/100, `MF_MICRO6`). Exits: constant speed
+  (`EASE_LINEAR`). `EASE_STANDARD`/`DECEL`/`ACCEL` jump 2.4-14x linear in one frame: small
+  moves and fades only. Start one frame in from input (`mtw_lead`).
+- **Far programmatic moves: move less, fade more** (<= 60 px of travel + an ink fade) or
+  **cut** (`m_cut`: nudge, one jump frame, 4-2-1-0 settle). The engine does this for its
+  transitions: PUSH opens/closes as a 10-frame shared-axis fade-through (56 px), sheets
+  (RISE/DROP) as a 12-frame `EASE_STEADY` slide, closes at a constant 62 px/f, the iris on
+  `EASE_STEADY` in 8-12 frames. Fingers always move the geometry 1:1 and can grab it.
+- **Crisp endings.** Springs that move pixels are pixel springs (`msp_init_px` /
+  `msp_snap`): they end within 1 px, at most 2 frames of < 1.5 px creep. Unitless 0..1
+  springs keep the precise settle. Flings step whole pixels below 3.5 px/f and stop
+  under 1.5 px/f.
+- **Honest sub-pixels.** AA primitives (circles, pills, rings, dots) take float
+  positions; text, sprites and rects round the cumulative position once per frame.
+  Dot fields move < half a pitch or whole pitches.
+- **Smear** only fast small things the eye does not track (spinners, hands, bursts, a
+  cut's jump frame): `ui_trail` + `ui_smear_disc` (ghosts at 45 % / 20 % ink) or
+  `ui_smear_stretch`. Never smear drags.
+- **Quantise on purpose.** Discrete changes animate discretely: **dot build-ins**
+  (`dot_text_anim`, `dot_icon_anim`) when a screen appears, **digit morphs**
+  (`dot_text_morph`) when a value changes, dot bursts on tap feedback where it helps,
+  ring dots filling one by one. Never step anything the eye tracks.
+- **Prefer vertical motion and in-place fades** to fast full-screen horizontal slides:
+  the panel has no TE line, so horizontal motion tears worst.
+- **Finger-driven:** critically damped springs (`SPRING_PAGE`/`SHEET`/`SNAPPY`) launched
+  with the release velocity (`msp_kick`); scrolling `mscroll` (iOS decay 0.998/ms,
+  rubber band c=0.55, edge bounce by a pixel spring). Touch is sampled at 60-100 Hz
+  with timestamps, the velocity is a least-squares fit (zero after 40 ms still), and
+  drags are predicted half a frame ahead (`nos_touch_predict`).
 - Haptic tick (`nos_feedback(FB_TICK)`) on every detent: list row snaps, pager
   page changes, picker values, slider steps of 10%. `FB_TAP` on taps,
   `FB_TOGGLE_ON/OFF`, `FB_SUCCESS`, `FB_ERROR`, `FB_LIMIT` at hard limits.
 - Animation state advances only in `tick(dt)`. `draw()` is pure: it is called once
   to record and once per 16-row stripe (~30x per frame) and must not mutate state
-  or call slow HAL functions. Read sensors/services in `tick` into statics.
-- Quantise slowly varying visual parameters (fades, alphas) to ≤ 16 levels so
-  damage settles and still screens cost zero.
+  or call slow HAL functions. Read sensors/services in `tick` into statics; report
+  motion probes (`nos_motion_probe`) there too.
+- Quantise slowly varying visual parameters (fades, alphas) to <= 16 levels so
+  damage settles and still screens cost zero. Fade still things with `ui_dim()`'d
+  colours: the damage recorder does not see `nos_ink_dim`.
+- Keep frame cost flat: shorter travel and crisp endings lower cost; cost-model p95
+  < 30 ms in motion, 0 late frames idle.
 
 ## 4. Navigation map
 

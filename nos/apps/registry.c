@@ -3,9 +3,18 @@
 #include "svc.h"
 #include "prefs.h"
 #include "dot.h"
+#include "background.h"
 
 const nos_app nos_app_list[] = {
     { "Activity",    DOT_ICON_STEPS,     &scr_activity },
+    { "Sports",      DOT_ICON_STOPWATCH, &scr_workout },
+    { "Energy",      DOT_ICON_FLAME,     &scr_energy },
+    { "Jobs", DOT_ICON_GAUGE, &scr_background },
+    { "Chat", DOT_ICON_MIC, &scr_chat },
+    { "Battery history", DOT_ICON_BATTERY, &scr_battery_history },
+    { "Sensor logs", DOT_ICON_CHECK,     &scr_sports_logs },
+    { "Wrist tuning", DOT_ICON_HAND,      &scr_wrist_tuning },
+    { "Quick report", DOT_ICON_CHECK,     &scr_quick_report },
     { "Heart rate",  DOT_ICON_HEART,     &scr_heart },
     { "Breathe",     DOT_ICON_BREATHE,   &scr_breathe },
     { "Weather",     DOT_ICON_CLOUD,     &scr_weather },
@@ -15,12 +24,14 @@ const nos_app nos_app_list[] = {
     { "Alarms",      DOT_ICON_ALARM,     &scr_alarm },
     { "World clock", DOT_ICON_GLOBE,     &scr_worldclock },
     { "Compass",     DOT_ICON_COMPASS,   &scr_compass },
+    { "IMU",         DOT_ICON_GAUGE,     &scr_imu },
     { "Barometer",   DOT_ICON_GAUGE,     &scr_baro },
     { "Navigate",    DOT_ICON_ROUTE,     &scr_nav },
     { "Cellular",    DOT_ICON_SIGNAL,    &scr_cell },
     { "Recorder",    DOT_ICON_MIC,       &scr_memo },
     { "Find phone",  DOT_ICON_FIND,      &scr_find },
     { "Torch",       DOT_ICON_TORCH,     &scr_torch },
+    { "Developer tools", DOT_ICON_GAUGE, &scr_developer },
     { "Diagnostics", DOT_ICON_CHECK,     &scr_diag },
     { "Settings",    DOT_ICON_SETTINGS,  &scr_settings },
 };
@@ -48,10 +59,16 @@ void nos_open_icon(const nos_screen *s, int from_x, int from_y, int icon, float 
     nos_iris_seed_r = r;
 }
 
+static void services_tick(float dt)
+{
+    svc_tick(dt);
+    background_tick();
+}
 void nos_apps_boot(void)
 {
     svc_init();
-    nos_bg_tick = svc_tick;
+    background_init();
+    nos_bg_tick = services_tick;
     nos_power_screen = &scr_power;
     nos_set_root(&scr_home);
     nos_push(&scr_boot, TX_NONE);

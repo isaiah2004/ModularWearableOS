@@ -1,0 +1,105 @@
+{
+  "timestamp": "2026-10-20T22:15:04.256195+00:00",
+  "report_files": [
+    {
+      "path": "coverage.csv",
+      "bytes": 105409,
+      "sha256": "954033f2ad2a6664333b7e885a630716d828e17ae4a49d5ad1dbdd68d8b8c375"
+    },
+    {
+      "path": "findings.csv",
+      "bytes": 163188,
+      "sha256": "9d52e11a0aba40815a6ea900b62fbafedc1c629a3ffdfa00d926645ed58c8d32"
+    },
+    {
+      "path": "overview.html",
+      "bytes": 81925,
+      "sha256": "c98877366e23520b541a0bc59c0bef4f779a903d8964648acb90500f8066053e"
+    },
+    {
+      "path": "report.html",
+      "bytes": 917142,
+      "sha256": "0beddf49bd4a250a882eb5c6671ee22637192783095c225703f4fefff976ea4f"
+    },
+    {
+      "path": "report.json",
+      "bytes": 1157130,
+      "sha256": "1e73fa2ef06995b715efa28a8e0f2ec1bce038c9378c2c3eb952b660d05471dd"
+    },
+    {
+      "path": "report.txt",
+      "bytes": 584883,
+      "sha256": "54175e66b6d6476d9f9f79668a7f747368f6a871d808684fd7d019d9670eb8d7"
+    },
+    {
+      "path": "sports-profiles.csv",
+      "bytes": 29284,
+      "sha256": "75aac188f66894b2f030f6afd972a74ff1f5251b06b97d0d882397fb713abd92"
+    }
+  ],
+  "review_artifacts": [
+    {
+      "path": "build/full-os-audit-20261021/reviews/content_apps.json",
+      "sha256": "6b9c21f16604ddeac5f865a90170fcfd990933d0373ec710a69a8a67553a32e9"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/critical_validation.json",
+      "sha256": "5ade713c3a088234b49cdab662909526014e0defa143b0f482c9282c6f49bd38"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/developer_tooling.json",
+      "sha256": "9530aaef0c76b90916905ebca9877f516700d575ac13e4455213095adeaf1d22"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/engine.json",
+      "sha256": "b5a35010be3b5e9a30a9755f22b0317dc8a3bd6c5d2e45f042f35b40040d1f43"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/faces.json",
+      "sha256": "4bd3f6b218e6c0d0becafa51fe32b9d9aee6473dc3ffdfbfbc6dd8284130feeb"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/health_sports.json",
+      "sha256": "f243eeaa97a630eb1c7346f9a136db4bcf2dca557f2c948497c9d4d7016e2298"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/platform.json",
+      "sha256": "1786ad3f1ef4b5a93cbac22b6bfb0b163fb2aaef2e642a30af7f77c3864497ba"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/root_supplement.json",
+      "sha256": "418a14bc89d49b14a8cfdec8325ff239bc050cb1c39bc7e8e0e71767245aebe0"
+    },
+    {
+      "path": "build/full-os-audit-20261021/reviews/storage_services.json",
+      "sha256": "c0c73092d5929eefabad7918a53aa9a6b3231b9cacdb160edef60c80b80120a9"
+    }
+  ],
+  "source_inventory": "build/full-os-audit-20261021/inventory.json",
+  "source_inventory_sha256": "738ea655b6dcc439b4dbcd50eda4dc6c350f26bb3e394fdedcbc654b2324698a",
+  "source_files_unchanged": 684,
+  "counts": {
+    "findings": 100,
+    "modules": 179,
+    "apps": 26,
+    "screens": 70,
+    "inventoried_files": 684,
+    "handwritten_files": 227,
+    "handwritten_lines": 65693,
+    "compiled_sources": 129,
+    "by_severity": {
+      "P1": 10,
+      "P2": 76,
+      "P3": 14
+    },
+    "by_category": {
+      "bug": 53,
+      "edge_case": 21,
+      "dev_qol": 15,
+      "performance": 3,
+      "logging": 8
+    }
+  },
+  "validation": "build/full-os-audit-20261021/checks/report/final-validation.json",
+  "note": "This audit writes report/private test artifacts only. It does not apply fixes or change watch preferences/firmware."
+}

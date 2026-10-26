@@ -12,17 +12,22 @@
 #define NOS_SVC_TRACK_H
 #include <stdint.h>
 
-typedef struct { double lat, lon; float alt; uint32_t epoch; } svc_track_pt;
+typedef struct { double lat, lon; float alt; uint32_t epoch; uint8_t segment_start; } svc_track_pt;
 #define SVC_TRACK_MAXPTS 4096           /* points kept (then every other is dropped) */
 
 void svc_track_tick(float dt);
 
-void svc_track_start(void);          /* begins a new track (discards the previous one) */
+void svc_track_start(void);          /* starts only when no unsaved session is pending */
 /* Ends the track and writes the GPX. Returns the file number (1..9999), 0 if it
- * could not be written (no card), -1 if there was nothing to save. The points stay
- * readable until the next start. */
+ * could not be written, -1 if there was nothing to save, -2 if queued/saving.
+ * Points stay immutable while saving or pending. Retry the stopped session by
+ * calling stop again after failure; only success or explicit discard allows start. */
 int  svc_track_stop(void);
 int  svc_track_active(void);
+int  svc_track_pending(void);        /* stopped, unsaved; svc_track_stop retries */
+int  svc_track_saving(void);
+int  svc_track_save_result(void);    /* last completion: file number or 0 failure */
+void svc_track_discard(void);        /* explicit discard of a stopped pending session */
 
 int  svc_track_points(const svc_track_pt **out);   /* count; *out = oldest first */
 double   svc_track_distance(void);   /* metres along the track */

@@ -3,14 +3,33 @@
 #ifndef NOS_FACE_KIT_H
 #define NOS_FACE_KIT_H
 #include "faces/face.h"
+#include "nos.h"
 #include "ui.h"
 #include "dot.h"
 #include "motion.h"
 
-/* Eased build-in progress of item i of n (stagger), from raw enter 0..1. */
-float fk_ease(float p);                              /* EASE_STANDARD, clamped */
-float fk_mech(float p);                              /* EASE_MECH, clamped */
-float fk_stagger(float enter, float start, float span); /* eased (enter-start)/span */
+/* ---- motion audit (docs/MOTION30.html §14, sim only: nothing on the watch) ----
+ * fk_probe("dot", "sec", MC_DECORATIVE, d) reports "dot.sec" from tick();
+ * fk_probe_common() the wake (ink %), the AOD drift and the unread dot every face shares. */
+#ifdef GFX_COST_MODEL
+void  fk_probe(const char *face, const char *what, int cls, float px);
+/* fresh = this frame's value is the origin of a new move (a jump that is not motion) */
+void  fk_probe_at(const char *face, const char *what, int cls, float px, int fresh);
+/* 1 when the clock moved by anything but 0 or +1 s since the last call (sim `time`) */
+int   fk_probe_jump(const face_ctx *c, int *last);
+#else
+#define fk_probe(face, what, cls, px) ((void)0)
+#define fk_probe_at(face, what, cls, px, fresh) ((void)0)
+#endif
+
+/* frame tables (mf_at): FK_SNAP3 50/83/100 (a dot snapping in), FK_TICK4 40/72/92/100
+ * (a hand clicking on, a hub stepping): peak frame <= 1.6x the average step */
+extern const mframes FK_SNAP3, FK_TICK4;
+/* whole frames from t0 to t (rounded): every motion is counted in frames (R3, R9) */
+int   fk_frames(nos_time_t t, nos_time_t t0);
+/* the home build-in (c->enter 0..1) lasts ENTER_S = 0.40 s = 12 frames: its frame index */
+#define FK_BUILD_N 12
+static inline int fk_build_k(float e) { return (int)(e * (float)FK_BUILD_N + 0.5f); }
 
 /* "HH" (24 h zero-padded; 12 h with a blank leading digit, " 9") and "MM". */
 void  fk_hh(char out[3], int hour);
@@ -18,6 +37,8 @@ void  fk_mm(char out[3], int minute);
 int   fk_hour_disp(int hour);                        /* 0-23 or 1-12 per prefs */
 /* "HH:MM" (24 h) or "H:MM" (12 h, the blank leading digit trimmed), for centred times */
 void  fk_time(char out[8], int hour, int minute);
+/* ROM-font clock for incomplete/denied face resources; requires no allocation. */
+void  fk_clock_fallback(gfx_fb *fb, const face_ctx *c, int x, int baseline);
 /* the date label, "SUN 11" */
 void  fk_date(char out[16], const face_ctx *c);
 
@@ -30,18 +51,20 @@ static inline int fk_hit(const fk_view *v, float x0, float y0, float x1, float y
 
 /* A minute-change morph tracker: call fk_morph_tick each frame with the current
  * string; it reports the previous string and progress (1 = settled). */
-typedef struct { char from[12], to[12]; float t0; int init; } fk_morph;
-void  fk_morph_tick(fk_morph *m, const char *now, float t);
-float fk_morph_p(const fk_morph *m, float t, float dur);
+typedef struct { char from[12], to[12]; nos_time_t t0; int init; } fk_morph;
+void  fk_morph_tick(fk_morph *m, const char *now, nos_time_t t);
+/* progress of an n-frame morph in whole frames, already 1/n on the change frame */
+float fk_morph_pk(const fk_morph *m, nos_time_t t, int n);
 void  fk_morph_settle(fk_morph *m);                  /* jump to the current string */
 
-/* A label cross-fade (the date at midnight): out in 2 steps, then in over 3 (~0.33 s).
- * snap = no fade (AOD, build-in, a stale face). */
-typedef struct { char from[16], to[16]; float t0; int init; } fk_xfade;
-void  fk_xfade_tick(fk_xfade *x, const char *now, float t, int snap);
-void  fk_xfade_k(const fk_xfade *x, float t, float *a_from, float *a_to);
+/* A label cross-fade (the date at midnight): out in 2 steps, then in over 3 (5 frames),
+ * in perceptual ink levels (9/16, 3/16 out; 3/16, 9/16, 1 in). snap = no fade (AOD,
+ * build-in, a stale face). */
+typedef struct fk_xfade_s { char from[16], to[16]; nos_time_t t0; int init; } fk_xfade;
+void  fk_xfade_tick(fk_xfade *x, const char *now, nos_time_t t, int snap);
+void  fk_xfade_k(const fk_xfade *x, nos_time_t t, float *a_from, float *a_to);
 /* draws both sides as ui_label at (px, py) in col; returns the width of the new text */
-int   fk_xfade_label(gfx_fb *fb, const fk_xfade *x, float t, int px, int py, uint16_t col, int align);
+int   fk_xfade_label(gfx_fb *fb, const fk_xfade *x, nos_time_t t, int px, int py, uint16_t col, int align);
 
 /* Outline a text (AOD): grey ring of offsets, then black core. One call per offset. */
 void  fk_text_outline(gfx_fb *fb, const font_t *f, int x, int y, const char *s,
@@ -72,8 +95,9 @@ void  fk_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, int lit,
 /* ---- wake from AOD: the time stays on screen and morphs into the awake style ----
  * Call fk_wake_tick() in tick. While a wake morph runs (about 0.2 s), fk_build()
  * reports 1 so the face skips its build-in, fk_wake_k() steps 1/6 -> 1 (one step per
- * frame, counted, so the rhythm is even; 0 in AOD), and fk_wake_off() slides the AOD drift back to 0. */
-typedef struct { int last_aod; float t0; int active; int dx, dy;
+ * frame, counted, so the rhythm is even; 0 in AOD), and fk_wake_off() walks the AOD
+ * drift (<= 4 px) home at 1 px a frame (a whole-pixel speed: text and dots move together). */
+typedef struct { int last_aod; nos_time_t t0; int active; int dx, dy;
                  uint32_t last_ms; float last_enter; int skip; int frames; int stale; } fk_wake;
 /* fk_wake also suppresses a build-in restarted while the face never left the glass
  * (ticked within the last 200 ms of wall time, e.g. returning from the face picker):
@@ -87,9 +111,16 @@ void  fk_wake_tick(fk_wake *w, const face_ctx *c);
 float fk_build(const fk_wake *w, const face_ctx *c);   /* effective build-in progress */
 float fk_wake_k(const fk_wake *w, const face_ctx *c);
 void  fk_wake_off(const fk_wake *w, const face_ctx *c, float *dx, float *dy);
+#ifdef GFX_COST_MODEL
+void  fk_probe_common(const char *face, const fk_wake *w, const face_ctx *c);
+void  fk_probe_xfade(const char *face, const char *what, const struct fk_xfade_s *x, nos_time_t t);
+#else
+#define fk_probe_common(face, w, c) ((void)0)
+#define fk_probe_xfade(face, what, x, t) ((void)0)
+#endif
 
 /* ---- unread notifications: one dot at (233, 24) ----
- * fk_unread_tick() in tick (fades in/out in 4 colour steps); fk_unread() last in draw.
+ * fk_unread_tick() in tick (fades in/out in 4 perceptual ink steps); fk_unread() last in draw.
  * 8 px, like the widget pages' dot. col = C_RED unless the face shows another red at the
  * same time (at most one red), then C_PRI (C_INK on white faces): DOT, GLYPH, INVERTED,
  * LIFE and TAPE always; SEGMENT and SPLIT only while their red state is up; every face
@@ -142,18 +173,34 @@ void  face_segment_warm(void);
 int   fk_stext_width(const fk_sfont *sf, const char *s);
 int   fk_stext(gfx_fb *fb, const fk_sfont *sf, int x, int y, const char *s, uint16_t col, int align);
 
-/* ---- odometer roll of one digit cell: `from` rolls up and out, `to` rises in, both
- * clipped to [x - 4, x + cell_w + 4) x [base - cap - 6, base + 6). Exactly one of
- * f / sf is used. p 0..1 (EASE_MECH applied inside). ---- */
+/* ---- mechanical roll of one digit cell: `from` rolls up and out, `to` rises in, both
+ * clipped to [x - 4, x + cell_w + 4) x [base - cap - 6, base + 6). Exactly one of f / sf
+ * is used. k = whole frames since the roll began (0 = the change frame, which already
+ * shows the first step; < 0 = not started: `from` at rest). The wheel turns in three
+ * held steps on twos and is home after fk_roll_frames() frames (MOTION30 R8). ---- */
 void  fk_roll(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
-              int cap, char from, char to, float p, uint16_t col);
+              int cap, char from, char to, int k, uint16_t col);
 /* same, with a per-glyph x nudge for the outgoing / incoming glyph (optical bearings) */
 void  fk_roll2(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
-               int cap, char from, char to, int nx_from, int nx_to, float p, uint16_t col);
+               int cap, char from, char to, int nx_from, int nx_to, int k, uint16_t col);
+int   fk_roll_frames(void);
+/* the roll's offset: the outgoing glyph is `fk_roll_dy` px up k frames in (span =
+ * fk_roll_span(cap), the clip window's height); probe it from tick with fk_probe_roll */
+int   fk_roll_span(int cap);
+int   fk_roll_dy(int k, int span);
+#ifdef GFX_COST_MODEL
+void  fk_probe_roll(const char *face, int i, int k, int cap);
+#else
+#define fk_probe_roll(face, i, k, cap) ((void)0)
+#endif
 
-/* once-a-second blink envelope (0..1) from the millisecond clock: grows in 100 ms,
- * holds to 500 ms, shrinks by 600 ms; 4 steps each way */
-float fk_blink(int ms);
+/* once-a-second blink envelope (0..1) from the millisecond clock, counted in whole
+ * frames into the second: grows over 4 frames, holds to 500 ms, shrinks over 3; even
+ * steps whatever the frame grid's phase against the clock */
+float fk_blink(const face_ctx *c);
+/* whole frames since the clock's second turned (0 = the frame it turned on), counted
+ * from that frame (fk_aod_update tracks it), so per-second steps are even at any phase */
+int   fk_sec_k(const face_ctx *c);
 
 /* glyph metrics of a baked font (0 if missing) */
 const font_glyph *fk_glyph(const font_t *f, unsigned code);

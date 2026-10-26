@@ -2,6 +2,8 @@
  * renderer and 50 Hz IMU sampler independent of network latency. */
 #include "hal.h"
 #include "weather_parse.h"
+#include "weather_service.h"
+#include "sleep_grid.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
@@ -20,6 +22,7 @@ static hal_weather s_weather={.status="Set weather location over USB"};
 static portMUX_TYPE s_lock=portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_request;
 static int64_t s_received_us;
+static int s_starting,s_started;
 static int location_valid(const weather_config *c) {
     return c->version==1 && isfinite(c->lat) && isfinite(c->lon) &&
         c->lat>=-90 && c->lat<=90 && c->lon>=-180 && c->lon<=180 &&
@@ -83,7 +86,7 @@ static void weather_task(void *arg)
     uint32_t handled=UINT32_MAX;
     int64_t due=0,last_attempt=0;
     for(;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        sleep_grid_delay(1000); /* shares a light-sleep wake with the other 1 Hz tasks */
         portENTER_CRITICAL(&s_lock);
         weather_config c=s_config; uint32_t request=s_request;
         portEXIT_CRITICAL(&s_lock);
@@ -103,7 +106,8 @@ static void weather_task(void *arg)
             "&hourly=temperature_2m,weather_code"
             "&daily=temperature_2m_max,temperature_2m_min,weather_code"
             "&forecast_hours=12&forecast_days=4&timezone=auto&timeformat=unixtime",c.lat,c.lon);
-        response r={.body=calloc(1,BODY_MAX)};
+        response r={.body=nos_mem_alloc(BODY_MAX, "weather_http")};
+        if (r.body) memset(r.body, 0, BODY_MAX);
         hal_weather result={0};
         int ok=0,status=0;
         esp_err_t err=ESP_ERR_NO_MEM;
@@ -118,7 +122,7 @@ static void weather_task(void *arg)
                 ok=err==ESP_OK && status==200 && !r.overflow && weather_parse(r.body,&result);
                 esp_http_client_cleanup(http);
             }
-            free(r.body);
+            nos_mem_free(r.body);
         }
         portENTER_CRITICAL(&s_lock);
         /* A location changed while HTTP was in flight: discard old-city data. */
@@ -137,13 +141,43 @@ static void weather_task(void *arg)
         due=esp_timer_get_time()+(ok ? 1800LL : 60LL)*1000000;
     }
 }
-void weather_service_start(void)
+int weather_service_ready(void)
 {
-    weather_config c={0};
-    if(hal_store_load("weather_loc",&c,sizeof c) && location_valid(&c)) {
-        s_config=c; snprintf(s_weather.city,sizeof s_weather.city,"%s",c.city);
-        snprintf(s_weather.status,sizeof s_weather.status,"Waiting for Wi-Fi");
+    portENTER_CRITICAL(&s_lock);
+    int ready=s_started;
+    portEXIT_CRITICAL(&s_lock);
+    return ready;
+}
+int weather_service_start(void)
+{
+    portENTER_CRITICAL(&s_lock);
+    if(s_started || s_starting) {
+        int ready=s_started;
+        portEXIT_CRITICAL(&s_lock);
+        return ready;
     }
-    if(xTaskCreate(weather_task,"weather",8192,NULL,2,NULL)!=pdPASS)
+    s_starting=1;
+    int load=!location_valid(&s_config);
+    portEXIT_CRITICAL(&s_lock);
+    if(load) {
+        weather_config c={0};
+        int loaded=hal_store_load("weather_loc",&c,sizeof c)==1 && location_valid(&c);
+        portENTER_CRITICAL(&s_lock);
+        /* A saved or newly selected location survives failed worker attempts.
+         * Do not replace an explicit selection made during the NVS read. */
+        if(loaded && !location_valid(&s_config)) {
+            s_config=c; snprintf(s_weather.city,sizeof s_weather.city,"%s",c.city);
+            snprintf(s_weather.status,sizeof s_weather.status,"Waiting for Wi-Fi");
+        }
+        portEXIT_CRITICAL(&s_lock);
+    }
+    /* Ordinary FreeRTOS creation keeps the HTTPS/file-call stack INTERNAL.
+     * HAL owns retry pacing; a failed attempt leaves all cached data intact. */
+    int started=xTaskCreate(weather_task,"weather",8192,NULL,2,NULL)==pdPASS;
+    portENTER_CRITICAL(&s_lock);
+    s_started=started;s_starting=0;
+    portEXIT_CRITICAL(&s_lock);
+    if(!started)
         ESP_LOGE("weather","Could not start worker");
+    return started;
 }

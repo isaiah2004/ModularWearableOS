@@ -1,0 +1,606 @@
+face 8
+wait 2500
+open! orrery_card
+card 0
+wait 3000
+mark body0_mode0
+shot body0_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body0_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body0_mode0_page2
+expect idle
+expect nolate
+card 0
+wait 3000
+tap 233 214
+wait 400
+mark body0_mode1
+shot body0_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body0_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body0_mode1_page2
+expect idle
+expect nolate
+card 0
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body0_mode2
+shot body0_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body0_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body0_mode2_page2
+expect idle
+expect nolate
+card 1
+wait 3000
+mark body1_mode0
+shot body1_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body1_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body1_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body1_mode0_page3
+expect idle
+expect nolate
+card 1
+wait 3000
+tap 233 214
+wait 400
+mark body1_mode1
+shot body1_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body1_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body1_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body1_mode1_page3
+expect idle
+expect nolate
+card 1
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body1_mode2
+shot body1_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body1_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body1_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body1_mode2_page3
+expect idle
+expect nolate
+card 2
+wait 3000
+mark body2_mode0
+shot body2_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body2_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body2_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body2_mode0_page3
+expect idle
+expect nolate
+card 2
+wait 3000
+tap 233 214
+wait 400
+mark body2_mode1
+shot body2_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body2_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body2_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body2_mode1_page3
+expect idle
+expect nolate
+card 2
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body2_mode2
+shot body2_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body2_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body2_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body2_mode2_page3
+expect idle
+expect nolate
+card 3
+wait 3000
+mark body3_mode0
+shot body3_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body3_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body3_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body3_mode0_page3
+expect idle
+expect nolate
+card 3
+wait 3000
+tap 233 214
+wait 400
+mark body3_mode1
+shot body3_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body3_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body3_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body3_mode1_page3
+expect idle
+expect nolate
+card 3
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body3_mode2
+shot body3_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body3_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body3_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body3_mode2_page3
+expect idle
+expect nolate
+card 4
+wait 3000
+mark body4_mode0
+shot body4_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body4_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body4_mode0_page2
+expect idle
+expect nolate
+card 4
+wait 3000
+tap 233 214
+wait 400
+mark body4_mode1
+shot body4_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body4_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body4_mode1_page2
+expect idle
+expect nolate
+card 4
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body4_mode2
+shot body4_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body4_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body4_mode2_page2
+expect idle
+expect nolate
+card 5
+wait 3000
+mark body5_mode0
+shot body5_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body5_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body5_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body5_mode0_page3
+expect idle
+expect nolate
+card 5
+wait 3000
+tap 233 214
+wait 400
+mark body5_mode1
+shot body5_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body5_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body5_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body5_mode1_page3
+expect idle
+expect nolate
+card 5
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body5_mode2
+shot body5_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body5_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body5_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body5_mode2_page3
+expect idle
+expect nolate
+card 6
+wait 3000
+mark body6_mode0
+shot body6_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body6_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body6_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body6_mode0_page3
+expect idle
+expect nolate
+card 6
+wait 3000
+tap 233 214
+wait 400
+mark body6_mode1
+shot body6_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body6_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body6_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body6_mode1_page3
+expect idle
+expect nolate
+card 6
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body6_mode2
+shot body6_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body6_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body6_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body6_mode2_page3
+expect idle
+expect nolate
+card 7
+wait 3000
+mark body7_mode0
+shot body7_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body7_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body7_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body7_mode0_page3
+expect idle
+expect nolate
+card 7
+wait 3000
+tap 233 214
+wait 400
+mark body7_mode1
+shot body7_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body7_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body7_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body7_mode1_page3
+expect idle
+expect nolate
+card 7
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body7_mode2
+shot body7_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body7_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body7_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body7_mode2_page3
+expect idle
+expect nolate
+card 8
+wait 3000
+mark body8_mode0
+shot body8_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body8_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body8_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body8_mode0_page3
+expect idle
+expect nolate
+card 8
+wait 3000
+tap 233 214
+wait 400
+mark body8_mode1
+shot body8_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body8_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body8_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body8_mode1_page3
+expect idle
+expect nolate
+card 8
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body8_mode2
+shot body8_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body8_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body8_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body8_mode2_page3
+expect idle
+expect nolate
+card 9
+wait 3000
+mark body9_mode0
+shot body9_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body9_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body9_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body9_mode0_page3
+expect idle
+expect nolate
+card 9
+wait 3000
+tap 233 214
+wait 400
+mark body9_mode1
+shot body9_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body9_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body9_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body9_mode1_page3
+expect idle
+expect nolate
+card 9
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body9_mode2
+shot body9_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body9_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body9_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body9_mode2_page3
+expect idle
+expect nolate
+card 10
+wait 3000
+mark body10_mode0
+shot body10_mode0_page0
+drag 100 300 100 170 500
+wait 700
+shot body10_mode0_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body10_mode0_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body10_mode0_page3
+expect idle
+expect nolate
+card 10
+wait 3000
+tap 233 214
+wait 400
+mark body10_mode1
+shot body10_mode1_page0
+drag 100 300 100 170 500
+wait 700
+shot body10_mode1_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body10_mode1_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body10_mode1_page3
+expect idle
+expect nolate
+card 10
+wait 3000
+tap 233 214
+wait 400
+tap 233 214
+wait 400
+mark body10_mode2
+shot body10_mode2_page0
+drag 100 300 100 170 500
+wait 700
+shot body10_mode2_page1
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body10_mode2_page2
+expect idle
+drag 100 300 100 170 500
+wait 700
+shot body10_mode2_page3
+expect idle
+expect nolate

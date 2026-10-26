@@ -1,3 +1,4 @@
+#include "sports.h"
 /* ext_env.c — BME280 (7Semi Nano) at 0x76 or 0x77. A BMP280 (id 0x58) is
  * accepted too and reports humidity 0.
  *
@@ -28,7 +29,8 @@ typedef struct {
     uint16_t T1, P1; int16_t T2, T3, P2, P3, P4, P5, P6, P7, P8, P9;
     uint8_t H1, H3; int16_t H2, H4, H5; int8_t H6;
     int triggered, errors;
-    uint32_t t_trig, next;
+    uint32_t t_trig, next, last_error_ms;
+    int last_error_op;
     hal_env cur;
     float sea;
     float hist[HIST_N]; int hn, hhead;
@@ -110,7 +112,7 @@ void env_init(void)
     float sea;
     if (hal_store_load("ext_sea", &sea, sizeof sea) && sea > 800 && sea < 1200) E->sea = sea;
     if (!load_cal() || !ext_wr(d, 0xF4, 0x00) || !ext_wr(d, 0xF5, 0x08)) {   /* sleep; filter 4 */
-        i2c_master_bus_rm_device(d); free(E); E = NULL;
+        i2c_master_bus_rm_device(d); nos_mem_free(E); E = NULL;
         return;
     }
     E->next = ext_ms();
@@ -121,6 +123,10 @@ void env_init(void)
 uint32_t env_service(uint32_t now)
 {
     if (!E) return 1000;
+    portENTER_CRITICAL(&ext_lock);
+    if (E->cur.valid && ext_elapsed(now,E->cur.sample_ms)>NOS_ENV_MAX_AGE_MS)
+        E->cur.valid = E->cur.humidity_valid = 0;
+    portEXIT_CRITICAL(&ext_lock);
     if (!E->triggered) {
         if (!ext_due(now, E->next)) return E->next - now;
         E->next = now + PERIOD_MS;
@@ -129,22 +135,32 @@ uint32_t env_service(uint32_t now)
             return 50;
         }
         E->errors++;
+        E->last_error_op=1; E->last_error_ms=ext_ms();
         return PERIOD_MS;
     }
-    if ((uint32_t)(now - E->t_trig) < 50) return 50 - (now - E->t_trig);
+    if (ext_elapsed(now,E->t_trig) < 50) return 50 - ext_elapsed(now,E->t_trig);
     E->triggered = 0;
     uint8_t r[8];
     if (!ext_rd(E->dev, 0xF7, r, 8)) {
         E->errors++;
-        if (E->errors > 5) { portENTER_CRITICAL(&ext_lock); E->cur.valid = 0; portEXIT_CRITICAL(&ext_lock); }
+        E->last_error_op=2; E->last_error_ms=ext_ms();
+        if (E->errors > 5) { portENTER_CRITICAL(&ext_lock); E->cur.valid = E->cur.humidity_valid = 0; portEXIT_CRITICAL(&ext_lock); }
         return PERIOD_MS;
     }
     int32_t adc_P = (int32_t)((uint32_t)r[0] << 12 | (uint32_t)r[1] << 4 | r[2] >> 4);
     int32_t adc_T = (int32_t)((uint32_t)r[3] << 12 | (uint32_t)r[4] << 4 | r[5] >> 4);
     int32_t adc_H = (int32_t)((uint32_t)r[6] << 8 | r[7]);
-    if (adc_T == 0x80000 || adc_P == 0x80000) return PERIOD_MS;     /* skipped / not ready */
-    hal_env o = { .valid = 1 };
+    if (adc_T == 0x80000 || adc_P == 0x80000) {
+        E->errors++; E->last_error_op=3; E->last_error_ms=ext_ms();
+        return PERIOD_MS;
+    }
+    now=ext_ms();
+    hal_env o = { .valid = 1, .humidity_valid = E->chip==0x60 && adc_H!=0x8000, .sample_ms=now };
     compensate(adc_P, adc_T, adc_H, &o);
+    if(!isfinite(o.temp_c)||!isfinite(o.pressure_hpa)||o.pressure_hpa<100||o.pressure_hpa>1300) {
+        E->errors++;E->last_error_op=4;E->last_error_ms=now;return PERIOD_MS;
+    }
+    if(!isfinite(o.humidity)||o.humidity<0||o.humidity>100)o.humidity_valid=0;
     E->errors = 0;
     portENTER_CRITICAL(&ext_lock);
     E->cur = o;
@@ -155,6 +171,7 @@ uint32_t env_service(uint32_t now)
         if (E->hn < HIST_N) E->hn++;
     }
     portEXIT_CRITICAL(&ext_lock);
+    {float sv[]={ (float)o.valid,o.temp_c,o.humidity,o.pressure_hpa,o.altitude_m };sports_emit(SP_ENV,sv,5);}
     return PERIOD_MS;
 }
 
@@ -165,6 +182,7 @@ int hal_env_get(hal_env *out)
     portENTER_CRITICAL(&ext_lock);
     v = E->cur;
     portEXIT_CRITICAL(&ext_lock);
+    if(v.valid && ext_elapsed(ext_ms(),v.sample_ms)>NOS_ENV_MAX_AGE_MS) v.valid=v.humidity_valid=0;
     if (v.valid) v.altitude_m = 44330.0f * (1.0f - powf(v.pressure_hpa / E->sea, 0.1902949f));
     if (out) *out = v;
     return v.valid;
@@ -193,7 +211,17 @@ void env_debug(void)
 {
     if (!E) { printf("EXT env absent (no BME280 at 0x76/0x77)\n"); return; }
     hal_env v; hal_env_get(&v);
-    printf("EXT env chip=0x%02x@0x%02x valid=%d t=%.2fC rh=%.1f%% p=%.2fhPa alt=%.1fm sea=%.2f hist=%d err=%d\n",
+    printf("EXT env chip=0x%02x@0x%02x valid=%d t=%.2fC rh=%.1f%% p=%.2fhPa alt=%.1fm sea=%.2f hist=%d err=%d humidity_valid=%d sample_ms=%u age_ms=%u last_error_op=%d last_error_ms=%u\n",
            E->chip, E->addr, v.valid, (double)v.temp_c, (double)v.humidity, (double)v.pressure_hpa,
-           (double)v.altitude_m, (double)E->sea, E->hn, E->errors);
+           (double)v.altitude_m, (double)E->sea, E->hn, E->errors,v.humidity_valid,
+           (unsigned)v.sample_ms,(unsigned)ext_elapsed(ext_ms(),v.sample_ms),E->last_error_op,(unsigned)E->last_error_ms);
+}
+int env_shutdown_poll(uint32_t now)
+{
+    (void)now;
+    if(!E)return 1;
+    E->triggered=0;
+    if(!ext_wr(E->dev,0xF4,0))return -1;
+    portENTER_CRITICAL(&ext_lock);E->cur.valid=E->cur.humidity_valid=0;portEXIT_CRITICAL(&ext_lock);
+    return 1;
 }

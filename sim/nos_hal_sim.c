@@ -11,11 +11,15 @@
  *  - Notifications posted by the "companion" are queued and handed out by
  *    hal_notification_poll(), like the device transport.
  * hal_haptic() and the rest of nos/hal_ext.h are in nos_ext_sim.c / nos_ext_stub.c. */
+#include "imu_backend.h"
+#include "workout.h"
+#include "wrist_detect.h"
 #include <windows.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <io.h>
 #include "hal.h"
 #include "nos_sim.h"
 
@@ -163,11 +167,17 @@ void hal_get_datetime(hal_datetime *out)
     if (s_latched) { *out = s_latch_dt; return; }
     datetime_at(rtc_now_ms(), out);
 }
-void hal_set_datetime(const hal_datetime *dt)
+int hal_set_datetime_checked(const hal_datetime *dt)
 {
+    static const int md[]={31,28,31,30,31,30,31,31,30,31,30,31};
+    if(!dt || dt->year<2000 || dt->year>2099 || dt->month<1 || dt->month>12 ||
+       dt->day<1 || dt->day>md[dt->month-1]+(dt->month==2 && dt->year%4==0) ||
+       dt->hour<0 || dt->hour>23 || dt->minute<0 || dt->minute>59 || dt->second<0 || dt->second>59) return 0;
     sim_rtc_set_date(dt->year, dt->month, dt->day);
     sim_rtc_set_time(dt->hour, dt->minute, dt->second);
+    return 1;
 }
+void hal_set_datetime(const hal_datetime *dt) { (void)hal_set_datetime_checked(dt); }
 uint64_t hal_epoch_seconds(void)
 {
     int64_t s = rtc_now_ms() / 1000 - (int64_t)sim_tz_min * 60;
@@ -200,27 +210,32 @@ static void store_path(char *out, int n, const char *key)
 }
 int hal_store_save_checked(const char *key, const void *data, int size)
 {
+    if(!key || !data || size<=0 || strlen(key)>=sizeof s_store[0].key) return 0;
     int i = store_find(key);
-    if (i < 0) {
-        if (s_nstore >= STORE_MAX) return 0;
-        i = s_nstore++;
-        snprintf(s_store[i].key, sizeof s_store[i].key, "%s", key);
-        s_store[i].data = 0;
+    if(i<0 && s_nstore>=STORE_MAX) return 0;
+    void *next=malloc((size_t)size);
+    if(!next) return 0; /* Existing key/value and cardinality remain intact. */
+    memcpy(next,data,(size_t)size);
+    if(!sim_store_disabled) {
+        char path[300],tmp[308];
+        CreateDirectoryA(sim_store_dir,NULL);
+        store_path(path,sizeof path,key);
+        snprintf(tmp,sizeof tmp,"%s.tmp",path);
+        FILE *f=fopen(tmp,"wb");
+        int ok=f!=NULL;
+        if(f) {
+            if(fwrite(next,1,(size_t)size,f)!=(size_t)size) ok=0;
+            if(fflush(f) || _commit(fileno(f))) ok=0;
+            if(fclose(f)) ok=0;
+        }
+        if(!ok || !MoveFileExA(tmp,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) {
+            remove(tmp);free(next);return 0;
+        }
     }
-    free(s_store[i].data);
-    s_store[i].data = malloc((size_t)size);
-    if (!s_store[i].data) return 0;
-    memcpy(s_store[i].data, data, (size_t)size);
-    s_store[i].size = size;
-    if (sim_store_disabled) return 1;
-    char path[300];
-    CreateDirectoryA(sim_store_dir, NULL);
-    store_path(path, sizeof path, key);
-    FILE *f = fopen(path, "wb");
-    if (!f) return 0;
-    int ok = fwrite(data, 1, (size_t)size, f) == (size_t)size;
-    if (fclose(f) != 0) ok = 0;
-    return ok;
+    if(i<0) {i=s_nstore++;snprintf(s_store[i].key,sizeof s_store[i].key,"%s",key);}
+    else free(s_store[i].data);
+    s_store[i].data=next;s_store[i].size=size;
+    return 1;
 }
 void hal_store_save(const char *key, const void *data, int size) { (void)hal_store_save_checked(key, data, size); }
 int hal_store_load(const char *key, void *data, int size)
@@ -274,8 +289,8 @@ int  hal_locate_active(void) { return 0; }
 int hal_wifi_scan(hal_wifi_ap *out, int max)
 {
     static const hal_wifi_ap fake[] = {
-        { "HomeNet-5G", -48, 36 }, { "TP-Link_A2F0", -61, 6 }, { "makerspace", -67, 11 },
-        { "SKY9821", -72, 1 }, { "AndroidAP", -79, 6 }, { "eduroam", -83, 44 }, { "Xfinity", -88, 11 },
+        { "Home Network", -48, 1 }, { "TP-Link_A2F0", -61, 6 }, { "makerspace", -67, 11 },
+        { "SKY9821", -72, 1 }, { "AndroidAP", -79, 6 }, { "Guest Wi-Fi", -83, 11 }, { "Xfinity", -88, 11 },
     };
     int n = (int)(sizeof fake / sizeof fake[0]);
     if (n > max) n = max;
@@ -284,6 +299,7 @@ int hal_wifi_scan(hal_wifi_ap *out, int max)
 }
 void hal_wifi_connect(const char *ssid, const char *pass) { (void)ssid; (void)pass; }
 void hal_ble_status(char *buf, int n) { snprintf(buf, (size_t)n, "sim: no radio"); }
+void hal_ble_set_enabled(int enabled) { (void)enabled; }
 int hal_ble_scan(hal_ble_dev *out, int max)
 {
     static const hal_ble_dev fake[] = {
@@ -361,28 +377,83 @@ void hal_media_vol(int pct) { (void)pct; }
 int hal_media_colors(uint16_t *ring, uint16_t *ab, uint16_t *sb, uint16_t *at, uint16_t *st)
 { (void)ring; (void)ab; (void)sb; (void)at; (void)st; return 0; }
 const uint16_t *hal_media_cover(int *px, unsigned *gen) { (void)px; (void)gen; return 0; }
+const uint16_t *hal_media_cover_acquire(int *px, unsigned *gen) { return hal_media_cover(px,gen); }
+void hal_media_cover_release(const uint16_t *pixels) { (void)pixels; }
 
 /* ---- sensors --------------------------------------------------------------------- */
 int   sim_imu_override;
 float sim_imu_a[3] = { 0, 0, -1 };
-int hal_imu_read(hal_imu *o)
+static void imu_at(hal_imu *o, uint32_t ms)
 {
     if (sim_imu_override) {
         *o = (hal_imu){ sim_imu_a[0], sim_imu_a[1], sim_imu_a[2], 0, 0, 0 };
-        return 1;
+        return;
     }
-    float t = hal_millis() / 1000.0f;        /* gentle simulated sway */
-    o->ax = 0.05f * sinf(t * 1.3f);
-    o->ay = 0.05f * sinf(t * 0.9f + 1.0f);
-    o->az = -1.0f;
-    o->gx = o->gy = o->gz = 0;
-    return 1;
+    float t = ms / 1000.0f;        /* synthetic tilt + translation */
+    o->ax = 0.30f * sinf(t * 1.3f);
+    o->ay = 0.22f * sinf(t * 0.9f + 1.0f);
+    o->az = -sqrtf(1-o->ax*o->ax-o->ay*o->ay) + 0.035f*sinf(t*9);
+    o->gx = 12*cosf(t*0.9f+1); o->gy = -22*cosf(t*1.3f); o->gz = 8*sinf(t*0.7f);
+}
+int hal_imu_read(hal_imu *o) { imu_at(o,hal_millis()); return 1; }
+/* Deterministic event scheduler. Samples use their own deadline, including when
+ * no app is ticking. Virtual SD work is outside the measured render loop. */
+static unsigned imu_rate;
+static uint32_t imu_next, imu_write_next;
+static uint32_t imu_event_ms;
+static int imu_in_event;
+int sim_imu_stall, sim_imu_fault;
+uint32_t imu_backend_ms(void) { return imu_in_event ? imu_event_ms : (uint32_t)active_ms(); }
+uint64_t imu_backend_utc_ms(void)
+{
+    int64_t utc=rtc_now_ms()-(int64_t)sim_tz_min*60000;
+    return utc>0 ? (uint64_t)(utc-((uint32_t)active_ms()-imu_backend_ms())) : 0;
+}
+int imu_backend_wake(void) { imu_write_next=(uint32_t)active_ms(); return 1; }
+int imu_backend_start(unsigned hz) { imu_rate=hz; imu_next=imu_backend_ms()+1000/hz; return !sim_imu_fault; }
+void imu_backend_stop(void) { imu_rate=0; }
+void sim_imu_step(void)
+{
+    uint32_t now=(uint32_t)active_ms();
+    for (;;) {
+        uint32_t event=imu_write_next;
+        if (imu_rate && (int32_t)(imu_next-event)<0) event=imu_next;
+        if ((int32_t)(event-now)>0) break;
+        imu_in_event=1; imu_event_ms=event;
+        if (imu_rate && event==imu_next) {
+            hal_imu v; imu_at(&v,event);
+            if (sim_imu_fault) imu_stream_missed(1,1);
+            else imu_stream_push(&v,event,imu_backend_utc_ms());
+            imu_next+=1000/imu_rate;
+        }
+        if (event==imu_write_next) {
+            /* Independent fresh 50Hz producer, even with raw CSV recording off. */
+            if(!sim_imu_fault) {
+                hal_imu fresh; imu_at(&fresh,event);
+                workout_motion_sample(&fresh,event); wrist_detect_feed(&fresh,event);
+            }
+            if (!sim_imu_stall) imu_worker_step();
+            imu_write_next=event+20;
+        }
+        imu_in_event=0;
+    }
 }
 int hal_imu_sample(hal_imu *o, uint32_t *sample_ms) { *sample_ms = hal_millis(); return hal_imu_read(o); }
+/* script "knock": one double knock */
+uint32_t nos_sim_knocks;
+uint32_t hal_knock_count(void) { return nos_sim_knocks; }
 
+void hal_storage_retry(void) {}
+void hal_flash_info_get(hal_flash_info *out)
+{
+    out->flash_bytes = 16u << 20; out->app_bytes = 2280u << 10; out->app_slot_bytes = 3u << 20;
+    out->nvs_used = 84; out->nvs_total = 756;
+}
+int sim_sd_present = 1;                 /* `set sd 0`: no card (Settings > Storage) */
 void hal_storage_get(hal_storage *out)
 {
     memset(out, 0, sizeof *out);
+    if (!sim_sd_present) { snprintf(out->message, sizeof out->message, "No card found"); return; }
     out->mounted = 1;
     out->total_bytes = 32ull << 30;
     out->free_bytes = 29ull << 30;
@@ -414,7 +485,19 @@ int hal_mic_pitch(void)
 }
 
 /* ---- activity ---------------------------------------------------------------------- */
-int hal_step_count(void) { return sim_steps + (int)(hal_millis() / 1500); }
+static float s_step_rate = -1.0f;
+static uint32_t s_step_rate_ms;
+int hal_step_count(void)
+{
+    if (s_step_rate < 0) return sim_steps + (int)(hal_millis() / 1500);
+    return sim_steps + (int)((hal_millis() - s_step_rate_ms) * (double)s_step_rate / 60000.0);
+}
+void sim_step_rate_set(float steps_per_minute)
+{
+    sim_steps = hal_step_count();
+    s_step_rate_ms = hal_millis();
+    s_step_rate = steps_per_minute;
+}
 void hal_activity_get(hal_activity *out)
 {
     *out = (hal_activity){ (uint32_t)hal_step_count(), 41 * 60 + hal_millis() / 4000, 0, 1 };
@@ -466,4 +549,83 @@ int hal_weather_location(char *city, int n, float *lat, float *lon) { return hal
 
 /* ---- memory ----------------------------------------------------------------------- */
 /* Zeroed so a screen that forgets to clear a sprite renders the same every run. */
+#undef hal_big_alloc
 void *hal_big_alloc(uint32_t bytes) { return calloc(1, bytes); }
+const char *hal_sd_root(void) { const char *p=getenv("NOS_SD_ROOT"); return p && *p ? p : "build/sd"; }
+
+/* Simulator fallback shares the ownership protocol; delayed mode is testable. */
+#include "asset_job.h"
+static asset_job s_asset_job;
+static int s_asset_initialized, s_asset_delay, s_asset_polls;
+static void *s_asset_sim_stack;
+static void *asset_open(const char *path) { return fopen(path, "rb"); }
+static size_t asset_read(void *file, void *dest, size_t count) {
+    return fread(dest, 1, count, file);
+}
+static void asset_close(void *file) { fclose(file); }
+static const asset_io s_asset_io = {asset_open, asset_read, asset_close, hal_micros};
+void hal_asset_sim_delay(int polls) {
+    s_asset_delay = polls > 0 ? polls : 0;
+    s_asset_polls = 0;
+}
+int hal_asset_submit(const asset_request *request) {
+    if (!s_asset_initialized) {
+        /* Charge the retained device worker stack in simulator memory gates. */
+        if(nos_mem_available()<6144u+8u)return -1;
+        s_asset_sim_stack=nos_mem_alloc(6144,"asset.worker_stack");
+        if(!s_asset_sim_stack)return -1;
+        asset_init(&s_asset_job);
+        s_asset_initialized = 1;
+    }
+    int accepted = asset_submit(&s_asset_job, request);
+    if (accepted && !s_asset_delay)
+        while (asset_worker_step(&s_asset_job, &s_asset_io)) {
+        }
+    return accepted;
+}
+void hal_asset_cancel(void) {
+    if (s_asset_initialized)
+        asset_cancel(&s_asset_job);
+}
+int hal_asset_take(asset_request *request, asset_result *result) {
+    return s_asset_initialized ? asset_take(&s_asset_job, request, result) : 0;
+}
+int hal_asset_busy(void) {
+    return s_asset_initialized &&
+           atomic_load_explicit(&s_asset_job.state, memory_order_acquire) != ASSET_IDLE;
+}
+void hal_asset_poll(void) {
+    if (!s_asset_initialized)
+        return;
+    if (s_asset_delay && ++s_asset_polls < s_asset_delay)
+        return;
+    s_asset_polls = 0;
+    asset_worker_step(&s_asset_job, &s_asset_io);
+}
+void hal_asset_wait(void) {
+    if (s_asset_initialized)
+        while (asset_worker_step(&s_asset_job, &s_asset_io)) {
+        }
+}
+
+void hal_asset_get_diagnostics(asset_diagnostics *out) {
+    memset(out, 0, sizeof *out);
+    if (s_asset_initialized) {
+        out->state = (uint32_t)atomic_load_explicit(&s_asset_job.state, memory_order_acquire);
+        if (out->state != ASSET_IDLE)
+            out->bytes_owned = s_asset_job.request.bytes;
+    }
+}
+
+/* Connectivity UI previews use deterministic simulated radio state. */
+static int sim_setup;
+int hal_setup_set(int enabled) { sim_setup=enabled; return 1; }
+void hal_setup_info(char *ssid,int sn,char *pass,int pn,int *active) {
+ snprintf(ssid,sn,"Watch-Setup-SIM");snprintf(pass,pn,"preview12345");*active=sim_setup;
+}
+void hal_setup_poll(void) {}
+void hal_wifi_set_enabled(int enabled) { (void)enabled; }
+void hal_wifi_info(char *text,int n) { snprintf(text,n,"Simulator / no real radio"); }
+int hal_ble_connect_device(const char *addr) { (void)addr;return 0; }
+void hal_ble_disconnect_device(void) {}
+void hal_ble_device_status(char *text,int n) { snprintf(text,n,"Preview only / no BLE radio"); }

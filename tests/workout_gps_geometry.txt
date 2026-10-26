@@ -1,0 +1,15 @@
+# A dateline crossing follows the short great-circle segment, never 360 degrees.
+wait 100
+set step_rate 0
+set gps_fix 0 179.99995 10 1
+workout start 2
+wait 1100
+expect workout gps_status 2
+set gps_fix 0 -179.99995 10 1
+wait 1100
+expect workout gps_status 2
+expect workout distance 11.0 11.3
+workout info dateline
+workout finish
+wait 300
+expect workout save 2

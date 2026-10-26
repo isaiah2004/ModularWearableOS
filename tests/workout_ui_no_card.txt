@@ -1,0 +1,32 @@
+# A real ready screen explains an initial card error and retries after insertion.
+present 0
+set step_rate 0
+wait 100
+open workout
+wait 700
+tap 154 244
+wait 700
+expect top SPORT READY
+expect workout storage_ready 0
+shot sport_storage_unavailable
+tap 233 372
+wait 300
+expect workout state 0
+expect workout storage_ready 0
+set sd 1
+tap 233 372
+wait 500
+expect workout storage_ready 1
+expect workout state 0
+shot sport_storage_restored
+tap 233 372
+wait 2500
+expect workout state 1
+tap 312 372
+wait 400
+tap 154 372
+wait 500
+tap 312 372
+wait 500
+expect workout save 2
+workout info ready_retry_saved

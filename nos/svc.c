@@ -16,12 +16,17 @@
  * Internal RAM is nearly full on the device: the notification store, the line
  * buffer and the JSON tokens live in one PSRAM block (hal_big_alloc). */
 #include "svc.h"
+#include "sports.h"
+#include "tuning.h"
 #include "svc_track.h"
+#include "workout.h"
+#include "diag_log.h"
 #include "gb.h"
 #include "nos.h"
 #include "hal.h"
 #include "hal_ext.h"
 #include "prefs.h"
+#include "energy.h"
 #include "dot.h"
 #include "apps/nos_apps.h"
 #include <string.h>
@@ -36,10 +41,8 @@ void hal_set_tz_min(int tz_min);
 int nos_phone_sim_cmd(const char *s);           /* sim/nos_phone_sim.c */
 #endif
 
-#define FW_VERSION   "NOS 1.0"
+#define FW_VERSION   "NOS " NOS_VERSION
 #define HW_NAME      "ESP32-S3 AMOLED 1.43"
-#define STRIDE_M     0.75f
-#define KCAL_STEP    0.04f
 #define RING_MAX_MS  60000u
 #define SNOOZE_MS    (9u * 60u * 1000u)
 #define LINES_PER_FRAME 8
@@ -53,6 +56,9 @@ typedef struct {
 } svc_big;
 static svc_big *B;
 static int s_nn;
+static uint32_t s_notif_revision;
+static uint32_t s_notif_next_instance, s_banner_notif_instance;
+static int s_banner_notif_id;
 static int s_local_id = -1;            /* local notifications count down from -1 */
 
 static svc_music_t     s_music;
@@ -66,12 +72,16 @@ static svc_heart_t     s_heart;
 static int             s_hr_rec_day_min = 0, s_hr_rec_day_max = 0;
 static svc_timer_t     s_timer;
 static uint32_t        s_timer_end, s_timer_ring_t0;
+static uint32_t        s_timer_generation;
 static svc_stopwatch_t s_sw;
 static uint32_t        s_sw_t0;
 static svc_call_t      s_call;
 static svc_sys_t       s_sys;
 static svc_alarm       s_alarms[SVC_ALARM_MAX];
 static int             s_nalarms;
+static uint32_t        s_alarm_generation, s_alarm_next_id;
+static uint32_t        s_alarm_ids[SVC_ALARM_MAX];
+static uint32_t        s_call_generation;
 static int             s_ring_alarm = -1;
 static uint32_t        s_ring_alarm_t0;
 static int             s_snooze_idx = -1;
@@ -88,6 +98,12 @@ static uint32_t        s_slow_ms, s_hr_ms, s_wx_ms, s_status_ms;
 static int             s_status_pct = -1, s_status_chg = -1;
 
 /* ------------------------------------------------------------------ helpers */
+static void action_trace(uint16_t domain,uint16_t action,int32_t target,int old_state,int result,int detail)
+{
+    uint32_t request=diag_action_request(domain,action,target);
+    diag_action_context(request,old_state,0);
+    diag_action_result(request,result,detail);
+}
 static void copy_ascii(char *dst, int n, const char *src) { gb_ascii(src ? src : "", -1, dst, n); }
 static int ieq(const char *a, const char *b)
 {
@@ -140,15 +156,18 @@ static void txf(const char *fmt, ...)
     va_end(ap);
     hal_phone_write_line(b);
 }
-static void send_status(void)
+static int send_status(void)
 {
     hal_power p;
     hal_power_get(&p);
+    if (p.battery_percent < 0) return 0;         /* no estimate yet: never send a placeholder level */
     int pct = p.battery_percent, chg = p.external_power == 1;
     int mv = p.rail_mv ? p.rail_mv : hal_battery_mv();
+    if (mv < 0) mv = 0;                          /* "-3.-80" would not be a JSON number */
     txf("{\"t\":\"status\",\"bat\":%d,\"volt\":%d.%02d,\"chg\":%d}", pct, mv / 1000, mv % 1000 / 10, chg);
     s_status_pct = pct;
     s_status_chg = chg;
+    return 1;
 }
 
 /* ------------------------------------------------------------------ notifications */
@@ -176,8 +195,13 @@ static void notif_remove_at(int i)
     memmove(&B->n[i], &B->n[i + 1], sizeof B->n[0] * (size_t)(s_nn - 1 - i));
     memmove(&B->phone[i], &B->phone[i + 1], (size_t)(s_nn - 1 - i));
     s_nn--;
+    s_notif_revision++;
 }
-static void banner_open(void) { sys_notif_open(0); }
+static void banner_open(void)
+{
+    int at=notif_find(s_banner_notif_id);
+    if(at>=0 && B->n[at].instance==s_banner_notif_instance) sys_notif_open(at);
+}
 
 /* Store (newest first) and optionally announce. Text is folded to ASCII here. */
 static void notif_post(const char *app, const char *title, const char *body, int id, int phone,
@@ -185,6 +209,8 @@ static void notif_post(const char *app, const char *title, const char *body, int
 {
     if (!B) return;
     int at = notif_find(id);
+    uint32_t instance=at>=0?B->n[at].instance:0;
+    if(!instance) {if(!++s_notif_next_instance) ++s_notif_next_instance;instance=s_notif_next_instance;}
     if (at >= 0) notif_remove_at(at);             /* an update moves it to the top */
     if (s_nn >= SVC_NOTIF_MAX) s_nn = SVC_NOTIF_MAX - 1;
     memmove(&B->n[1], &B->n[0], sizeof B->n[0] * (size_t)s_nn);
@@ -193,6 +219,7 @@ static void notif_post(const char *app, const char *title, const char *body, int
     svc_notif *n = &B->n[0];
     memset(n, 0, sizeof *n);
     n->id = id;
+    n->instance = instance;
     copy_ascii(n->app, sizeof n->app, app && *app ? app : "Phone");
     copy_ascii(n->title, sizeof n->title, title);
     copy_ascii(n->body, sizeof n->body, body);
@@ -200,11 +227,15 @@ static void notif_post(const char *app, const char *title, const char *body, int
     n->read = (uint8_t)read;
     n->icon = (uint8_t)icon_for(n->app);
     B->phone[0] = (uint8_t)phone;
-    if (banner && !nos_prefs.dnd)
+    s_notif_revision++;
+    if (banner && !nos_prefs.dnd) {
+        s_banner_notif_id=id;s_banner_notif_instance=instance;
         nos_banner(n->app, n->title[0] ? n->title : n->body, n->icon, banner_open);
+    }
 }
 
 int svc_notif_count(void) { return s_nn; }
+uint32_t svc_notif_revision(void) { return s_notif_revision; }
 int svc_notif_unread(void)
 {
     int u = 0;
@@ -224,8 +255,14 @@ void svc_notif_clear(void)
     for (int i = 0; i < s_nn; i++)
         if (B->phone[i]) txf("{\"t\":\"notify\",\"id\":%d,\"n\":\"DISMISS\"}", B->n[i].id);
     s_nn = 0;
+    s_notif_revision++;
 }
-void svc_notif_mark_all_read(void) { for (int i = 0; i < s_nn; i++) B->n[i].read = 1; }
+void svc_notif_mark_all_read(void)
+{
+    int changed = 0;
+    for (int i = 0; B && i < s_nn; i++) { changed |= !B->n[i].read; B->n[i].read = 1; }
+    if (changed) s_notif_revision++;
+}
 void svc_notif_add_local(const char *app, const char *title, const char *body)
 {
     notif_post(app, title, body, s_local_id--, 0, 0, 0, 0);
@@ -234,7 +271,7 @@ void svc_notif_open_on_phone(int i)
 {
     if (!B || i < 0 || i >= s_nn || !B->phone[i]) return;
     txf("{\"t\":\"notify\",\"id\":%d,\"n\":\"OPEN\"}", B->n[i].id);
-    B->n[i].read = 1;
+    if (!B->n[i].read) { B->n[i].read = 1; s_notif_revision++; }
 }
 
 /* ------------------------------------------------------------------ music */
@@ -247,6 +284,10 @@ static void music_set_pos(uint32_t pos_ms)
 }
 void svc_music_cmd(int cmd)
 {
+    if(cmd<0 || cmd>MUSIC_VOLDOWN) return;
+    /* Transport APIs provide no delivery acknowledgment. Keep this pending;
+     * a local optimistic player change is not proof the phone applied it. */
+    action_trace(DIAG_DOMAIN_MUSIC,DIAG_ACT_SEND,cmd,s_music.playing,DIAG_RESULT_PENDING,s_music_src);
     if (hal_phone_connected() && s_music_src != 2) {
         static const char *const n[] = { "play", "next", "previous", "volumeup", "volumedown" };
         if (cmd < 0 || cmd > MUSIC_VOLDOWN) return;
@@ -333,23 +374,31 @@ static void wx_merge_forecast(void)
     if (!w.valid) return;
     s_wx.nhours = WEATHER_HOURS < 12 ? WEATHER_HOURS : 12;
     for (int i = 0; i < s_wx.nhours; i++) {
+        s_wx.hours_epoch[i] = w.hours[i].epoch;
         s_wx.hours_c[i] = (float)w.hours[i].temp;
         s_wx.hours_cond[i] = wx_from_wmo(w.hours[i].code);
     }
     s_wx.ndays = WEATHER_DAYS < 5 ? WEATHER_DAYS : 5;
     for (int i = 0; i < s_wx.ndays; i++) {
+        s_wx.days_epoch[i] = w.days[i].epoch;
         s_wx.days[i].hi = (float)w.days[i].hi;
         s_wx.days[i].lo = (float)w.days[i].lo;
         s_wx.days[i].cond = wx_from_wmo(w.days[i].code);
     }
+    s_wx.utc_offset_seconds = w.utc_offset_seconds;
 }
 static void wx_from_hal(void)
 {
     hal_weather w;
     hal_weather_get(&w);
-    if (!w.valid) return;
     memset(&s_wx, 0, sizeof s_wx);
-    s_wx.valid = 1;
+    s_wx.valid = w.valid;
+    s_wx.stale = w.stale; s_wx.fetching = w.fetching; s_wx.source = 2;
+    s_wx.generation = w.generation; s_wx.age_seconds = w.age_seconds;
+    s_wx.utc_offset_seconds = w.utc_offset_seconds;
+    snprintf(s_wx.status, sizeof s_wx.status, "%s", w.status);
+    copy_ascii(s_wx.loc, sizeof s_wx.loc, w.city);
+    if (!w.valid) return;                    /* location invalidation clears old feed */
     s_wx.temp_c = (float)w.temp;
     s_wx.feels_c = (float)w.feels;
     s_wx.cond = wx_from_wmo(w.code);
@@ -366,34 +415,65 @@ static void wx_tick(uint32_t now)
     if (now - s_wx_ms < 10000 && s_wx_ms) return;
     s_wx_ms = now;
     int gb_fresh = s_wx_gb_ms && now - s_wx_gb_ms < 3u * 3600u * 1000u;
-    if (gb_fresh) return;
+    if (gb_fresh) {
+        s_wx.age_seconds = (now - s_wx_gb_ms) / 1000u;
+        s_wx.stale = s_wx.age_seconds >= 3600u;
+        snprintf(s_wx.status, sizeof s_wx.status, "%s", s_wx.stale ? "Phone weather is stale" : "Phone weather");
+        return;
+    }
     wx_from_hal();
 }
 
 /* ------------------------------------------------------------------ activity */
 typedef struct {
-    uint8_t  version, pad[3];
+    uint8_t  version, valid_days, pad[2];
     uint32_t day;            /* YYYYMMDD the hourly/active data belongs to, 0 = unknown */
     uint32_t week[6];        /* previous six days, oldest first */
     uint16_t hourly[24];
     uint16_t active_min, pad2;
     uint32_t last_steps, max_steps;
 } act_saved;
-#define ACT_VERSION 1
+#define ACT_VERSION 2
 static act_saved s_as;
 
 const svc_activity_t *svc_activity(void) { return &s_act; }
+
+/* Today's energy. ACTIVE = steps outside workouts x the profile's step energy + the workouts'
+ * net energy (their own steps are subtracted, never counted twice); REST = Mifflin-St Jeor
+ * prorated to the time of day; TOTAL = both. Weight is sports_mass_kg; height/age/sex come from
+ * the profile and any that are missing fall back to defaults, flagged in kcal_assumed. */
+static void act_energy(uint32_t steps)
+{
+    hal_datetime dt;
+    hal_get_datetime(&dt);
+    energy_body b = { nos_prefs.sports_mass_kg, nos_prefs.body_height_cm,
+                      (uint8_t)energy_age_from_birth(nos_prefs.body_birth_year, dt.year), nos_prefs.body_sex };
+    uint64_t now = hal_epoch_seconds();
+    int sod = dt.hour * 3600 + dt.minute * 60 + dt.second;
+    uint32_t ped = 0;
+    float net = 0;
+    int n = 0;
+    if (now > (uint64_t)sod + 1000000u) n = workout_day_energy((uint32_t)(now - (uint64_t)sod), &ped, &net);
+    float sk = energy_step_kcal(&b), stride = energy_stride_m(&b);
+    s_act.km = steps * stride / 1000.0f;
+    s_act.kcal_workout = net;
+    s_act.workouts_today = n;
+    s_act.kcal = energy_daily_active((int)steps, ped, sk, net);
+    s_act.kcal_rest = now ? energy_rest_so_far(&b, sod) : 0.0f;    /* no trusted clock: no time of day */
+    s_act.kcal_total = s_act.kcal + s_act.kcal_rest;
+    s_act.kcal_assumed = (uint8_t)energy_assumed(&b);
+}
 
 static void act_publish(uint32_t steps)
 {
     s_act.goal = nos_prefs.step_goal_100 ? nos_prefs.step_goal_100 * 100 : 8000;
     s_act.steps = (int)steps;
-    s_act.km = steps * STRIDE_M / 1000.0f;
-    s_act.kcal = steps * KCAL_STEP;
+    act_energy(steps);
     s_act.active_min = s_as.active_min;
     memcpy(s_act.hourly, s_as.hourly, sizeof s_act.hourly);
     for (int i = 0; i < 6; i++) s_act.week[i] = s_as.week[i];
     s_act.week[6] = steps;
+    s_act.week_valid = (uint8_t)(s_as.valid_days | (s_as.day ? 64u : 0u));
     int st = 0;
     for (int h = 0; h < 24; h++) st += s_as.hourly[h] > 250;
     s_act.stand_hours = st;
@@ -418,12 +498,15 @@ static void act_tick(uint32_t now)
     s_as.active_min = (uint16_t)(steps / 92);
     static const uint32_t wk[6] = { 7120, 9340, 5210, 8050, 10420, 6880 };
     memcpy(s_as.week, wk, sizeof wk);
+    s_as.valid_days=127;
     act_publish(steps);
 }
 static void act_init(void) {}
 #else
 static int       s_as_dirty;
 static uint32_t  s_as_save_ms;
+static uint32_t s_as_attempt_ms;
+static int s_as_retry;
 static int       s_min_key = -1;
 static uint32_t  s_min_steps;
 static int64_t days_from_civil(int y, int m, int d)
@@ -438,9 +521,17 @@ static int64_t days_from_civil(int y, int m, int d)
 static int64_t key_days(uint32_t k) { return days_from_civil((int)(k / 10000), (int)(k / 100 % 100), (int)(k % 100)); }
 static void act_save(void)
 {
-    hal_store_save("nosact", &s_as, sizeof s_as);
+    s_as_attempt_ms=hal_millis();
+    if(!hal_store_save_checked("nosact", &s_as, sizeof s_as)) {
+        s_as_dirty=1;s_as_retry=1;s_act.checkpoint_pending=1;
+        if(s_act.checkpoint_errors<UINT32_MAX)s_act.checkpoint_errors++;
+        diag_log_event(DIAG_STORAGE_ERROR,(int32_t)diag_log_name_id("nosact"),(int32_t)s_as.day,(int32_t)s_act.checkpoint_errors);
+        return;
+    }
     s_as_dirty = 0;
+    s_as_retry=0;s_act.checkpoint_pending=0;
     s_as_save_ms = hal_millis();
+    s_act.checkpoint_epoch=(uint32_t)hal_epoch_seconds();
 }
 static void act_rollover(uint32_t day, uint32_t steps)
 {
@@ -449,12 +540,15 @@ static void act_rollover(uint32_t day, uint32_t steps)
     for (int64_t k = 0; k < gap; k++) {
         memmove(&s_as.week[0], &s_as.week[1], sizeof s_as.week[0] * 5);
         s_as.week[5] = k == 0 ? s_as.max_steps : 0;
+        s_as.valid_days=(uint8_t)((s_as.valid_days>>1)&31u);
+        if(k==0 && s_as.day)s_as.valid_days|=32u;
     }
     memset(s_as.hourly, 0, sizeof s_as.hourly);
     s_as.active_min = 0;
     s_as.max_steps = steps;
     s_as.last_steps = steps;
     s_as.day = day;
+    s_as.valid_days|=64u;s_as_dirty=1;
     s_min_key = -1;
     act_save();
 }
@@ -462,12 +556,13 @@ static void act_tick(uint32_t now)
 {
     hal_activity a;
     hal_activity_get(&a);
+    if(!a.valid) {act_publish(s_as.max_steps);return;}
     uint32_t steps = a.steps;
     if (hal_epoch_seconds()) {                    /* day logic needs a trusted clock */
         hal_datetime dt;
         hal_get_datetime(&dt);
         uint32_t day = day_key(&dt);
-        if (!s_as.day) { s_as.day = day; s_as.last_steps = steps; s_as_dirty = 1; }
+        if (!s_as.day) { s_as.day = day; s_as.last_steps = steps; s_as.valid_days|=64u; s_as_dirty = 1; }
         else if (day != s_as.day) act_rollover(day, steps);
         if (steps < s_as.last_steps) s_as.last_steps = steps;   /* pedometer reset */
         uint32_t d = steps - s_as.last_steps;
@@ -485,14 +580,24 @@ static void act_tick(uint32_t now)
             s_min_key = mk;
             s_min_steps = steps;
         }
-        if (s_as_dirty && now - s_as_save_ms > 10u * 60u * 1000u) act_save();
+        s_act.checkpoint_pending=(uint8_t)s_as_dirty;
+        if (s_as_dirty && (s_as_retry ? now-s_as_attempt_ms>=5000u : now-s_as_save_ms>10u*60u*1000u)) act_save();
     }
     act_publish(steps);
 }
 static void act_init(void)
 {
     act_saved t;
-    if (hal_store_load("nosact", &t, sizeof t) && t.version == ACT_VERSION) s_as = t;
+    if (hal_store_load("nosact", &t, sizeof t) && (t.version == ACT_VERSION || t.version == 1)) {
+        s_as=t;
+        if(t.version==1) {
+            /* Old zero entries have no validity provenance: keep them unknown.
+             * Positive totals and the recorded current day are established. */
+            s_as.valid_days=t.day?64u:0;
+            for(int i=0;i<6;i++)if(t.week[i])s_as.valid_days|=(uint8_t)(1u<<i);
+            s_as.version=ACT_VERSION;s_as_dirty=1;
+        }
+    }
     else { memset(&s_as, 0, sizeof s_as); s_as.version = ACT_VERSION; }
     s_as_save_ms = hal_millis();
 }
@@ -502,73 +607,67 @@ static void act_init(void)
 const svc_heart_t *svc_heart(void) { return &s_heart; }
 static int minutes_today(void) { hal_datetime dt; hal_get_datetime(&dt); return dt.hour * 60 + dt.minute; }
 
-#ifndef ESP_PLATFORM
-static int sim_hr_history(uint8_t *out, int max)
-{
-    if (!(hal_ext_present() & EXT_HR)) return 0;
-    int n = max < 144 ? max : 144, now_min = minutes_today();
-    for (int i = 0; i < n; i++) {                 /* oldest first, one per 10 min */
-        int m = now_min - (n - 1 - i) * 10;
-        while (m < 0) m += 1440;
-        float h = m / 60.0f;
-        float base = (h < 6.5f || h > 23) ? 56 : 66 + 6 * sinf(h * 0.9f);
-        if (h > 18 && h < 19) base = 112;         /* evening walk */
-        unsigned r = (unsigned)i * 2654435761u;
-        out[i] = (uint8_t)(base + (int)(r >> 28) - 7);
-    }
-    return n;
-}
-#endif
-
 static uint32_t s_hr_day;
+static uint32_t s_hr_last_sample_ms;
 static void heart_tick(void)
 {
     hal_datetime now_dt;
     hal_get_datetime(&now_dt);
     if (day_key(&now_dt) != s_hr_day) { s_hr_day = day_key(&now_dt); s_hr_rec_day_min = s_hr_rec_day_max = 0; }
-    int n = hal_hr_history(s_heart.hist, 144);
-#ifndef ESP_PLATFORM
-    if (n <= 0) n = sim_hr_history(s_heart.hist, 144);
-#endif
+    hal_hr_sample samples[144];
+    int n = hal_hr_history_samples(samples, 144);
     if (n < 0) n = 0;
-    s_heart.nhist = n;
+    if(n>144)n=144;
+    uint32_t ep=(uint32_t)hal_epoch_seconds();
+    memset(s_heart.hist,0,sizeof s_heart.hist);s_heart.nhist=0;
     int rest = 0, lo = s_hr_rec_day_min, hi = s_hr_rec_day_max;
-    int today = minutes_today() / 10 + 1;         /* samples since local midnight */
-    int last = -1;
+    uint32_t midnight=ep?(ep-(uint32_t)minutes_today()*60u-(uint32_t)now_dt.second):0;
     for (int i = 0; i < n; i++) {
-        int v = s_heart.hist[i];
-        if (!v) continue;
+        int v = samples[i].bpm;uint32_t at=samples[i].epoch;
+        if(v<35 || v>230)continue;
+        if(!s_heart.bpm_last || (at && at>s_heart.bpm_last_epoch) ||
+           (!at && !s_heart.bpm_last_epoch && (int32_t)(samples[i].sample_ms-s_hr_last_sample_ms)>0)) {
+            s_heart.bpm_last=v;s_heart.bpm_last_epoch=at;s_hr_last_sample_ms=samples[i].sample_ms;
+        }
+        if(!ep || !at || at>ep || ep-at>=86400u)continue;
+        unsigned bin=143u-(ep-at)/600u;
+        s_heart.hist[bin]=(uint8_t)v;s_heart.nhist=144;
         if (!rest || v < rest) rest = v;
-        if (i >= n - today) {
+        if (at>=midnight) {
             if (!lo || v < lo) lo = v;
             if (v > hi) hi = v;
         }
-        last = i;
     }
     s_heart.resting = rest;
     s_heart.min_today = lo;
     s_heart.max_today = hi;
-    if (last >= 0) {
-        uint32_t ep = (uint32_t)hal_epoch_seconds();
-        uint32_t at = ep ? ep - (uint32_t)(n - 1 - last) * 600u : 0;
-        if (!s_heart.bpm_last || at > s_heart.bpm_last_epoch) {
-            s_heart.bpm_last = s_heart.hist[last];
-            s_heart.bpm_last_epoch = at;
+}
+uint32_t svc_heart_sample_epoch(uint32_t sample_ms)
+{
+    uint64_t ep=hal_epoch_seconds();uint32_t age=hal_millis()-sample_ms;
+    if(!sample_ms || ep<1577836800ULL || ep>UINT32_MAX || age>3000u || ep<age/1000u)return 0;
+    return (uint32_t)ep-age/1000u;
+}
+void svc_heart_record_at(int bpm, int spo2, uint32_t acquisition_epoch)
+{
+    uint32_t now=(uint32_t)hal_epoch_seconds();
+    if(acquisition_epoch && now && acquisition_epoch>now)return;
+    if (bpm>=35 && bpm<=230) {
+        if(s_heart.bpm_last_epoch && (!acquisition_epoch || acquisition_epoch<s_heart.bpm_last_epoch))return;
+        s_heart.bpm_last = bpm;
+        s_heart.bpm_last_epoch = acquisition_epoch;
+        hal_datetime dt;hal_get_datetime(&dt);
+        uint32_t midnight=now-(uint32_t)(dt.hour*3600+dt.minute*60+dt.second);
+        if(acquisition_epoch && acquisition_epoch>=midnight) {
+            if (!s_hr_rec_day_min || bpm < s_hr_rec_day_min) s_hr_rec_day_min = bpm;
+            if (bpm > s_hr_rec_day_max) s_hr_rec_day_max = bpm;
+            if (!s_heart.min_today || bpm < s_heart.min_today) s_heart.min_today = bpm;
+            if (bpm > s_heart.max_today) s_heart.max_today = bpm;
         }
     }
+    s_heart.spo2_last=spo2>=70 && spo2<=100?spo2:0;
 }
-void svc_heart_record(int bpm, int spo2)
-{
-    if (bpm > 0) {
-        s_heart.bpm_last = bpm;
-        s_heart.bpm_last_epoch = (uint32_t)hal_epoch_seconds();
-        if (!s_hr_rec_day_min || bpm < s_hr_rec_day_min) s_hr_rec_day_min = bpm;
-        if (bpm > s_hr_rec_day_max) s_hr_rec_day_max = bpm;
-        if (!s_heart.min_today || bpm < s_heart.min_today) s_heart.min_today = bpm;
-        if (bpm > s_heart.max_today) s_heart.max_today = bpm;
-    }
-    if (spo2 > 0) s_heart.spo2_last = spo2;
-}
+void svc_heart_record(int bpm, int spo2) {svc_heart_record_at(bpm,spo2,0);}
 
 /* ------------------------------------------------------------------ ring screens */
 typedef struct { const nos_screen *s; int pushed, ending; uint32_t end_ms; } ring_scr;
@@ -591,14 +690,14 @@ static int ring_screen(ring_scr *r, int want)
         if (!r->pushed) {
             if (top != r->s) nos_push(r->s, TX_RISE);
             r->pushed = 1;
-        } else if (top != r->s && !nos_transitioning() && !is_ring(top)) {
+        } else if (top != r->s && !nos_transitioning() && !is_ring(top) && !nos_contains(r->s)) {
             r->pushed = 0;
             return 1;
         }
     } else if (r->pushed) {
         uint32_t now = hal_millis();
         if (!r->ending) { r->ending = 1; r->end_ms = now; }
-        if (top != r->s) { if (!nos_transitioning()) r->pushed = r->ending = 0; }
+        if (top != r->s) { if (!nos_transitioning() && !nos_contains(r->s)) r->pushed = r->ending = 0; }
         else if (now - r->end_ms >= RING_GRACE_MS && !nos_transitioning()) {
             nos_pop();
             r->pushed = r->ending = 0;
@@ -636,6 +735,14 @@ typedef struct { uint8_t version, count, pad[2]; svc_alarm a[SVC_ALARM_MAX]; } a
 #define ALARM_VERSION 1
 
 int svc_alarm_count(void) { return s_nalarms; }
+uint32_t svc_alarm_generation(void) { return s_alarm_generation; }
+uint32_t svc_alarm_id(int i) { return i >= 0 && i < s_nalarms ? s_alarm_ids[i] : 0; }
+int svc_alarm_find(uint32_t id)
+{
+    if (id) for (int i=0; i<s_nalarms; i++) if (s_alarm_ids[i]==id) return i;
+    return -1;
+}
+static uint32_t alarm_new_id(void) { if (!++s_alarm_next_id) ++s_alarm_next_id; return s_alarm_next_id; }
 svc_alarm *svc_alarm_get(int i) { return (i >= 0 && i < SVC_ALARM_MAX) ? &s_alarms[i] : &s_alarms[0]; }
 void svc_alarm_save(void)
 {
@@ -644,7 +751,9 @@ void svc_alarm_save(void)
     s.version = ALARM_VERSION;
     s.count = (uint8_t)s_nalarms;
     memcpy(s.a, s_alarms, sizeof s.a);
-    hal_store_save("nosalarm", &s, sizeof s);
+    int ok=hal_store_save_checked("nosalarm", &s, sizeof s);
+    action_trace(DIAG_DOMAIN_ALARM,DIAG_ACT_SAVE,(int32_t)s_alarm_generation,s_nalarms,
+                 ok?DIAG_RESULT_SUCCESS:DIAG_RESULT_FAILED,ok);
 }
 static void alarm_load(void)
 {
@@ -654,6 +763,8 @@ static void alarm_load(void)
         s_nalarms = s.count;
         for (int i = 0; i < s_nalarms; i++) s_alarms[i].label[sizeof s_alarms[i].label - 1] = 0;
     } else s_nalarms = 0;
+    for (int i=0; i<s_nalarms; i++) s_alarm_ids[i]=alarm_new_id();
+    s_alarm_generation++;
 }
 int svc_alarm_add(int h, int m)
 {
@@ -661,8 +772,10 @@ int svc_alarm_add(int h, int m)
     svc_alarm *a = &s_alarms[s_nalarms];
     memset(a, 0, sizeof *a);
     a->h = (uint8_t)h; a->m = (uint8_t)m; a->on = 1;
+    int index = s_nalarms++;
+    s_alarm_ids[index] = alarm_new_id(); s_alarm_generation++;
     svc_alarm_save();
-    return s_nalarms++;
+    return index;
 }
 void svc_alarm_remove(int i)
 {
@@ -672,7 +785,9 @@ void svc_alarm_remove(int i)
     if (s_snooze_idx == i) s_snooze_idx = -1;
     else if (s_snooze_idx > i) s_snooze_idx--;
     memmove(&s_alarms[i], &s_alarms[i + 1], sizeof s_alarms[0] * (size_t)(s_nalarms - 1 - i));
+    memmove(&s_alarm_ids[i], &s_alarm_ids[i + 1], sizeof s_alarm_ids[0] * (size_t)(s_nalarms - 1 - i));
     s_nalarms--;
+    s_alarm_ids[s_nalarms] = 0; s_alarm_generation++;
     memset(&s_alarms[s_nalarms], 0, sizeof s_alarms[0]);
     svc_alarm_save();
 }
@@ -713,6 +828,7 @@ int svc_alarm_next(int *h, int *m, int *in_min)
 int svc_alarm_ringing(void) { return s_ring_alarm; }
 static void alarm_ring(int i)
 {
+    action_trace(DIAG_DOMAIN_ALARM,DIAG_ACT_FIRE,(int32_t)svc_alarm_id(i),s_ring_alarm,DIAG_RESULT_SUCCESS,i);
     s_ring_alarm = i;
     s_ring_alarm_t0 = hal_millis();
 }
@@ -755,7 +871,10 @@ static void alarm_tick(uint32_t now)
         s_snooze_idx = -1;
         alarm_ring(i);
     }
-    if (s_ring_alarm >= 0 && now - s_ring_alarm_t0 > RING_MAX_MS) svc_alarm_stop();
+    if (s_ring_alarm >= 0 && now - s_ring_alarm_t0 > RING_MAX_MS) {
+        action_trace(DIAG_DOMAIN_ALARM,DIAG_ACT_TIMEOUT,(int32_t)svc_alarm_id(s_ring_alarm),1,DIAG_RESULT_SUCCESS,0);
+        svc_alarm_stop();
+    }
     if (ring_screen(&R_ALARM, s_ring_alarm >= 0)) svc_alarm_stop();
 }
 
@@ -764,6 +883,8 @@ const svc_timer_t *svc_timer(void) { return &s_timer; }
 void svc_timer_start(uint32_t ms)
 {
     if (!ms) return;
+    s_timer_generation++;
+    action_trace(DIAG_DOMAIN_TIMER,DIAG_ACT_START,(int32_t)s_timer_generation,s_timer.state,DIAG_RESULT_SUCCESS,(int32_t)ms);
     s_timer.total_ms = ms;
     s_timer.left_ms = ms;
     s_timer_end = hal_millis() + ms;
@@ -772,6 +893,7 @@ void svc_timer_start(uint32_t ms)
 void svc_timer_pause(void)
 {
     if (s_timer.state != 1) return;
+    action_trace(DIAG_DOMAIN_TIMER,DIAG_ACT_PAUSE,(int32_t)s_timer_generation,1,DIAG_RESULT_SUCCESS,2);
     int32_t left = (int32_t)(s_timer_end - hal_millis());
     s_timer.left_ms = left > 0 ? (uint32_t)left : 0;
     s_timer.state = 2;
@@ -779,11 +901,13 @@ void svc_timer_pause(void)
 void svc_timer_resume(void)
 {
     if (s_timer.state != 2) return;
+    action_trace(DIAG_DOMAIN_TIMER,DIAG_ACT_RESUME,(int32_t)s_timer_generation,2,DIAG_RESULT_SUCCESS,1);
     s_timer_end = hal_millis() + s_timer.left_ms;
     s_timer.state = 1;
 }
 void svc_timer_cancel(void)
 {
+    if(s_timer.state) action_trace(DIAG_DOMAIN_TIMER,DIAG_ACT_CANCEL,(int32_t)s_timer_generation,s_timer.state,DIAG_RESULT_SUCCESS,0);
     s_timer.state = 0;
     s_timer.left_ms = 0;
 }
@@ -798,12 +922,16 @@ static void timer_tick(uint32_t now)
     if (s_timer.state == 1) {
         int32_t left = (int32_t)(s_timer_end - now);
         if (left <= 0) {
+            action_trace(DIAG_DOMAIN_TIMER,DIAG_ACT_FIRE,(int32_t)s_timer_generation,1,DIAG_RESULT_SUCCESS,3);
             s_timer.left_ms = 0;
             s_timer.state = 3;
             s_timer_ring_t0 = now;
         } else s_timer.left_ms = (uint32_t)left;
     }
-    if (s_timer.state == 3 && now - s_timer_ring_t0 > RING_MAX_MS) svc_timer_cancel();
+    if (s_timer.state == 3 && now - s_timer_ring_t0 > RING_MAX_MS) {
+        action_trace(DIAG_DOMAIN_TIMER,DIAG_ACT_TIMEOUT,(int32_t)s_timer_generation,3,DIAG_RESULT_SUCCESS,0);
+        svc_timer_cancel();
+    }
     if (ring_screen(&R_TIMER, s_timer.state == 3)) svc_timer_cancel();
 }
 
@@ -837,9 +965,11 @@ void svc_sw_reset(void)
 
 /* ------------------------------------------------------------------ calls, find */
 const svc_call_t *svc_call(void) { return &s_call; }
+uint32_t svc_call_generation(void) { return s_call_generation; }
 void svc_call_accept(void)
 {
     if (s_call.state != 1) return;
+    action_trace(DIAG_DOMAIN_PHONE,DIAG_ACT_START,(int32_t)s_call_generation,s_call.state,DIAG_RESULT_PENDING,2);
     txf("{\"t\":\"call\",\"n\":\"ACCEPT\"}");
     s_call.state = 2;
     s_call.t0_ms = hal_millis();
@@ -847,17 +977,20 @@ void svc_call_accept(void)
 void svc_call_reject(void)
 {
     if (!s_call.state) return;
+    action_trace(DIAG_DOMAIN_PHONE,DIAG_ACT_REJECT,(int32_t)s_call_generation,s_call.state,DIAG_RESULT_PENDING,0);
     txf("{\"t\":\"call\",\"n\":\"%s\"}", s_call.state == 1 ? "REJECT" : "END");
     s_call.state = 0;
 }
 void svc_call_hangup(void)
 {
     if (!s_call.state) return;
+    action_trace(DIAG_DOMAIN_PHONE,DIAG_ACT_STOP,(int32_t)s_call_generation,s_call.state,DIAG_RESULT_PENDING,0);
     txf("{\"t\":\"call\",\"n\":\"END\"}");
     s_call.state = 0;
 }
 void svc_find_phone(int on)
 {
+    if(s_find_phone!=(on!=0)) action_trace(DIAG_DOMAIN_FIND,on?DIAG_ACT_START:DIAG_ACT_STOP,1,s_find_phone,DIAG_RESULT_PENDING,on!=0);
     s_find_phone = on ? 1 : 0;
     if (hal_phone_connected()) txf("{\"t\":\"findPhone\",\"n\":%s}", on ? "true" : "false");
     else if (on) hal_find_phone();                 /* companion bridge rings itself */
@@ -867,6 +1000,9 @@ int  svc_find_watch_active(void) { return s_find_watch; }
 void svc_find_watch_stop(void) { s_find_watch = 0; }
 static void call_find_tick(uint32_t now)
 {
+    /* G99: an incoming call nobody answered must not hold the screen and haptics forever when the phone
+     * never reports the end (the other rings are already bounded by RING_MAX_MS). */
+    if (s_call.state == 1 && now - s_call.t0_ms > RING_MAX_MS) s_call.state = 0;
     if (ring_screen(&R_CALL, s_call.state == 1 || (s_call.state == 2 && R_CALL.pushed)) && s_call.state == 1) {
         /* swiped away while ringing: leave the call to the phone (no message), stop ringing */
         s_call.state = 0;
@@ -881,8 +1017,8 @@ static void sys_tick(void)
 {
     hal_power p;
     hal_power_get(&p);
-    s_sys.battery_pct = p.battery_percent;
-    s_sys.charging = p.external_power == 1;
+    s_sys.battery_pct = p.battery_percent < 0 ? 0 : p.battery_percent;
+    s_sys.external = s_sys.charging = p.external_power == 1;
     s_sys.rail_mv = p.rail_mv;
     s_sys.battery_valid = p.battery_valid;
     s_sys.phone_connected = s_connected;
@@ -921,6 +1057,7 @@ static void gb_notify(const gb_json *j, int change)
         if (gb_has(j, 0, "title")) gb_strk(j, 0, "title", B->n[i].title, sizeof B->n[i].title);
         if (gb_has(j, 0, "body")) gb_strk(j, 0, "body", B->n[i].body, sizeof B->n[i].body);
         B->n[i].read = 0;
+        s_notif_revision++;
         return;
     }
     gb_strk(j, 0, "src", app, sizeof app);
@@ -935,16 +1072,20 @@ static void gb_notify(const gb_json *j, int change)
 
 static void gb_call(const gb_json *j)
 {
+    int previous=s_call.state;uint32_t generation=s_call_generation;
     char cmd[16], name[32], num[24];
     gb_strk(j, 0, "cmd", cmd, sizeof cmd);
     gb_strk(j, 0, "name", name, sizeof name);
     gb_strk(j, 0, "number", num, sizeof num);
     if (ieq(cmd, "incoming")) {
+        if(s_call.state!=1 || strcmp(s_call.number,num) ||
+           (name[0] && strcmp(s_call.name,name))) s_call_generation++;
         s_call.state = 1;
         snprintf(s_call.name, sizeof s_call.name, "%s", name[0] ? name : num[0] ? num : "Unknown");
         snprintf(s_call.number, sizeof s_call.number, "%s", num);
         s_call.t0_ms = hal_millis();
     } else if (ieq(cmd, "outgoing") || ieq(cmd, "start") || ieq(cmd, "accept")) {
+        if (!s_call.state) s_call_generation++;
         if (s_call.state != 2) s_call.t0_ms = hal_millis();
         if (name[0] || num[0]) {
             snprintf(s_call.name, sizeof s_call.name, "%s", name[0] ? name : num);
@@ -954,12 +1095,18 @@ static void gb_call(const gb_json *j)
     } else if (ieq(cmd, "end") || ieq(cmd, "reject") || ieq(cmd, "missed") || ieq(cmd, "ignore")) {
         s_call.state = 0;
     }
+    if(previous!=s_call.state || generation!=s_call_generation)
+        action_trace(DIAG_DOMAIN_PHONE,DIAG_ACT_RECEIVE,(int32_t)s_call_generation,previous,DIAG_RESULT_SUCCESS,s_call.state);
 }
 
 static void gb_weather(const gb_json *j)
 {
+    uint32_t generation = s_wx.generation + 1;
     memset(&s_wx, 0, sizeof s_wx);
     s_wx.valid = 1;
+    s_wx.source = 1; s_wx.generation = generation;
+    s_wx.utc_offset_seconds = nos_prefs.tz_min * 60;
+    snprintf(s_wx.status, sizeof s_wx.status, "Phone weather");
     s_wx.temp_c = kelvin_c(gb_numk(j, 0, "temp", 273.15));
     double feels = gb_numk(j, 0, "feels", gb_numk(j, 0, "feel", -1000));
     s_wx.feels_c = feels > -999 ? kelvin_c(feels) : s_wx.temp_c;
@@ -981,7 +1128,8 @@ static void gb_weather(const gb_json *j)
     s_wx.days[0].hi = s_wx.hi_c;
     s_wx.days[0].lo = s_wx.lo_c;
     s_wx.days[0].cond = s_wx.cond;
-    wx_merge_forecast();
+    /* Do not combine forecasts from a separately configured Wi-Fi location. */
+    s_wx.days_epoch[0] = (int64_t)s_wx.updated_epoch;
     if (s_wx.ndays >= 1) {                         /* today's row follows the phone */
         s_wx.days[0].hi = s_wx.hi_c;
         s_wx.days[0].lo = s_wx.lo_c;
@@ -999,12 +1147,15 @@ static void gb_alarms(const gb_json *j)
     int n = j->tok[d].count;
     if (n > SVC_ALARM_MAX) n = SVC_ALARM_MAX;
     memset(s_alarms, 0, sizeof s_alarms);
+    memset(s_alarm_ids, 0, sizeof s_alarm_ids);
+    s_alarm_generation++;
     s_nalarms = 0;
     for (int i = 0; i < n; i++) {
         int it = gb_item(j, d, i);
         int h = gb_int(j, it, "h", -1), m = gb_int(j, it, "m", -1);
         if (h < 0 || h > 23 || m < 0 || m > 59) continue;
         int rep = gb_int(j, it, "rep", 0);         /* Gadgetbridge: bit0 = Monday ... bit6 = Sunday */
+        s_alarm_ids[s_nalarms] = alarm_new_id();
         svc_alarm *a = &s_alarms[s_nalarms++];
         a->h = (uint8_t)h;
         a->m = (uint8_t)m;
@@ -1107,8 +1258,7 @@ static void phone_tick(uint32_t now)
     if (c && s_ver_due && (int32_t)(now - s_ver_due) >= 0) {
         s_ver_due = 0;
         txf("{\"t\":\"ver\",\"fw\":\"%s\",\"hw\":\"%s\"}", FW_VERSION, HW_NAME);
-        send_status();
-        s_status_ms = now;
+        if (send_status()) s_status_ms = now;
     }
     if (!B) return;
     for (int k = 0; k < LINES_PER_FRAME; k++) {
@@ -1126,8 +1276,7 @@ static void phone_tick(uint32_t now)
     if (now - s_status_ms > 600000u ||
         (s_status_pct >= 0 && (s_sys.battery_pct - s_status_pct >= 5 || s_status_pct - s_sys.battery_pct >= 5)) ||
         (s_status_chg >= 0 && s_sys.charging != s_status_chg)) {
-        send_status();
-        s_status_ms = now;
+        if (send_status()) s_status_ms = now;
     }
 }
 
@@ -1152,6 +1301,9 @@ static void seed_sim(void)
 
 void svc_init(void)
 {
+#ifndef ESP_PLATFORM
+    diag_log_init();
+#endif
     if (!B) {
         B = (svc_big *)hal_big_alloc(sizeof *B);
         if (B) memset(B, 0, sizeof *B);
@@ -1170,12 +1322,19 @@ void svc_init(void)
     heart_tick();
     wx_from_hal();
     s_slow_ms = s_hr_ms = s_wx_ms = hal_millis();
+    tuning_init();
+    sports_init();
+    workout_init();
 }
 
 void svc_tick(float dt)
 {
+#ifndef ESP_PLATFORM
+    diag_log_tick();
+#endif
     svc_track_tick(dt);              /* GPS track recording runs with Navigate closed */
     svc_memo_tick(dt);               /* and voice memos with the Recorder closed */
+    svc_cell_tick(dt);               /* acknowledge send outcomes even after leaving SMS */
     uint32_t now = hal_millis();
     phone_tick(now);
     companion_tick();
@@ -1184,6 +1343,13 @@ void svc_tick(float dt)
         s_slow_ms = now;
         sys_tick();
         act_tick(now);
+        sports_tick();
+    }
+    workout_tick();                 /* workout recording survives leaving Sports */
+    {   /* the raw sensor journal is open only while a workout records (G11) */
+        static int raw_held;
+        int on = workout_get()->state == WORKOUT_RUNNING;
+        if (on != raw_held) { raw_held = on; sports_raw_set(SPORTS_RAW_WORKOUT, on); }
     }
     if (now - s_hr_ms >= 60000) { s_hr_ms = now; heart_tick(); }
     wx_tick(now);

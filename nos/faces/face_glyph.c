@@ -10,11 +10,14 @@
  *
  * Cost: the hands and ticks change once a minute, so per frame only the red dot's
  * ~16 px box repaints (an AA circle at full float precision, 25 ns/px).
- * Build-in: the tick ring fills clockwise dot by dot and the second dot grows; the hands
- * are at the right time from the first frame. Wake from AOD (6 frames): the outlined AOD
- * hands fill in and the hour-dot ring grows into the full tick ring; the date and the
- * second dot fade / grow in over the last 3 frames. Minute change: the
- * minute hand clicks forward with a 0.18 s mechanical ease. */
+ * Motion (docs/MOTION30.html, whole frames). Build-in: the tick ring fills clockwise, 6
+ * dots a frame (frames 0-9), the date fades up in 6 perceptual steps and the second
+ * dot snaps in (50/83/100 %); the hands are at the right time from the first frame.
+ * Wake from AOD (6 frames): the outlined AOD hands fill in and the hour-dot ring grows
+ * into the full tick ring; the date and the second dot fade / grow in over the last 3
+ * frames. Minute change: the minute hand clicks forward in 4 frames (40/72/92/100 % of
+ * its 20 px tip travel: a click, not a crawl). The second dot glides at 0.7 px a frame
+ * (an AA disc at float positions). The date window moves by a 4-frame cross-fade. */
 #include "faces/face_kit.h"
 #include "nos.h"
 #include <stdio.h>
@@ -24,11 +27,14 @@
 #define HOUR_LEN 122.0f
 #define MIN_LEN  188.0f
 #define TWO_PI   6.2831853f
-#define CLICK_S  0.18f
+#define TICK_PER_F 6                 /* build-in: tick dots lit per frame */
 
 static struct {
-    int last_hm; float t0; fk_wake w;
-    int slot, slot_from; float slot_t0;          /* the date window and its cross-fade */
+    int last_hm; nos_time_t t0; fk_wake w;
+#ifdef GFX_COST_MODEL
+    int pj;                                      /* probe: clock-jump tracker */
+#endif
+    int slot, slot_from; nos_time_t slot_t0;          /* the date window and its cross-fade */
     fk_xfade date;
 } S = { .last_hm = -1, .t0 = -100.0f, .slot = -1, .slot_from = -1, .slot_t0 = -100.0f };
 
@@ -68,6 +74,21 @@ static int slot_pick(float ah, float am, int cur)
     return 3;
 }
 
+/* the minute click's share of the step (1 = home): 4 frames counted from the minute
+ * change, which already shows the first 40 % (peak 7.9 px at the tip, last 1.6 px) */
+static float click_q(const face_ctx *c, float e)
+{
+    if (c->aod || e < 1.0f) return 1.0f;
+    return mf_at(&FK_TICK4, fk_frames(c->t, S.t0) + 1);
+}
+/* the date window cross-fade: 4 frames, perceptual ink (in = m_ink of 1/4 .. 1) */
+static int slot_k(const face_ctx *c) { return fk_frames(c->t, S.slot_t0) + 1; }
+static float slot_in(int k) { return k >= 4 ? 1.0f : m_ink((float)k / 4.0f); }
+static float slot_out(int k) { return k >= 4 ? 0.0f : m_ink(1.0f - (float)k / 4.0f); }
+/* build-in: labels in 6 perceptual steps; the second dot snaps in at frames 9-11 */
+static float lab_k(float e) { return e >= 1.0f ? 1.0f : m_ink((float)(fk_build_k(e) + 1) / 6.0f); }
+static float sec_grow(float e) { return e >= 1.0f ? 1.0f : mf_at(&FK_SNAP3, fk_build_k(e) - 8); }
+
 static void tick(const face_ctx *c, float dt)
 {
     fk_aod_update(c);
@@ -93,6 +114,34 @@ static void tick(const face_ctx *c, float dt)
     char db[16];
     fk_date(db, c);
     fk_xfade_tick(&S.date, db, c->t, calm);
+#ifdef GFX_COST_MODEL
+    {
+        float k = fk_wake_k(&S.w, c);
+        fk_probe_common("glyph", &S.w, c);
+        fk_probe_xfade("glyph", "date", &S.date, c->t);
+        fk_probe("glyph", "ring.r", MC_MICRO, R_TICK - 4.0f * (1.0f - k));
+        /* the minute hand's tip along its arc (the hour's minutes), with the click */
+        int fresh = fk_probe_jump(c, &S.pj);
+        float am = (float)c->dt.minute / 60.0f * TWO_PI - (1.0f - click_q(c, e)) * (TWO_PI / 60.0f);
+        if (c->dt.minute == 0 && c->t == S.t0 && !fresh)     /* the hour wraps: minute 59 is -1 */
+            fk_probe("glyph", "min.tip", MC_MICRO, -(TWO_PI / 60.0f) * MIN_LEN);
+        fk_probe_at("glyph", "min.tip", MC_MICRO, am * MIN_LEN, fresh);
+        if (S.slot_from >= 0) {
+            fk_probe("glyph", "slot.in", MC_FADE, 100.0f * slot_in(slot_k(c)));
+            fk_probe("glyph", "slot.out", MC_FADE, 100.0f * slot_out(slot_k(c)));
+        }
+        if (!c->aod) {
+            float kl = m_clamp((k - 0.5f) / 0.5f, 0, 1);
+            float r = 6.0f * kl * sec_grow(e);
+            fk_probe("glyph", "sec.r", MC_MICRO, r);
+            if (r > 0.25f) {
+                float s = (float)c->dt.second + (float)c->dt.millis * 0.001f;
+                fk_probe_at("glyph", "sec", MC_TRACKED, s / 60.0f * TWO_PI * R_SEC, fresh || (c->dt.second == 0 && c->dt.millis < 34));
+            }
+            fk_probe("glyph", "lab", MC_FADE, 100.0f * lab_k(e));
+        }
+    }
+#endif
 }
 
 /* a hand; core > 0 hollows it (AOD outline, and the wake morph filling it in) */
@@ -150,34 +199,32 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     fk_wake_off(&S.w, c, &dx, &dy);
     float k = fk_wake_k(&S.w, c);
     float e = fk_build(&S.w, c);
-    float fill = e >= 1.0f ? 60.0f : 60.0f * m_clamp(e / 0.75f, 0, 1);
+    float fill = e >= 1.0f ? 60.0f : (float)(TICK_PER_F * (fk_build_k(e) + 1));   /* 6 dots a frame */
     ring_ctx rc = { fill, dx, dy, k };
     fk_dots(fb, 60, 5, tick_dot, &rc);
 
     float ah, am;
     angles(c, &ah, &am);
-    float click = (c->t - S.t0) / CLICK_S;
-    if (click < 1.0f && !c->aod && e >= 1.0f) {        /* stepping from the previous minute */
-        float q = fk_mech(click);
-        q = (float)(int)(q * 32.0f) / 32.0f;
+    float q = click_q(c, e);
+    if (q < 1.0f) {                                    /* clicking on from the previous minute */
         am -= (1.0f - q) * (TWO_PI / 60.0f);
         ah -= (1.0f - q) * (TWO_PI / 720.0f);
     }
     /* the date window: C_DIS in AOD (so the unread dot beside it has a reason to be
      * there), brightening with the wake, cross-fading when the window moves */
     float kl = c->aod ? 0.0f : m_clamp((k - 0.5f) / 0.5f, 0, 1);
-    float la = e >= 1.0f ? 1.0f : (float)(int)(fk_ease(e) * 4.0f) / 4.0f;
+    float la = lab_k(e);
     face_ctx ca = *c; ca.aod = 1;
     int st_aod = fk_status_shown(&ca);                 /* critical battery: shown in AOD too */
-    float ast = st_aod ? la : kl * la;
+    float ast = st_aod ? la : m_ink(kl) * la;          /* from black: perceptual steps */
     uint16_t stcol = c->aod ? C_DIS : st_aod ? ui_mix(C_DIS, C_SEC, k) : C_SEC;
     uint16_t dcol = c->aod ? C_DIS : ui_mix(C_DIS, C_SEC, k);
     int slot = S.slot < 0 ? 0 : S.slot;
-    float q = m_clamp((c->t - S.slot_t0) / 0.2f, 0, 1);
-    float qi = q >= 1.0f ? 1.0f : (float)(int)(q * 4.0f + 1.0f) / 4.0f;   /* 4 steps */
+    int sk = slot_k(c);                                 /* 4 frames, perceptual ink */
+    float qi = slot_in(sk), qo = slot_out(sk);
     float ux, uy, ox = 0, oy = 0;
     if (qi < 1.0f && S.slot_from >= 0)
-        date_at(fb, c, S.slot_from, la * (1.0f - qi), dcol, dx, dy, ast * (1.0f - qi), stcol, &ox, &oy);
+        date_at(fb, c, S.slot_from, la * qo, dcol, dx, dy, ast * qo, stcol, &ox, &oy);
     date_at(fb, c, slot, la * qi, dcol, dx, dy, ast * qi, stcol, &ux, &uy);
 
     /* hands: AOD outlines (2 px) fill in during the wake morph */
@@ -190,14 +237,14 @@ static void draw(gfx_fb *fb, const face_ctx *c)
     if (!c->aod) {
         /* the second hand: one red dot, gliding with the millisecond clock; it grows in
          * over the build-in's end and the wake's second half */
-        float r = 6.0f * kl * (e < 1.0f ? fk_stagger(e, 0.8f, 0.2f) : 1.0f);
+        float r = 6.0f * kl * sec_grow(e);
         if (r > 0.25f) {
             float as = ((float)c->dt.second + (float)c->dt.millis * 0.001f) / 60.0f * TWO_PI;
             gfx_fill_circle(fb, UI_CX + fk_sin(as) * R_SEC, UI_CY - fk_cos(as) * R_SEC, r, fk_red(c, C_PRI));
         }
     }
     if (qi < 1.0f && S.slot_from >= 0 && !c->aod) {
-        fk_unread_a(fb, c, C_PRI, C_BG, ox, oy, 1.0f - qi);
+        fk_unread_a(fb, c, C_PRI, C_BG, ox, oy, qo);
         fk_unread_a(fb, c, C_PRI, C_BG, ux, uy, qi);
     } else
         fk_unread(fb, c, ui_mix(C_SEC, C_PRI, k), C_BG, ux, uy);   /* AOD grey brightening on a wake */

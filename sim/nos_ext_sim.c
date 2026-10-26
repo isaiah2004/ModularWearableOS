@@ -30,6 +30,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
 #include "hal.h"
 #include "hal_ext.h"
 #include "nos_sim.h"
@@ -47,7 +51,9 @@ void     hal_ext_sim_inject_gesture(int g);
 static int has(uint32_t bit) { return (hal_ext_sim_present & bit) != 0; }
 static int bad(uint32_t bit);
 static uint32_t now_ms(void) { return hal_millis(); }
-static int idle(uint32_t now, uint32_t last) { return (uint32_t)(now - last) > NOS_EXT_IDLE_MS; }
+static int s_ext_stopping_state;
+#define s_ext_stopping __atomic_load_n(&s_ext_stopping_state,__ATOMIC_ACQUIRE)
+static int idle(uint32_t now, uint32_t last) { return (int32_t)(now-last)>NOS_EXT_IDLE_MS; }
 
 /* ---------------------------------------------------------------- noise helpers */
 static uint32_t hash32(uint32_t x)
@@ -71,18 +77,21 @@ static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ?
 static struct {
     int gps_on; uint32_t gps_t0, gps_last;
     int lte_on; uint32_t lte_t0, lte_last; int sent;
-    int hr_on; uint32_t hr_t0, hr_last; int bpm_override;
+    int hr_on; unsigned hr_owners;uint32_t hr_t0, hr_last; int bpm_override;
     uint32_t mic_last; float db_override;
     int gest_on; uint32_t gest_last; int gq[8]; int gqn;
     int mag_cal; uint32_t mag_cal_t0; int mag_calibrated; float heading_override; int off_wrist;
     float sea; float lux_override;
     int nofix;
+    int gps_manual; hal_gps gps_fix; uint32_t gps_fix_ms;
+    float gps_motion; double gps_motion_m; uint32_t gps_motion_ms;
+    int hr_manual; hal_hr hr_sample; uint32_t hr_age;
     int rec; uint32_t rec_t0, rec_ms;
     int play; uint32_t play_t0, play_len_ms;
     int volume, display_mode;
     uint32_t fail;                           /* `set extfail MASK`: present but broken */
 } S = { .sea = 1013.25f, .volume = 70, .display_mode = 2, .mag_calibrated = 1,
-        .heading_override = -1, .lux_override = -1, .db_override = -1 };
+        .heading_override = -1, .lux_override = -1, .db_override = -1, .gps_motion = -1 };
 
 static int bad(uint32_t bit) { return (S.fail & bit) != 0; }
 void hal_ext_init(void) { }
@@ -94,6 +103,7 @@ uint32_t hal_ext_present(void) { return hal_ext_sim_present & 0x1FF; }
 static CRITICAL_SECTION s_au_cs;
 static HWAVEOUT s_wo;
 static HANDLE s_wo_evt, s_wo_thread;
+static int s_wo_quiescing,s_au_initialized;
 static WAVEHDR s_hdr[WO_BUFS];
 static int16_t s_buf[WO_BUFS][WO_LEN];
 static sfx_voice s_voice[2];
@@ -125,6 +135,7 @@ static DWORD WINAPI wo_thread(LPVOID arg)
     (void)arg;
     for (;;) {
         WaitForSingleObject(s_wo_evt, 50);
+        if(__atomic_load_n(&s_wo_quiescing,__ATOMIC_ACQUIRE))break;
         for (int i = 0; i < WO_BUFS; i++) {
             if (!(s_hdr[i].dwFlags & WHDR_DONE)) continue;
             mix(s_buf[i], WO_LEN);
@@ -135,13 +146,29 @@ static DWORD WINAPI wo_thread(LPVOID arg)
     return 0;
 }
 
+static int sim_audio_shutdown_finish(void)
+{
+    if(s_wo_thread&&WaitForSingleObject(s_wo_thread,0)!=WAIT_OBJECT_0)return 0;
+    if(s_wo){if(waveOutReset(s_wo)!=MMSYSERR_NOERROR)return -1;
+        for(int i=0;i<WO_BUFS;i++)if((s_hdr[i].dwFlags&WHDR_PREPARED)&&
+            waveOutUnprepareHeader(s_wo,&s_hdr[i],sizeof s_hdr[i])!=MMSYSERR_NOERROR)return -1;
+        if(waveOutClose(s_wo)!=MMSYSERR_NOERROR)return -1;
+        s_wo=NULL;}
+    if(s_wo_thread){CloseHandle(s_wo_thread);s_wo_thread=NULL;}
+    if(s_wo_evt){CloseHandle(s_wo_evt);s_wo_evt=NULL;}
+    if(s_au_initialized){DeleteCriticalSection(&s_au_cs);s_au_initialized=0;}
+    __atomic_store_n(&s_wo_quiescing,0,__ATOMIC_RELEASE);return 1;
+}
 static int audio_up(void)
 {
+    if(s_ext_stopping)return 0;
+    if(__atomic_load_n(&s_wo_quiescing,__ATOMIC_ACQUIRE)&&sim_audio_shutdown_finish()!=1)return 0;
     if (sim_virtual) return 0;               /* scripted runs stay silent + deterministic */
     if (s_wo) return 1;
     static int failed;
     if (failed) return 0;
     InitializeCriticalSection(&s_au_cs);
+    s_au_initialized=1;
     s_voice[0].id = s_voice[1].id = -1;
     WAVEFORMATEX wf = { WAVE_FORMAT_PCM, 1, SFX_FS, SFX_FS * 2, 2, 16, 0 };
     s_wo_evt = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -163,7 +190,7 @@ static int audio_up(void)
 /* ================================================================ haptics */
 void hal_haptic(int pattern)
 {
-    if (!has(EXT_HAPTIC)) return;
+    if (!has(EXT_HAPTIC) || s_ext_stopping) return;
     hal_ext_sim_last_haptic = pattern;
     hal_ext_sim_last_haptic_ms = now_ms();
 }
@@ -173,7 +200,7 @@ void hal_haptic_set_strength(int pct) { (void)pct; }
 /* ================================================================ sfx / PCM */
 void hal_sfx(int id)
 {
-    if (!has(EXT_SPEAKER) || id < 0 || id >= SFX_COUNT) return;
+    if (!has(EXT_SPEAKER) || id < 0 || id >= SFX_COUNT || s_ext_stopping) return;
     hal_ext_sim_last_sfx = id;
     hal_ext_sim_last_sfx_ms = now_ms();
     if (!S.volume || !audio_up()) return;
@@ -204,7 +231,7 @@ static FILE *open_sd(const char *path, const char *mode)
 
 int hal_audio_play_file(const char *path)
 {
-    if (!has(EXT_SPEAKER) || !path) return 0;
+    if (!has(EXT_SPEAKER) || !path || s_ext_stopping) return 0;
     FILE *f = open_sd(path, "rb");
     if (!f) return 0;
     fseek(f, 0, SEEK_END); long size = ftell(f); fseek(f, 0, SEEK_SET);
@@ -238,6 +265,7 @@ int hal_audio_playing(void)
     if (S.play && now_ms() - S.play_t0 >= S.play_len_ms) S.play = 0;
     return S.play;
 }
+int hal_audio_play_result(void){return hal_audio_playing()?0:1;}
 uint32_t hal_audio_play_pos_ms(void)
 {
     if (!hal_audio_playing()) return 0;
@@ -275,7 +303,7 @@ static float mic_level(float t)
 
 float hal_mic_db(void)
 {
-    if (!has(EXT_MIC)) return -1.0f;
+    if (!has(EXT_MIC) || s_ext_stopping) return -1.0f;
     uint32_t n = now_ms();
     S.mic_last = n;
     if (bad(EXT_MIC)) return 120.0f;                 /* railed: full scale */
@@ -286,7 +314,7 @@ float hal_mic_db(void)
 }
 int hal_mic_wave(uint8_t out[32])
 {
-    if (!has(EXT_MIC)) return 0;
+    if (!has(EXT_MIC) || s_ext_stopping) return 0;
     uint32_t n = now_ms();
     S.mic_last = n;
     if (bad(EXT_MIC)) { memset(out, 255, 32); return 32; }
@@ -297,15 +325,7 @@ int hal_mic_wave(uint8_t out[32])
     }
     return 32;
 }
-int hal_rec_start(const char *path)
-{
-    if (!has(EXT_MIC) || !path || S.rec) return 0;
-    S.rec = 1; S.rec_t0 = now_ms(); S.rec_ms = 0;
-    return 1;
-}
-void hal_rec_stop(void) { if (S.rec) { S.rec_ms = now_ms() - S.rec_t0; S.rec = 0; } }
-int  hal_rec_active(void) { return S.rec; }
-uint32_t hal_rec_ms(void) { return S.rec ? now_ms() - S.rec_t0 : S.rec_ms; }
+#include "nos_ext_record.inc"
 
 /* ================================================================ GPS */
 #define PARK_LAT 12.97630
@@ -314,6 +334,7 @@ uint32_t hal_rec_ms(void) { return S.rec ? now_ms() - S.rec_t0 : S.rec_ms; }
 
 void hal_gps_enable(int on)
 {
+    if(on&&s_ext_stopping)return;
     uint32_t n = now_ms();
     S.gps_last = n;
     if (on && !S.gps_on) S.gps_t0 = n;
@@ -338,6 +359,13 @@ int hal_gps_get(hal_gps *out)
     uint32_t n = now_ms();
     S.gps_last = n;
     if (!S.gps_on || bad(EXT_GPS)) { g.age_ms = 0xffffffffu; if (out) *out = g; return 1; }
+    if (S.gps_manual) {
+        g = S.gps_fix;
+        g.age_ms += n - S.gps_fix_ms;
+        if (S.nofix) g.valid = 0;
+        if (out) *out = g;
+        return 1;
+    }
     float on = (n - S.gps_t0) / 1000.0f, t = n / 1000.0f;
     g.sentences = (n - S.gps_t0) / 200u;        /* ~5 sentences a second at 1 Hz */
     /* sky: satellites appear over ~3 s, SNR builds */
@@ -387,20 +415,31 @@ int hal_gps_get(hal_gps *out)
     float c = atan2f(vx, vy) * 180.0f / PI_F + 4.0f * vnoise(wf / 2.0f, 52);   /* clockwise from north */
     g.course_deg = c < 0 ? c + 360.0f : c;
     g.age_ms = (uint32_t)((w - wf) * 1000.0f);
+    if (S.gps_motion >= 0) {
+        uint32_t acquired = n / 1000u * 1000u;
+        double metres = S.gps_motion_m + (double)(acquired - S.gps_motion_ms) * S.gps_motion / 1000.0;
+        g.lat = PARK_LAT + metres / 111320.0;
+        g.lon = PARK_LON;
+        g.speed_mps = S.gps_motion;
+        g.hdop = 1.0f;
+        g.age_ms = n - acquired;
+        g.course_deg = 0;
+    }
     if (out) *out = g;
     return 1;
 }
 
 /* ================================================================ LTE */
 static hal_sms SMS[4] = {
-    { "+919845012345", "Reached the gate near the bandstand. Where are you?", "26/10/11,09:58:12", 1 },
-    { "JM-JIOCRE", "Your Jio plan renews on 14-Oct. 1.5 GB/day left today.", "26/10/11,08:15:40", 1 },
-    { "+919900554321", "Dinner at 8 still on? I'll book the table.", "26/10/10,19:42:03", 0 },
-    { "AX-HDFCBK", "OTP 482913 for your login. Do not share it with anyone.", "26/10/10,11:07:55", 0 },
+    { "+919845012345", "Reached the gate near the bandstand. Where are you?", "26/10/11,09:58:12", 1,1 },
+    { "JM-JIOCRE", "Your Jio plan renews on 14-Oct. 1.5 GB/day left today.", "26/10/11,08:15:40", 1,2 },
+    { "+919900554321", "Dinner at 8 still on? I'll book the table.", "26/10/10,19:42:03", 0,3 },
+    { "AX-HDFCBK", "OTP 482913 for your login. Do not share it with anyone.", "26/10/10,11:07:55", 0,4 },
 };
 
 void hal_lte_enable(int on)
 {
+    if(on&&s_ext_stopping)return;
     uint32_t n = now_ms();
     S.lte_last = n;
     if (on && !S.lte_on) S.lte_t0 = n;
@@ -442,13 +481,38 @@ void hal_lte_sms_mark_read(int i)
 {
     if (i >= 0 && i < 4 && SMS[i].unread) SMS[i].unread = 0;
 }
-int hal_lte_sms_send(const char *to, const char *text)
+void hal_lte_sms_mark_read_id(uint32_t id)
 {
-    if (!has(EXT_LTE) || !to || !text || !*to) return 0;
-    printf("[sim] SMS to %s: %s\n", to, text);
-    S.sent++;
-    return 1;
+    for(int i=0;i<4;i++)if(SMS[i].id==id){SMS[i].unread=0;break;}
 }
+static struct {uint32_t id,start;int status;} sim_send_results[8];
+static uint32_t sim_send_next_id;static unsigned sim_send_head;
+uint32_t hal_lte_sms_send_request(const char *to,const char *text)
+{
+    if(!has(EXT_LTE)||!to||!text||s_ext_stopping)return 0;
+    size_t length=strlen(to);if(length<3||length>=24)return 0;
+    for(size_t i=0;i<length;i++)if(!(to[i]>='0'&&to[i]<='9')&&!(i==0&&to[i]=='+'))return 0;
+    for(unsigned i=0;i<8;i++)if(sim_send_results[i].status==1||sim_send_results[i].status==2)
+        if(hal_lte_sms_send_status(sim_send_results[i].id)<3)return 0;
+    if(++sim_send_next_id==0)++sim_send_next_id;
+    unsigned slot=sim_send_head++%8;sim_send_results[slot].id=sim_send_next_id;
+    sim_send_results[slot].start=now_ms();sim_send_results[slot].status=1;hal_lte_enable(1);
+    return sim_send_next_id;
+}
+int hal_lte_sms_send_status(uint32_t id)
+{
+    for(unsigned i=0;i<8;i++)if(sim_send_results[i].id==id&&id) {
+        int state=sim_send_results[i].status;
+        if(state==1||state==2){uint32_t elapsed=now_ms()-sim_send_results[i].start;
+            if(s_ext_stopping)state=4;
+            else if(elapsed>=4000){state=bad(EXT_LTE)?4:3;if(state==3)S.sent++;}
+            else if(elapsed>=100)state=2;
+            sim_send_results[i].status=state;}
+        return state;
+    }
+    return 0;
+}
+int hal_lte_sms_send(const char *to,const char *text){return hal_lte_sms_send_request(to,text)!=0;}
 
 /* ================================================================ BME280 */
 /* station pressure (hPa) at x hours since 24 h before sim boot */
@@ -463,6 +527,16 @@ static float hours_now(void) { return 24.0f + now_ms() / 3600000.0f; }
 
 int hal_env_get(hal_env *out)
 {
+    static hal_env cache;
+    uint32_t sample_now=now_ms();
+    if(!has(EXT_ENV)){memset(&cache,0,sizeof cache);if(out)*out=cache;return 0;}
+    if((cache.valid && (int32_t)(sample_now-cache.sample_ms)<2000)||bad(EXT_ENV)||s_ext_stopping){
+        hal_env e=cache;
+        if(s_ext_stopping || (int32_t)(sample_now-e.sample_ms)>(int32_t)NOS_ENV_MAX_AGE_MS)e.valid=e.humidity_valid=0;
+        if(e.valid)e.altitude_m=44330.0f*(1-powf(e.pressure_hpa/S.sea,.1902949f));
+        if(out)*out=e;
+        return e.valid;
+    }
     hal_env e;
     memset(&e, 0, sizeof e);
     if (!has(EXT_ENV)) { if (out) *out = e; return 0; }
@@ -470,14 +544,15 @@ int hal_env_get(hal_env *out)
     hal_get_datetime(&dt);
     float h = dt.hour + dt.minute / 60.0f + dt.second / 3600.0f, t = now_ms() / 1000.0f;
     float day = sinf(2 * PI_F * (h - 9.0f) / 24.0f);    /* peaks ~15:00 */
-    e.valid = 1;
+    e.valid = 1;e.humidity_valid=1;e.sample_ms=now_ms();
     e.temp_c = 24.5f + 5.0f * day + 0.15f * vnoise(t / 20.0f, 72);
     e.humidity = clampf(62.0f - 16.0f * day + 1.0f * vnoise(t / 30.0f, 73), 5, 100);
     e.pressure_hpa = pressure_at(hours_now());
-    if (bad(EXT_ENV)) e.pressure_hpa = 0;
+    if (bad(EXT_ENV)) {e.pressure_hpa=0;e.valid=e.humidity_valid=0;}
     e.altitude_m = 44330.0f * (1.0f - powf(e.pressure_hpa / S.sea, 0.1902949f));
+    cache=e;
     if (out) *out = e;
-    return 1;
+    return e.valid;
 }
 void hal_env_set_sea_level(float hpa) { if (hpa > 800 && hpa < 1200) S.sea = hpa; }
 int hal_env_history(float *hpa_out, int max)
@@ -492,14 +567,25 @@ int hal_env_history(float *hpa_out, int max)
 /* ================================================================ APDS-9960 */
 int hal_light_get(hal_light *out)
 {
+    static hal_light cache;
+    uint32_t sample_now=now_ms();
+    if(!has(EXT_LIGHT)){memset(&cache,0,sizeof cache);if(out)*out=cache;return 0;}
+    if((cache.valid && (int32_t)(sample_now-cache.sample_ms)<400)||bad(EXT_LIGHT)||s_ext_stopping){
+        hal_light l=cache;
+        if(s_ext_stopping || (int32_t)(sample_now-l.sample_ms)>(int32_t)NOS_LIGHT_MAX_AGE_MS)l.valid=0;
+        if(s_ext_stopping || (int32_t)(sample_now-l.prox_ms)>(int32_t)NOS_LIGHT_MAX_AGE_MS){l.prox_valid=0;l.prox=0;}
+        if(out)*out=l;
+        return l.valid;
+    }
     hal_light l;
     memset(&l, 0, sizeof l);
     if (!has(EXT_LIGHT)) { if (out) *out = l; return 0; }
     float t = now_ms() / 1000.0f;
     l.valid = 1;
+    l.prox_valid=1;l.sample_ms=l.prox_ms=now_ms();
     l.lux = S.lux_override >= 0 ? S.lux_override : 300.0f + 18.0f * vnoise(t / 9.0f, 81) + 4.0f * vnoise(t * 0.8f, 82);
     l.prox = (int)clampf(2.0f + 2.0f * vnoise(t / 3.0f, 83), 0, 255);
-    if (bad(EXT_LIGHT)) { l.lux = 300.0f; l.prox = 2; }   /* frozen */
+    cache=l;
     if (out) *out = l;
     return 1;
 }
@@ -513,7 +599,7 @@ int hal_light_gesture(void)
     S.gqn--;
     return g;
 }
-void hal_light_gesture_enable(int on) { S.gest_on = on ? 1 : 0; S.gest_last = now_ms(); }
+void hal_light_gesture_enable(int on) { if(on&&s_ext_stopping)return;S.gest_on = on ? 1 : 0; S.gest_last = now_ms(); }
 void hal_ext_sim_inject_gesture(int g)
 {
     if (g <= GEST_NONE || g > GEST_FAR || S.gqn >= 8) return;
@@ -545,6 +631,7 @@ int hal_mag_get(hal_mag *out)
 }
 void hal_mag_calibrate(int start)
 {
+    if(start&&s_ext_stopping)return;
     if (start) { S.mag_cal = 1; S.mag_cal_t0 = now_ms(); return; }
     if (S.mag_cal && now_ms() - S.mag_cal_t0 > 3000) S.mag_calibrated = 1;
     S.mag_cal = 0;
@@ -552,11 +639,17 @@ void hal_mag_calibrate(int start)
 
 /* ================================================================ heart rate */
 void hal_hr_enable(int on)
+{ hal_hr_request(HAL_HR_OWNER_LEGACY,on); }
+void hal_hr_request(unsigned owner,int on)
 {
+    if(on&&s_ext_stopping)return;
     uint32_t n = now_ms();
+    owner&=HAL_HR_OWNER_WORKOUT|HAL_HR_OWNER_HEART|HAL_HR_OWNER_BREATHE|HAL_HR_OWNER_LEGACY;
+    if(!owner)return;
+    if(on) S.hr_owners|=owner;else S.hr_owners&=~owner;
     S.hr_last = n;
-    if (on && !S.hr_on) S.hr_t0 = n;
-    S.hr_on = on ? 1 : 0;
+    if (S.hr_owners && !S.hr_on) S.hr_t0 = n;
+    S.hr_on = S.hr_owners!=0;
 }
 
 static float bpm_at(float t)
@@ -589,6 +682,14 @@ int hal_hr_get(hal_hr *out)
     uint32_t n = now_ms();
     S.hr_last = n;
     if (!S.hr_on) { if (out) *out = r; return 1; }
+    if (S.hr_manual) {
+        r = S.hr_sample;
+        r.sample_ms = n - S.hr_age;
+        if (S.off_wrist) r.on_wrist = 0;
+        if (bad(EXT_HR)) { r.on_wrist = 0; r.bpm = 0; r.quality = 0; }
+        if (out) *out = r;
+        return 1;
+    }
     float on = (n - S.hr_t0) / 1000.0f, t = n / 1000.0f;
     r.on_wrist = on > 0.5f && !S.off_wrist;
     float amp = clampf((on - 0.5f) / 2.0f, 0, 1);
@@ -606,6 +707,7 @@ int hal_hr_get(hal_hr *out)
     } else r.quality = clampf((on - 0.5f) * 0.15f, 0, 0.4f);
     if (on > 6.0f) r.spo2 = 97 + (vnoise(t / 20.0f, 106) > 0.2f ? 1 : 0);
     if (bad(EXT_HR)) { memset(r.wave, 128, sizeof r.wave); r.on_wrist = 0; r.bpm = 0; r.spo2 = 0; r.quality = 0; }
+    r.sample_ms = n - S.hr_age;
     if (out) *out = r;
     return 1;
 }
@@ -628,9 +730,56 @@ int hal_hr_history(uint8_t *bpm_out, int max)
     return n;
 }
 
+int hal_hr_history_samples(hal_hr_sample *out,int max)
+{
+    /* Synthetic history is captured once. Clock/UI refresh never re-dates it. */
+    static hal_hr_sample samples[144];
+    static int count;
+    if(!out || max<=0 || !has(EXT_HR)) return 0;
+    if(!count) {
+        uint8_t bpm[144];count=hal_hr_history(bpm,144);
+        uint32_t now=now_ms(),epoch=(uint32_t)hal_epoch_seconds();
+        for(int i=0;i<count;i++) {
+            uint32_t seconds=(uint32_t)(count-1-i)*600u;
+            samples[i]=(hal_hr_sample){now-seconds*1000u,epoch>seconds?epoch-seconds:0,bpm[i]};
+        }
+    }
+    int n=count<max?count:max;
+    memcpy(out,samples+count-n,(size_t)n*sizeof *out);
+    return n;
+}
+
 /* ================================================================ system */
 int hal_button_down(void) { return sim_button_down; }
 void hal_display_power(int mode) { S.display_mode = mode; }
+int hal_display_mode(void){return S.display_mode;}
+void hal_ext_shutdown_begin(void)
+{
+    if(s_ext_stopping)return;
+    __atomic_store_n(&s_ext_stopping_state,1,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_wo_quiescing,1,__ATOMIC_RELEASE);
+    hal_rec_stop();hal_audio_play_stop();hal_sfx_stop();hal_haptic_stop();
+    S.gps_on=S.lte_on=S.hr_on=S.hr_owners=S.gest_on=S.mag_cal=0;
+    if(s_wo_evt)SetEvent(s_wo_evt);
+}
+void hal_ext_shutdown_cancel(void)
+{
+    /* The file owner keeps its stop/finalization state. The old WaveOut worker
+     * still exits; audio_up restarts it only after its handles are really clear. */
+    __atomic_store_n(&s_ext_stopping_state,0,__ATOMIC_RELEASE);
+    if(s_wo_evt)SetEvent(s_wo_evt);
+}
+int hal_ext_shutdown_poll(void)
+{
+    if(!s_ext_stopping)return 0;
+    int rec_status=hal_rec_status();if(rec_status==1||rec_status==2)return 0;
+    AcquireSRWLockExclusive(&sim_record.lock);
+    int owned=sim_record.owned,error=sim_record.close_error;
+    ReleaseSRWLockExclusive(&sim_record.lock);
+    if(error)return -1;
+    if(owned)return 0;
+    return sim_audio_shutdown_finish();
+}
 void hal_mem_info(uint32_t *psram_free, uint32_t *internal_free)
 {
     if (psram_free) *psram_free = 6u << 20;
@@ -640,16 +789,42 @@ void hal_mem_info(uint32_t *psram_free, uint32_t *internal_free)
 /* ================================================================ sim hooks */
 void nos_ext_sim_tick(uint32_t n)
 {
+    if(hal_rec_status()==1&&(int32_t)(n-S.rec_t0)>=600000)hal_rec_stop();
     /* the device's NOS_EXT_IDLE_MS auto-stop */
     if (S.gps_on && idle(n, S.gps_last)) S.gps_on = 0;
     if (S.lte_on && idle(n, S.lte_last)) S.lte_on = 0;
-    if (S.hr_on && idle(n, S.hr_last)) S.hr_on = 0;
+    if (S.hr_on && idle(n, S.hr_last)) {S.hr_on = 0;S.hr_owners=0;}
     if (S.gest_on && idle(n, S.gest_last)) S.gest_on = 0;
 }
 
 int nos_ext_sim_set(const char *key, const char *value)
 {
     double v = value ? atof(value) : 0;
+    if (!_stricmp(key, "step_rate")) {
+        if (!isfinite(v) || v < 0 || v > 400) return 0;
+        sim_step_rate_set((float)v); return 1;
+    }
+    if (!_stricmp(key, "gps_fix")) {
+        hal_gps g = {0}; unsigned age = 0;
+        if (sscanf(value, "%lf %lf %f %f %u", &g.lat, &g.lon, &g.speed_mps, &g.hdop, &age) < 4) return 0;
+        g.valid = g.fix3d = 1; g.sats_used = 8;
+        g.age_ms = age; g.sentences = S.gps_fix.sentences + 1u;
+        S.gps_fix = g; S.gps_fix_ms = now_ms(); S.gps_manual = 1; return 1;
+    }
+    if (!_stricmp(key, "gps_auto")) { S.gps_manual = 0; return 1; }
+    if (!_stricmp(key, "gps_motion")) {
+        if (!isfinite(v) || v < -1 || v > 100) return 0;
+        uint32_t acquired = now_ms() / 1000u * 1000u;
+        if (S.gps_motion >= 0) S.gps_motion_m += (double)(acquired - S.gps_motion_ms) * S.gps_motion / 1000.0;
+        S.gps_motion_ms = acquired; S.gps_motion = (float)v; return 1;
+    }
+    if (!_stricmp(key, "hr_sample")) {
+        hal_hr h = {0};
+        if (sscanf(value, "%d %f %d", &h.bpm, &h.quality, &h.on_wrist) != 3) return 0;
+        memset(h.wave, 128, sizeof h.wave); S.hr_sample = h; S.hr_manual = 1; return 1;
+    }
+    if (!_stricmp(key, "hr_auto")) { S.hr_manual = 0; S.hr_age = 0; return 1; }
+    if (!_stricmp(key, "hr_age")) { S.hr_age = (uint32_t)strtoul(value, 0, 0); return 1; }
     if (!_stricmp(key, "gesture")) { hal_ext_sim_inject_gesture((int)v); return 1; }
     if (!_stricmp(key, "bpm"))     { S.bpm_override = (int)v; return 1; }
     if (!_stricmp(key, "lux"))     { S.lux_override = (float)v; return 1; }
@@ -662,9 +837,27 @@ int nos_ext_sim_set(const char *key, const char *value)
     return 0;
 }
 
-void hal_ext_debug(const char *cmd)
+static int sim_debug_lte(const char *args)
 {
-    (void)cmd;
+    if(strncmp(args,"sms ",4)){printf("[sim] LTE command unsupported\n");return 0;}
+    char to[24]="";int offset=0;
+    if(sscanf(args+4,"%23s %n",to,&offset)<1||!offset||!args[4+offset])return 0;
+    return hal_lte_sms_send_request(to,args+4+offset)!=0;
+}
+static int sim_debug_mag(const char *args)
+{
+    if(!has(EXT_MAG))return 0;
+    if(!strcmp(args,"cal")){hal_mag_calibrate(1);return 1;}
+    if(!strcmp(args,"done")){hal_mag_calibrate(0);return 1;}
+    printf("[sim] Compass command unsupported\n");return 0;
+}
+#define EXT_DEBUG_STOPPING() s_ext_stopping
+#define EXT_DEBUG_LTE(args) sim_debug_lte(args)
+#define EXT_DEBUG_MAG(args) sim_debug_mag(args)
+#include "../firmware/main/ext/ext_debug_commands.inc"
+int hal_ext_debug_command(const char *cmd)
+{
+    int accepted=ext_debug_dispatch(cmd);if(accepted>=0)return accepted;
     hal_gps g; hal_gps_get(&g);
     hal_hr r; hal_hr_get(&r);
     hal_env e; hal_env_get(&e);
@@ -673,4 +866,8 @@ void hal_ext_debug(const char *cmd)
            (unsigned)hal_ext_present(), S.gps_on, g.valid, g.sats_used, g.sats_view, S.hr_on, r.bpm,
            (double)e.temp_c, (double)e.pressure_hpa, hal_ext_sim_last_haptic, (unsigned)hal_ext_sim_last_haptic_ms,
            hal_ext_sim_last_sfx, (unsigned)hal_ext_sim_last_sfx_ms, S.sent);
+    return 1;
 }
+void hal_ext_debug(const char *cmd){(void)hal_ext_debug_command(cmd);}
+
+#include "nos_voice_sim.inc"

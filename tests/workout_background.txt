@@ -1,0 +1,40 @@
+# A workout belongs to the background service, not the Sports screen.
+wait 100
+set step_rate 120
+set gps_motion 2.5
+set hr_sample 142 0.95 1
+workout start 1
+wait 10000
+workout info foreground
+expect workout state 1
+expect workout elapsed 9900 10100
+home
+wait 10000
+workout info background
+expect workout state 1
+expect workout elapsed 19900 20100
+expect workout steps 38 41
+expect workout distance 30 50
+workout pause
+workout info pause_begin
+wait 10000
+workout info pause_end
+expect workout state 2
+workout lap 0
+workout start 2 0
+workout resume
+wait 5000
+workout lap
+workout finish
+wait 200
+workout finish 0
+workout lap 0
+workout info finished
+wait 5000
+workout info finished_later
+expect workout state 3
+expect workout save 2
+expect workout history 1
+expect workout laps 1
+expect workout elapsed 24900 25100
+

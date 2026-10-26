@@ -1,62 +1,58 @@
-# Watch OS v1 — Waveshare 1.43-B
+# NOS v0.5 Alpha — Waveshare 1.43-B
 
-> **Branch `nothing-os`: NOS**, a from-scratch, Nothing-inspired OS for this board.
-> It has 8 faces, 18 launcher apps (including Diagnostics), a full shell, and every strap module, and runs at
-> 30 fps with 0 late frames measured on the device. See **[docs/NOS.md](docs/NOS.md)**.
->
-> ![NOS](docs/assets/nos/showcase.png)
+The active runtime is NOS on branch `NOS-v0.5-Alpha`, including Solar/Orrery,
+Developer tools, the integrated home/apps pager, Control Center paging and Sports.
+Build the recovered **current workspace**, including its dirty and untracked
+sources. Git HEAD predates this work. Preserve the recovery archives and
+`build/alpha05/source-baseline.zip` / `source-baseline.json`; see
+[AGENTS.md](AGENTS.md) and [recovery provenance](docs/RECOVERY_20261020.json).
 
-
-**2026-09-19 display prototype:** measured Breathe performance improved from
-26.8 to 44.1 presentations/s on COM3 with the existing 40 MHz transport.
-The branch includes USB benchmarks, completed-DMA accounting and regression
-tools. See [results and limits](docs/display_results.md) and the
-[reproducible baseline](docs/display_baseline.md). Controller identity and
-physical tearing/power checks remain unverified.
-
-Port of `A:\makerspace\smartwatch` into this independent workspace for the
-**ESP32-S3-Touch-AMOLED-1.43-B**, the metal-case version of the plain 1.43.
-The older directory is unchanged. Its actual firmware targeted the **1.43C**;
-the B and C boards have different wiring and peripherals.
-
-The existing portable renderer, 13 watch faces, navigation, apps, Wi-Fi/BLE,
-and companion media protocol are retained. This port adds the B board's
-SH8601/CO5300 display setup, FT3168 touch, QMI8658 readings, PCF85063 clock,
-16 MB flash configuration, SD storage page/logging, and queued USB controls.
-
-**Status:** built with ESP-IDF **5.5.4**, flashed to the connected B board on
-**COM3**, and boot/USB tested on 2026-09-13. All 26 app states, 13 watch faces,
-four overlays, live IMU readings, and RTC retention across a firmware update
-passed the automated checks. The original 16 MB firmware is backed up.
-Visual display/touch alignment, a fitted SD card, pairing, and power measurements
-remain unverified. See [validation](docs/VALIDATION.md) and [recovery](docs/RECOVERY.md).
+This target is the ESP32-S3-Touch-AMOLED-1.43-B (466×466, 16 MB flash,
+8 MB octal PSRAM). The 1.43C has different wiring and a separate legacy build.
+NOS rendering/power work targets 40 fps with a 30 fps floor; old measurements
+below describe their recorded firmware, not validation of the current binary.
+See [NOS](docs/NOS.md), [rendering work](docs/OPTIMIZATIONS.md),
+[Sports](docs/SPORTS_UPDATE.md), and [host validation](docs/HOST_VALIDATION.md).
 
 ## Build and flash
 
-From this directory in PowerShell:
+From this directory in PowerShell, using ESP-IDF 5.5.x:
 
 ```powershell
 .\tools\build.ps1
-.\tools\build.ps1 -Port COM7 -Flash -Monitor
+.\tools\build.ps1 -Port COM3 -Flash -Monitor
 ```
 
-Replace `COM7` with the device port. The script uses the existing
-`A:\makerspace\esp-idf` installation; use `-IdfPath` to select another ESP-IDF
-5.5.x installation. First build downloads the pinned official Waveshare panel
-component. `firmware/dependencies.lock` records the resolved dependencies.
+`-IdfPath` selects another ESP-IDF installation (default `A:\makerspace\esp-idf`).
+The wrapper configures, snapshots the actual source/config/assets, builds, and
+checks linked features, ELF/image identity and app-slot headroom. A source change
+during compilation stops publication. Nothing is built from a clean HEAD worktree.
+`TEMP`/`TMP` and private run directories stay under `.worktrees/_audit_tmp` on the
+workspace volume; existing directories are preserved.
 
-Use a USB-C **data** cable. If the port is missing or automatic download fails,
-hold BOOT, press/release RESET, then release BOOT and retry. Exit the monitor
-with Ctrl+] before opening another USB tool. Flashing replaces the board's
-current firmware; no erase-all operation is needed.
+For an existing **identity-verified build**, use the ESP-IDF Python environment:
 
-The packaged image and segment files are under `dist/v1/`. The supplied
-`flash.ps1 -Port COM7` there flashes the three firmware segments using Python
-esptool, preserving NVS settings; no ESP-IDF build is needed for that route.
-The tested device is currently COM3. Display output rotates 90 degrees
-counterclockwise to correct the reported mounting orientation, with matching
-physical touch coordinates. Two render buffers and one rotated DMA buffer use
-16-row stripes (about 44 KiB total internal RAM).
+```powershell
+python tools/flash_watch.py --port COM3 --dry-run
+python tools/flash_watch.py --port COM3
+.\tools\package.ps1
+```
+
+Packaging creates a new `dist/NOS-v0.5-Alpha-<bundle-id>/` containing exact source,
+assets, config/dependency lock, ELF/map, toolchain identity and checked updater.
+Its `flash.ps1 -Port COM3 -Python <ESP-IDF-python.exe>` uses the same preflight and
+checkpoint path. Offsets come from the generated flash plan, including OTA data;
+older fixed-offset packages are historical. Never flash a merged image for an
+update because gap bytes overwrite NVS. No erase-all operation is needed.
+
+Before any reset/write, both routes require a completed preference checkpoint
+with `ok=1 stored=1 match=1` and verified flash ranges excluding NVS. Settings are
+authoritative on SD at `/watch/settings.0.bin` and `/watch/settings.1.bin`, loaded
+into RAM at boot. Their alternating checksums, fsync/readback checks, mount lease
+and SD lock are required; failed saves remain dirty for retry. NVS is only the
+migration/card-absent fallback. See [settings evidence](docs/SD_SETTINGS_20261020.json).
+Close serial monitors and use a USB data cable. Hardware evidence in a bundle
+applies only when its segment hashes match; physical checks remain separate.
 
 ## microSD card
 
@@ -71,13 +67,14 @@ slot. The full-size SD adapter included with some cards is for a PC reader.
 - The watch mounts it at `/sdcard` using the official example's one-bit SDMMC
   wiring, conservatively clocked at 20 MHz.
 - Firmware never formats a card. Missing or unmountable cards do not stop boot.
-- The **Storage** app shows capacity/free space. CSV logs go to
-  `/watch/logs/NNNN.csv` every 60 seconds, with time, uptime, system voltage and
-  IMU samples. Files rotate at 1 MiB; existing files are not overwritten.
-- Run `sdtest` for a write/read/compare test. It creates and removes a unique
-  temporary file inside `/watch`, leaving existing files alone.
-- Before removing a powered card, run `sdeject` and wait for `SDEJECT ESP_OK`.
-  Reinsertion requires `sdmount` or a reboot. Automatic hot-plug is not implemented.
+- **Sensor logs** records raw IMU segments at `/imu/NNNN.csv`. Sports journals
+  live under `/watch/sports/`, workout checkpoints under `/watch/workouts/`, and
+  Recorder WAV files under `/watch/memos/` on hardware with a microphone.
+- Check capacity/mount status with `sd` or Settings modules. Wait for recordings
+  and preference saves to finish, then fully power off the board before removing
+  or reinserting the card. Display sleep alone is insufficient. NOS does not
+  expose the legacy WOS `sdtest`, `sdeject` or `sdmount` commands; automatic
+  hot-plug is not implemented.
 
 [Card specifications](https://www.sandisk.com/products/memory-cards/microsd-cards/sandisk-high-endurance-uhs-i-microsd?capacity=32GB)
 and [SDHC/FAT32 guidance](https://support-en.sandisk.com/app/answers/detailweb/a_id/9063).
@@ -87,32 +84,53 @@ and [SDHC/FAT32 guidance](https://support-en.sandisk.com/app/answers/detailweb/a
 ```powershell
 python -m pip install pyserial
 python tools/watchctl.py --list
-python tools/watchctl.py --port COM7 board
-python tools/watchctl.py --port COM7 --sync-time
-python tools/watchctl.py --port COM7 sdtest
+python tools/watchctl.py --port COM7 info
+python tools/watchctl.py --port COM7 state
+python tools/watchctl.py --port COM7 sd
+python tools/watchctl.py --port COM7 runtime_state
+python tools/watchctl.py --port COM7 prefs
 python tools/watchctl.py --port COM7 --smoke --log build/usb-smoke.jsonl
 ```
 
-The smoke sequence checks status and exercises the UI; it does not assert that
-the physical screen looks correct. Its timestamped log can be paired with a
-camera recording later. See [all USB commands](docs/USB_CONTROL.md).
+The NOS smoke sequence requires an already unlocked, active watch with no active
+or unresolved recording owners and matching saved preferences. It checks status,
+opens Energy, Battery history, Sports and Developer tools by name, and finishes
+at HOME. It preserves the awake flag and preferences. Its timestamped log can be
+paired with a camera recording; it does not verify physical screen appearance.
+See [current host validation](docs/HOST_VALIDATION.md). The older
+[USB command reference](docs/USB_CONTROL.md) describes legacy WOS commands.
+`--sync-time` and `--wifi-ssid` retain that explicitly detected legacy runtime's
+protocol and are refused on NOS before any password prompt or mutation.
 
 RTC time is stored in **UTC**, with a saved display timezone (default IST).
-An unset/stopped RTC is reported as unsynchronised; use the USB command above,
-Settings, BLE companion, or Wi-Fi/NTP to set it. RTC retention needs power from
+An unset/stopped RTC is reported as unsynchronised. For NOS, use Settings,
+phone/Gadgetbridge synchronization, or Wi-Fi/NTP to set it. RTC retention needs power from
 the board or its RTC backup supply; it cannot retain time without either.
 
 ## Simulator and tests
 
 ```powershell
-.\sim\build.ps1
-.\build\sim.exe
-.\tools\test.ps1
-python -m unittest discover -s tests -p 'test_*.py'
+.\sim\nos_build.ps1 -Strict -Verify
+.\sim\nos_build.ps1 -Strict -Run
+python tools/validate.py --profile host
+python tools/validate.py --profile offline --sim build/nos_sim.exe
 ```
 
-`sim.exe --shot` saves all app, overlay and face screenshots in its working
-directory. Simulator sensor values are synthetic; SD access is device-only.
+Every simulator build is strict. Its content manifest records compiler/flags,
+source/header and object hashes; failed compile/link/verification never publishes
+a successful new executable. `-Verify` compares the same current sources with and
+without cost hooks. Named outputs have separate locked caches. See
+[NOS simulator](docs/NOS_SIM.md) and the [validation matrix](tools/validation_matrix.json).
+The portable host profile runs host/protocol/build regressions; the offline
+profile adds all current Python modules, native cases, script integrity and Sports
+acceptance using the supplied strict simulator. Reports list every skip explicitly.
+
+`sim/build.ps1`, `build/sim.exe` and `tools/test.ps1` retain historical core/apps
+coverage. They do not validate the current NOS runtime. Simulator sensor values
+are synthetic and do not establish device power/timing or sensor accuracy.
+
+The following Pip/prototype material is historical core/apps documentation.
+Current NOS behavior and commands are documented in the linked NOS/Sports guides.
 
 ## Pip's persistent personality
 

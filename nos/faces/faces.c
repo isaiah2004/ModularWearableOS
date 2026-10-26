@@ -11,9 +11,9 @@
 #include "gfx_cost.h"
 
 extern const nos_face face_dot, face_glyph, face_life, face_segment, face_inverted,
-                      face_matrix, face_split, face_tape;
+                      face_matrix, face_split, face_tape, face_orrery;
 const nos_face *const nos_faces[] = { &face_dot, &face_matrix, &face_glyph, &face_split,
-                                      &face_life, &face_segment, &face_inverted, &face_tape };
+                                      &face_life, &face_segment, &face_inverted, &face_tape, &face_orrery };
 const int nos_face_count = sizeof nos_faces / sizeof nos_faces[0];
 
 /* a slow Lissajous walk inside +-4 px, one step per minute */
@@ -33,20 +33,47 @@ void face_aod_shift(int *dx, int *dy)
 
 int fk_aod_dx, fk_aod_dy;
 static unsigned s_dc_epoch;                           /* bumped by every face tick: dot lists go stale */
+
+/* whole frames since the clock's second turned, counted from the frame it turned on (so
+ * a once-a-second motion steps evenly whatever the frame grid's phase against the RTC);
+ * a face that appears mid-second starts from the millisecond clock */
+static struct { int sec; nos_time_t t0, last_t; } s_sk = { -1, 0, 0 };
+static void sec_tick(const face_ctx *c)
+{
+    if (c->dt.second != s_sk.sec) {
+        int cont = s_sk.sec >= 0 && c->t >= s_sk.last_t && c->t - s_sk.last_t < 0.07f;
+        s_sk.t0 = cont ? c->t : c->t - (float)c->dt.millis * 0.001f;
+        s_sk.sec = c->dt.second;
+    }
+    s_sk.last_t = c->t;
+}
+int fk_sec_k(const face_ctx *c)
+{
+    if (c->dt.second != s_sk.sec) return (c->dt.millis * M_FPS + 500) / 1000;
+    int k = fk_frames(c->t, s_sk.t0);
+    return k < 0 ? 0 : k;
+}
+
 void fk_aod_update(const face_ctx *c)
 {
     s_dc_epoch++;
+    sec_tick(c);
     if (!c->aod && c->enter >= 1.0f) face_segment_warm();   /* ~1 ms a frame until done */
     if (!c->aod) { fk_aod_dx = fk_aod_dy = 0; return; }
     shift_for(c->dt.hour * 60 + c->dt.minute, &fk_aod_dx, &fk_aod_dy);
 }
 
-float fk_ease(float p) { return bezier_ease(&EASE_STANDARD, m_clamp(p, 0, 1)); }
-float fk_mech(float p) { return bezier_ease(&EASE_MECH, m_clamp(p, 0, 1)); }
-float fk_stagger(float enter, float start, float span)
+/* frame tables with the shape of the engine's (R3) whose peak frame is at most 1.6x the
+ * average step (MF_SNAP3 / MF_MICRO4 sit at 1.8x): a snap, and a click / stepper step */
+const mframes FK_SNAP3 = { 3, { 50, 83, 100 } };
+const mframes FK_TICK4 = { 4, { 40, 72, 92, 100 } };
+int fk_frames(nos_time_t t, nos_time_t t0)
 {
-    if (span <= 0) return enter >= start ? 1.0f : 0.0f;
-    return fk_ease((enter - start) / span);
+    float v = (t - t0) * (float)M_FPS + 0.5f;
+    if (v > 1e6f) return 1000000;
+    if (v < -1e6f) return -1000000;
+    int i = (int)v;
+    return i - (v < (float)i);
 }
 
 int fk_hour_disp(int hour)
@@ -71,6 +98,12 @@ void fk_time(char out[8], int hour, int minute)
     fk_hh(hh, hour); fk_mm(mm, minute);
     snprintf(out, 8, "%s:%s", hh[0] == ' ' ? hh + 1 : hh, mm);
 }
+void fk_clock_fallback(gfx_fb *fb, const face_ctx *c, int x, int baseline)
+{
+    char time[8];
+    fk_time(time, c->dt.hour, c->dt.minute);
+    ui_text(fb, UI_F_DISPLAY, x, baseline, time, c->aod ? C_SEC : C_PRI, UI_CENTER, 0);
+}
 void fk_date(char out[16], const face_ctx *c)
 {
     snprintf(out, 16, "%s %d", ui_weekday3(c->dt.weekday), c->dt.day);
@@ -84,7 +117,7 @@ void fk_view_of(const gfx_fb *fb, fk_view *v)
     v->y0 = (float)(fb->y_base - fb->oy); v->y1 = v->y0 + (float)fb->h;
 }
 
-void fk_morph_tick(fk_morph *m, const char *now, float t)
+void fk_morph_tick(fk_morph *m, const char *now, nos_time_t t)
 {
     if (!m->init) {
         strncpy(m->from, now, 11); m->from[11] = 0;
@@ -98,10 +131,10 @@ void fk_morph_tick(fk_morph *m, const char *now, float t)
         m->t0 = t;
     }
 }
-float fk_morph_p(const fk_morph *m, float t, float dur)
+float fk_morph_pk(const fk_morph *m, nos_time_t t, int n)
 {
-    float p = (t - m->t0) / dur;
-    return p >= 1.0f ? 1.0f : p <= 0.0f ? 0.0f : p;
+    int k = fk_frames(t, m->t0) + 1;                 /* the change frame already shows step 1 */
+    return k >= n ? 1.0f : k <= 0 ? 0.0f : (float)k / (float)n;
 }
 void fk_morph_settle(fk_morph *m)
 {
@@ -110,8 +143,7 @@ void fk_morph_settle(fk_morph *m)
 }
 
 /* ---- label cross-fade ------------------------------------------------------------------ */
-#define XF_HZ 30.0f                         /* one step per frame, like the time morphs */
-void fk_xfade_tick(fk_xfade *x, const char *now, float t, int snap)
+void fk_xfade_tick(fk_xfade *x, const char *now, nos_time_t t, int snap)
 {
     if (!x->init || snap) {
         if (!x->init || strcmp(now, x->to)) { strncpy(x->to, now, 15); x->to[15] = 0; }
@@ -125,16 +157,17 @@ void fk_xfade_tick(fk_xfade *x, const char *now, float t, int snap)
         x->t0 = t;
     }
 }
-void fk_xfade_k(const fk_xfade *x, float t, float *a_from, float *a_to)
+void fk_xfade_k(const fk_xfade *x, nos_time_t t, float *a_from, float *a_to)
 {
-    float n = (t - x->t0) * XF_HZ + 0.5f;           /* frames since the change, rounded */
-    int st = n < 0.0f ? 0 : n > 5.0f ? 5 : (int)n;
-    static const float kf[5] = { 2.0f / 3.0f, 1.0f / 3.0f, 0, 0, 0 };
-    static const float kt[5] = { 0, 0, 1.0f / 3.0f, 2.0f / 3.0f, 1.0f };
+    int st = fk_frames(t, x->t0);
+    if (st < 0) st = 0;
+    /* perceptual ink levels (m_ink of the linear thirds: 9/16, 3/16) */
+    static const float kf[5] = { 0.5625f, 0.1875f, 0, 0, 0 };
+    static const float kt[5] = { 0, 0, 0.1875f, 0.5625f, 1.0f };
     if (st >= 5 || !strcmp(x->from, x->to)) { *a_from = 0; *a_to = 1.0f; return; }
     *a_from = kf[st]; *a_to = kt[st];
 }
-int fk_xfade_label(gfx_fb *fb, const fk_xfade *x, float t, int px, int py, uint16_t col, int align)
+int fk_xfade_label(gfx_fb *fb, const fk_xfade *x, nos_time_t t, int px, int py, uint16_t col, int align)
 {
     float af, at;
     fk_xfade_k(x, t, &af, &at);
@@ -186,7 +219,7 @@ typedef struct {
     float    box[DC_DOTS / DC_G][4];
     dc_call  call[DC_CALLS];
     int      ncall, used, cursor, failed;
-    unsigned epoch; float t;
+    unsigned epoch; nos_time_t t;
     const void *px; int rec, y_base, h, cx0, cx1;     /* the pass in progress */
 } dc_cache;
 static dc_cache *s_dc;
@@ -454,16 +487,68 @@ float fk_wake_k(const fk_wake *w, const face_ctx *c)
     int f = w->frames + 1;
     return f >= WAKE_N ? 1.0f : (float)f / (float)WAKE_N;
 }
+/* the AOD drift (<= 4 px) walks home at 1 px a frame: a whole-pixel speed, so text and
+ * dots move together and evenly (R6) and it is back within the first 4 wake frames */
+static float drift_back(int d, int f)
+{
+    int a = (d < 0 ? -d : d) - f;
+    if (a <= 0) return 0.0f;
+    return (float)(d < 0 ? -a : a);
+}
 void fk_wake_off(const fk_wake *w, const face_ctx *c, float *dx, float *dy)
 {
     if (c->aod) { *dx = (float)w->dx; *dy = (float)w->dy; return; }
-    float k = fk_wake_k(w, c);
-    *dx = w->active ? (float)(int)((float)w->dx * (1.0f - k)) : 0.0f;
-    *dy = w->active ? (float)(int)((float)w->dy * (1.0f - k)) : 0.0f;
+    int f = w->frames + 1;
+    *dx = w->active ? drift_back(w->dx, f) : 0.0f;
+    *dy = w->active ? drift_back(w->dy, f) : 0.0f;
 }
 
-/* ---- unread dot ------------------------------------------------------------------- */
+/* ---- motion audit probes (sim only) ------------------------------------------------- */
+#ifdef GFX_COST_MODEL
+void fk_probe(const char *face, const char *what, int cls, float px)
+{
+    char n[48];
+    snprintf(n, sizeof n, "%s.%s", face, what);
+    nos_motion_probe(n, cls, px);
+}
 static float s_unread_k;
+void fk_probe_common(const char *face, const fk_wake *w, const face_ctx *c)
+{
+    float dx, dy;
+    fk_wake_off(w, c, &dx, &dy);
+    fk_probe(face, "wake", MC_FADE, 100.0f * fk_wake_k(w, c));
+    fk_probe(face, "drift.x", MC_MICRO, dx);
+    fk_probe(face, "drift.y", MC_MICRO, dy);
+    if (c->unread > 0 || s_unread_k > 0.0f) fk_probe(face, "unread", MC_FADE, 100.0f * fk_unread_level(c));
+}
+int fk_probe_jump(const face_ctx *c, int *last)
+{
+    int sod = c->dt.hour * 3600 + c->dt.minute * 60 + c->dt.second;
+    int d = sod - *last;
+    *last = sod;
+    return d != 0 && d != 1;
+}
+void fk_probe_at(const char *face, const char *what, int cls, float px, int fresh)
+{
+    if (fresh) fk_probe(face, what, cls, px);       /* origin: no step on this frame */
+    fk_probe(face, what, cls, px);
+}
+void fk_probe_xfade(const char *face, const char *what, const fk_xfade *x, nos_time_t t)
+{
+    float af, at;
+    char n[40];
+    fk_xfade_k(x, t, &af, &at);
+    if (!strcmp(x->from, x->to)) return;
+    snprintf(n, sizeof n, "%s.in", what);
+    fk_probe(face, n, MC_FADE, 100.0f * at);
+    snprintf(n, sizeof n, "%s.out", what);
+    fk_probe(face, n, MC_FADE, 100.0f * af);
+}
+#else
+static float s_unread_k;
+#endif
+
+/* ---- unread dot ------------------------------------------------------------------- */
 void fk_unread_tick(const face_ctx *c)
 {
     float tgt = c->unread > 0 ? 1.0f : 0.0f;
@@ -475,7 +560,7 @@ void fk_unread_tick(const face_ctx *c)
 }
 float fk_unread_level(const face_ctx *c)
 {
-    return c->aod ? (c->unread > 0 ? 1.0f : 0.0f) : s_unread_k;
+    return c->aod ? (c->unread > 0 ? 1.0f : 0.0f) : m_ink(s_unread_k);   /* 4 perceptual steps */
 }
 void fk_unread_a(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, float dx, float dy, float a)
 {
@@ -483,7 +568,7 @@ void fk_unread_a(gfx_fb *fb, const face_ctx *c, uint16_t col, uint16_t backing, 
         if (c->unread > 0) dot_disc(fb, UI_CX + dx, 24.0f + dy, 6.0f, C_SEC);
         return;
     }
-    float k = s_unread_k * m_clamp(a, 0, 1);
+    float k = m_ink(s_unread_k) * m_clamp(a, 0, 1);
     if (k <= 0.0f) return;
     if (a >= 1.0f) dot_disc(fb, UI_CX + dx, 24.0f + dy, 20.0f, backing);   /* no moat while fading */
     dot_disc(fb, UI_CX + dx, 24.0f + dy, 8.0f, ui_mix(backing, col, k));   /* 8 px, as on the widget pages */
@@ -553,7 +638,7 @@ static int sglyph_build(fk_sfont *sf, const font_t *src, float s, int k)
      * the watch the first time the face ticked. */
     static int16_t *tx;                               /* 2 x 255 x 4 taps, PSRAM (not the stack) */
     if (!tx) tx = (int16_t *)hal_big_alloc(2u * 255u * 4u * sizeof *tx);
-    if (!tx) return 0;
+    if (!tx) { hal_big_free(px); return 0; }
     int16_t *ty = tx + 255 * 4;
     for (int u = 0; u < w; u++)
         for (int i = 0; i < 4; i++) {
@@ -594,7 +679,7 @@ static void sfont_finish(fk_sfont *sf, const font_t *src, float s)
 int fk_sfont_build_step(fk_sfont *sf, const font_t *src, float s)
 {
     if (sf->ok) return 1;
-    if (sf->failed) return 0;
+    sf->failed = 0; /* a transient allocation failure is retryable */
     if (sf->next < 12) {
         if (!sglyph_build(sf, src, s, sf->next)) { sf->failed = 1; return 0; }
         sf->next++;
@@ -604,7 +689,10 @@ int fk_sfont_build_step(fk_sfont *sf, const font_t *src, float s)
 }
 int fk_sfont_build(fk_sfont *sf, const font_t *src, float s)
 {
-    while (!sf->ok && !sf->failed) fk_sfont_build_step(sf, src, s);
+    while (!sf->ok) {
+        int before = sf->next; fk_sfont_build_step(sf, src, s);
+        if (sf->next == before) break;
+    }
     return sf->ok;
 }
 
@@ -667,30 +755,58 @@ static void roll_draw(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, in
     if (sf) fk_stext(fb, sf, x, y, s, col, UI_LEFT);
     else ui_text(fb, f, x, y, s, col, UI_LEFT, 0);
 }
-void fk_roll(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
-             int cap, char from, char to, float p, uint16_t col)
+int fk_roll_span(int cap) { return cap + 12; }
+/* A mechanical roll (MOTION30 R8): the digit wheel turns in three held steps on twos
+ * (a third of the cell at frames 0 and 2, home at 4), like a counter's detents. The old
+ * continuous roll (EASE_MECH over 9 frames) slid a big glyph at up to 43 px a frame:
+ * its strokes strobed. A/B'd on film against a Pebble-style cut (m_cut: lead-in, jump,
+ * 4-2-1 settle) and three steps on ones: the stepped roll reads most as a mechanism and
+ * repaints the cell 3 times instead of 6-9. */
+#define ROLL_N 5
+int fk_roll_frames(void) { return ROLL_N; }
+int fk_roll_dy(int k, int span)
 {
-    fk_roll2(fb, f, sf, x, base, cell_w, cap, from, to, 0, 0, p, col);
+    if (k < 0) return 0;
+    if (k >= ROLL_N - 1) return span;
+    return (span * (k / 2 + 1) + 1) / 3;                       /* 1/3, 1/3, 2/3, 2/3, home */
+}
+#ifdef GFX_COST_MODEL
+void fk_probe_roll(const char *face, int i, int k, int cap)
+{
+    char n[16];
+    snprintf(n, sizeof n, "roll%d", i);
+    if (k == 0) fk_probe(face, n, MC_COMPONENT, 0.0f);       /* a new roll: its origin */
+    fk_probe(face, n, MC_COMPONENT, (float)fk_roll_dy(k, fk_roll_span(cap)));
+}
+#endif
+void fk_roll(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
+             int cap, char from, char to, int k, uint16_t col)
+{
+    fk_roll2(fb, f, sf, x, base, cell_w, cap, from, to, 0, 0, k, col);
 }
 void fk_roll2(gfx_fb *fb, const font_t *f, const fk_sfont *sf, int x, int base, int cell_w,
-              int cap, char from, char to, int nx_from, int nx_to, float p, uint16_t col)
+              int cap, char from, char to, int nx_from, int nx_to, int k, uint16_t col)
 {
-    if (p >= 1.0f || from == to) { roll_draw(fb, f, sf, x + nx_to, base, to, col); return; }
+    if (k >= fk_roll_frames() - 1 || from == to) { roll_draw(fb, f, sf, x + nx_to, base, to, col); return; }
+    if (k < 0) { roll_draw(fb, f, sf, x + nx_from, base, from, col); return; }
     gfx_fb sub;
     int top = base - cap - 6, bot = base + 6;
     if (!nos_subview(fb, &sub, x - 4 + fb->ox, top + fb->oy, x + cell_w + 4 + fb->ox, bot + fb->oy, 0, 0)) return;
-    float e = fk_mech(p);
     int span = bot - top;
-    int dy = (int)(e * (float)span + 0.5f);
+    int dy = fk_roll_dy(k, span);
     roll_draw(&sub, f, sf, x + nx_from, base - dy, from, col);
     roll_draw(&sub, f, sf, x + nx_to, base + span - dy, to, col);
 }
 
-float fk_blink(int ms)
+float fk_blink(const face_ctx *c)
 {
-    if (ms < 100) return (float)(ms / 25 + 1) * 0.25f;
-    if (ms < 500) return 1.0f;
-    if (ms < 600) return 1.0f - (float)((ms - 500) / 25 + 1) * 0.25f;
+    /* Four counted ink steps up/down; the falling edge starts at 500 ms at every
+     * configured cadence. Round the duration to the nearest whole frame. */
+    int f = fk_sec_k(c);
+    int hold = (M_FPS + 1) / 2;
+    if (f < 4) return (float)(f + 1) * 0.25f;
+    if (f < hold) return 1.0f;
+    if (f < hold + 3) return 1.0f - (float)(f - hold + 1) * 0.25f;
     return 0.0f;
 }
 
@@ -698,8 +814,18 @@ float fk_blink(int ms)
 int nos_face_style(const nos_face *f)
 {
     if (f == &face_inverted) return FACE_LIGHT | FACE_FULL_BLEED;
-    if (f == &face_matrix || f == &face_segment || f == &face_glyph || f == &face_life) return FACE_FULL_BLEED;
+    if (f == &face_matrix || f == &face_segment || f == &face_glyph || f == &face_life || f == &face_orrery) return FACE_FULL_BLEED;
     return 0;
+}
+int face_orrery_input(const nos_input *in);
+int face_orrery_interactive(void);
+int nos_face_interactive(const nos_face *f)
+{
+    return f == &face_orrery ? face_orrery_interactive() : 0;
+}
+int nos_face_input(const nos_face *f, const nos_input *in)
+{
+    return f == &face_orrery ? face_orrery_input(in) : 0;
 }
 const struct nos_screen *nos_face_press_rect(const nos_face *f, int x, int y, int r[4])
 {
@@ -709,5 +835,6 @@ const struct nos_screen *nos_face_press_rect(const nos_face *f, int x, int y, in
     if (f == &face_split) return face_split_hit(x, y, r);
     if (f == &face_segment) return face_segment_hit(x, y, r);
     if (f == &face_inverted) return face_inverted_hit(x, y, r);
+    if (f == &face_orrery) return 0;              /* it takes its own touch (nos_face_input) */
     return f && f->tap ? f->tap(x, y) : 0;
 }

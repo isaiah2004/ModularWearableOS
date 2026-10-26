@@ -1,0 +1,24 @@
+# Body profile rows in SESSION SETUP and the generic body editor (height / age).
+wait 100
+present 0
+open workout
+wait 700
+tap 154 244
+wait 700
+expect top SPORT READY
+tap 233 307
+wait 700
+expect top SESSION SETUP
+slide 233 380 233 146 700 100
+wait 500
+shot body_setup_1
+slide 233 380 233 146 700 100
+wait 500
+shot body_setup_2
+slide 233 380 233 146 700 100
+wait 500
+shot body_setup_3
+tap 233 267
+wait 700
+expect top BODY AGE
+shot body_age_editor

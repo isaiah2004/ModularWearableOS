@@ -1,0 +1,48 @@
+network wifi
+wait 500
+tap 233 135
+wait 3500
+expect top NETWORKS
+shot wifi_list
+tap 233 310
+wait 500
+expect top WIFI_KEYBOARD
+shot keyboard
+tap 62 220
+tap 158 411
+wait 200
+shot password_visible
+tap 100 220
+tap 138 220
+tap 176 220
+tap 214 220
+tap 252 220
+tap 290 220
+tap 300 411
+wait 300
+expect top WIFI_KEYBOARD
+shot short_password
+tap 328 220
+tap 300 411
+wait 500
+expect top NETWORKS
+tap 233 225
+wait 500
+expect top PHONE_SETUP
+tap 233 380
+wait 300
+shot setup
+pop
+wait 500
+flick 233 362 233 135 250
+wait 900
+shot networks_scrolled
+home
+wait 500
+network ble
+wait 600
+shot ble_list
+tap 233 310
+wait 600
+expect top BLE_DEVICE
+shot ble_device

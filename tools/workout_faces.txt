@@ -1,0 +1,52 @@
+# Background workout chip on every recovered face; no device required.
+wait 100
+set step_rate 120
+set gps_motion 2.0
+set hr_sample 142 0.95 1
+workout start run
+wait 6000
+face 0
+home_now
+wait 3000
+shot workout_dot
+face 1
+wait 3000
+shot workout_matrix
+face 2
+wait 3000
+shot workout_glyph
+face 3
+wait 3000
+shot workout_split
+face 4
+wait 3000
+shot workout_life
+face 5
+wait 3000
+shot workout_segment
+face 6
+wait 3000
+shot workout_inverted
+face 7
+wait 3000
+shot workout_tape
+face 8
+wait 6000
+shot workout_solar
+expect workout state 1
+set aod 1
+wait 1000
+shot workout_solar_aod
+expect workout state 1
+workout pause
+wait 1000
+shot workout_solar_paused_aod
+set aod 0
+wait 1000
+shot workout_solar_paused
+expect workout state 2
+workout info face_integration
+workout finish
+wait 200
+expect workout save 2
+expect workout history 1

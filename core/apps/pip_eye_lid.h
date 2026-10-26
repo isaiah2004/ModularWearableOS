@@ -13,7 +13,8 @@ static void pip_eye_lid(gfx_fb *fb,float x,float y,float w,float h,float anger,i
     if(fb->rec) {
         unsigned hash=gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(
             gfx_hash_u(0x5049504c,(unsigned)side),x),y),w),h),anger);
-        gfx_rec_cmd(fb,x0+fb->ox,y0+fb->oy,x1+fb->ox,y1+fb->oy,hash);
+        /* gfx_rec_cmd owns the framebuffer's screen translation. */
+        gfx_rec_cmd(fb,x0,y0,x1,y1,hash);
         return;
     }
     int c0=fb->cx0,c1=fb->cx1;if(c1<=c0){c0=0;c1=GFX_W;}

@@ -1,0 +1,119 @@
+# ORRERY full port: every control on the face, with costs
+face 8
+wait 2500
+mark locked_idle
+shot f01_locked
+wait 600
+expect idle
+mark unlock
+hold 300 300 1700
+wait 700
+shot f02_unlocked
+mark menu
+tap 452 233
+wait 500
+shot f03_menu
+tap 428 255
+wait 400
+shot f04_filter_opts
+tap 381 211
+wait 300
+shot f05_asteroids_off
+tap 381 211
+wait 200
+tap 418 298
+wait 300
+shot f06_lines_off
+tap 418 298
+wait 200
+tap 418 168
+wait 400
+tap 380 202
+wait 300
+shot f07_drag_time
+tap 150 150
+wait 500
+mark time_drag
+film time_drag 30 10 2
+drag 350 233 233 350 800
+wait 200
+shot f08_after_time_drag
+tap 233 380
+wait 900
+shot f09_now
+mark rings
+tap 380 75
+wait 600
+shot f10_rings
+wait 700
+expect idle
+expect nolate
+film ring_drag 24 8 2
+drag 403 135 135 63 700
+wait 300
+shot f11_ring_travelled
+tap 233 275
+wait 900
+shot f12_ring_now
+tap 384 71
+wait 600
+mark zones
+tap 452 233
+wait 400
+tap 418 168
+wait 300
+tap 367 165
+wait 300
+tap 150 150
+wait 400
+tap 233 300
+wait 600
+shot f13_inner
+tap 233 30
+wait 500
+tap 233 420
+wait 600
+shot f14_outer
+tap 12 233
+wait 600
+shot f15_beyond
+wait 700
+expect idle
+expect nolate
+flick 10 240 160 240 150
+wait 600
+shot f16_back_face
+mark tilt_look
+hold 300 300 950
+wait 600
+tap 452 233
+wait 400
+tap 418 168
+wait 300
+tap 367 165
+wait 300
+tap 150 150
+wait 300
+drag 250 300 330 260 500
+wait 300
+shot f17_look
+mark sun_card
+tap 233 233
+wait 900
+shot f18_sun_card
+flick 10 240 220 240 150
+wait 900
+mark events
+tap 233 380
+wait 900
+shot f19_events
+tap 233 140
+wait 1200
+shot f20_jumped
+mark relock
+press
+wait 900
+shot f21_relocked
+mark rest
+wait 1000
+expect idle

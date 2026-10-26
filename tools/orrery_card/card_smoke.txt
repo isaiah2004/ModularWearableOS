@@ -1,0 +1,17 @@
+face 8
+wait 2500
+card 3
+open! orrery_card
+wait 3000
+shot earth
+expect idle
+tap 233 214
+wait 800
+shot heat
+tap 233 214
+wait 800
+shot dot
+drag 100 300 100 160 500
+wait 800
+shot graph
+expect idle

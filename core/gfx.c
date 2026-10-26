@@ -1,5 +1,11 @@
+#include "cost_profile.h"
 #include "gfx.h"
 #include "gfx_cost.h"
+#ifdef GFX_COST_MODEL
+#define COST_EDGE_ACCUM(p,n) do { unsigned *edge_count=(p); if(edge_count) *edge_count+=(unsigned)(n); } while(0)
+#else
+#define COST_EDGE_ACCUM(p,n) ((void)(p))
+#endif
 #include <stdint.h>
 #include <math.h>
 
@@ -19,6 +25,9 @@ int gfx_rec_cmd(gfx_fb *fb, int x0, int y0, int x1, int y1, unsigned hash)
      * where it lands, not where its logical coordinates say */
     x0 += fb->ox; x1 += fb->ox;
     y0 += fb->oy; y1 += fb->oy;
+    /* Ink scaling changes pixels even when a primitive's nominal colour and
+     * position stay fixed. Retained layers and damage need that dependency. */
+    if (fb->dim) hash = gfx_hash_u(hash, 0xd1000000u | (unsigned)fb->dim);
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > GFX_W) x1 = GFX_W;
@@ -157,6 +166,7 @@ static void fill_span(uint16_t *p, int n, uint16_t color)
 
 void gfx_clear(gfx_fb *fb, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_CLEAR,!fb->rec);
     if (fb->rec) { gfx_rec_cmd(fb, 0, 0, GFX_W, GFX_H, gfx_hash_u(2u, color)); return; }
     /* Fast path when there's no content slide: the whole buffer is this app's
      * window, so fill it directly. Works for a full frame AND a render stripe
@@ -166,6 +176,9 @@ void gfx_clear(gfx_fb *fb, uint16_t color)
     if (c1 <= c0) { c0 = 0; c1 = GFX_W; }        /* sentinel: no x-clip */
     if (c0 < 0) c0 = 0;
     if (c1 > GFX_W) c1 = GFX_W;
+#ifdef GFX_COST_MODEL
+    gfx_cost_target(fb->cost_psram);
+#endif
     if (fb->ox == 0 && fb->oy == 0 && c0 == 0 && c1 == GFX_W && !fb->stride && !fb->x_base) {
         color = gfx_ink(fb, color);
         uint32_t two = ((uint32_t)color << 16) | color;
@@ -188,6 +201,7 @@ void gfx_clear(gfx_fb *fb, uint16_t color)
 
 void gfx_fill_rect(gfx_fb *fb, int x, int y, int w, int h, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (fb->rec) {
         unsigned hh = gfx_hash_u(gfx_hash_u(gfx_hash_u(gfx_hash_u(1u, color),
                       (unsigned)x), (unsigned)y), (unsigned)(w * 65536 + h));
@@ -259,7 +273,7 @@ static uint8_t coverage(float signed_dist_inside)
  * solid interior is filled with NO per-pixel sqrt — only the ~1px AA rim pays
  * for it. That turns O(r^2) sqrts into O(r). Factored out so gfx_taper can
  * sweep discs without each one becoming its own recorded damage command. */
-static unsigned fill_circle_raster(gfx_fb *fb, float cx, float cy, float r, uint16_t color)
+static unsigned fill_circle_raster(gfx_fb *fb, float cx, float cy, float r, uint16_t color, unsigned *blends)
 {
     unsigned n = 0;   /* pixels written (cost model only) */
     float r_out = r + 1.0f, ro2 = r_out * r_out;
@@ -297,7 +311,7 @@ static unsigned fill_circle_raster(gfx_fb *fb, float cx, float cy, float r, uint
             float dx = (px + 0.5f) - cx;
             uint8_t a = coverage(r - fast_sqrt(dx * dx + dy * dy));
             if (a == 255) row[px] = color;
-            else if (a) row[px] = gfx_blend565(row[px], color, a);
+            else if (a) { row[px] = gfx_blend565(row[px], color, a); COST_EDGE_ACCUM(blends,1); }
             n += a != 0;
         }
     }
@@ -306,19 +320,21 @@ static unsigned fill_circle_raster(gfx_fb *fb, float cx, float cy, float r, uint
 
 void gfx_fill_circle(gfx_fb *fb, float cx, float cy, float r, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (fb->rec) {
         unsigned hh = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_u(3u, color), cx), cy), r);
         gfx_rec_cmd(fb, (int)(cx - r - 1), (int)(cy - r - 1),
                     (int)(cx + r + 2), (int)(cy + r + 2), hh);
         return;
     }
-    unsigned n = fill_circle_raster(fb, cx, cy, r, gfx_ink(fb, color));
+    unsigned nb=0, n = fill_circle_raster(fb, cx, cy, r, gfx_ink(fb, color), &nb);
     GFX_COST(GFX_COST_CIRCLE, n);
+    GFX_COST_PSRAM_EDGE(nb);
 }
 
 /* One AA cap of a pill: columns [k0,k1] of `row`, distance measured to (ccx, row centre). */
 static unsigned pill_cap(uint16_t *row, int k0, int k1, float ccx, float dy2, float r, float ri2,
-                         uint16_t color)
+                         uint16_t color, unsigned *blends)
 {
     unsigned n = 0;
     for (int px = k0; px <= k1; px++) {
@@ -326,7 +342,7 @@ static unsigned pill_cap(uint16_t *row, int k0, int k1, float ccx, float dy2, fl
         float d2 = dx * dx + dy2;
         uint8_t a = d2 < ri2 ? 255 : coverage(r - fast_sqrt(d2));
         if (a == 255) row[px] = color;
-        else if (a) row[px] = gfx_blend565(row[px], color, a);
+        else if (a) { row[px] = gfx_blend565(row[px], color, a); COST_EDGE_ACCUM(blends,1); }
         n += a != 0;
     }
     return n;
@@ -334,6 +350,7 @@ static unsigned pill_cap(uint16_t *row, int k0, int k1, float ccx, float dy2, fl
 
 void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (xb < xa) xb = xa;
     if (fb->rec) {
         unsigned hh = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_u(9u, color), xa), cy), xb), r);
@@ -352,7 +369,7 @@ void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t c
     int ba = iceil(xa - 0.5f), bb = ifloor(xb - 0.5f);
     int py0 = ifloor(cy - r - 1.0f), py1 = iceil(cy + r + 1.0f);
     if (!clip_rows(fb, &py0, &py1)) { GFX_COST(GFX_COST_PILL, 0); return; }
-    unsigned n = 0;   /* pixels written (cost model only) */
+    unsigned n = 0, nb = 0;   /* pixels written / blended (cost model only) */
     float ri = r - 1.0f, ri2 = ri > 0 ? ri * ri : 0.0f;
     int l0 = lcap < pxlo ? pxlo : lcap, l1 = ba - 1 > pxhi ? pxhi : ba - 1;
     int b0 = ba < pxlo ? pxlo : ba, b1 = bb > pxhi ? pxhi : bb;
@@ -370,20 +387,21 @@ void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t c
             int s0 = iceil(xa - h - 0.5f), s1 = ifloor(xb + h - 0.5f);
             if (s0 < pxlo) s0 = pxlo;
             if (s1 > pxhi) s1 = pxhi;
-            n += pill_cap(row, l0, s0 - 1 < l1 ? s0 - 1 : l1, xa, dy2, r, ri2, color);
+            n += pill_cap(row, l0, s0 - 1 < l1 ? s0 - 1 : l1, xa, dy2, r, ri2, color, &nb);
             if (s0 <= s1) { fill_span(&row[s0], s1 - s0 + 1, color); n += s1 - s0 + 1; }
-            n += pill_cap(row, s1 + 1 > k0 ? s1 + 1 : k0, k1, xb, dy2, r, ri2, color);
+            n += pill_cap(row, s1 + 1 > k0 ? s1 + 1 : k0, k1, xb, dy2, r, ri2, color, &nb);
             continue;
         }
-        n += pill_cap(row, l0, l1, xa, dy2, r, ri2, color);
+        n += pill_cap(row, l0, l1, xa, dy2, r, ri2, color, &nb);
         if (b0 <= b1) {
             if (ay == 255) fill_span(&row[b0], b1 - b0 + 1, color);
-            else for (int px = b0; px <= b1; px++) row[px] = gfx_blend565(row[px], color, ay);
+            else { for (int px = b0; px <= b1; px++) row[px] = gfx_blend565(row[px], color, ay); COST_EDGE_ACCUM(&nb,b1-b0+1); }
             n += b1 - b0 + 1;
         }
-        n += pill_cap(row, k0, k1, xb, dy2, r, ri2, color);
+        n += pill_cap(row, k0, k1, xb, dy2, r, ri2, color, &nb);
     }
     GFX_COST(GFX_COST_PILL, n);
+    GFX_COST_PSRAM_EDGE(nb);
 }
 
 /* Tapered thick line (clock hand): a swept disc from (ax,ay) half-width ha to
@@ -393,6 +411,7 @@ void gfx_fill_pill(gfx_fb *fb, float xa, float cy, float xb, float r, uint16_t c
 void gfx_taper(gfx_fb *fb, float ax, float ay, float bx, float by,
                float ha, float hb, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     float hmax = ha > hb ? ha : hb;
     if (fb->rec) {
         unsigned hh = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(
@@ -408,7 +427,7 @@ void gfx_taper(gfx_fb *fb, float ax, float ay, float bx, float by,
      * stable coverage sample per pixel, no disc-sweep rim shimmer. See gfx_line. */
     float vx = bx - ax, vy = by - ay;
     float vlen2 = vx * vx + vy * vy;
-    if (vlen2 < 1e-6f) { GFX_COST(GFX_COST_LINE, fill_circle_raster(fb, ax, ay, hmax, color)); return; }
+    if (vlen2 < 1e-6f) { GFX_COST(GFX_COST_LINE, fill_circle_raster(fb, ax, ay, hmax, color, 0)); return; }
     float inv = 1.0f / vlen2, rmax = hmax + 1.0f, rmax2 = rmax * rmax;
     unsigned n = 0;   /* pixels written (cost model only) */
     /* 2D dirty-rect x-window (buffer columns; sentinel cx1<=cx0 => full width) */
@@ -448,6 +467,7 @@ void gfx_taper(gfx_fb *fb, float ax, float ay, float bx, float by,
  * what keeps big-radius rings (and the second-sweep arc) cheap. */
 void gfx_ring(gfx_fb *fb, float cx, float cy, float r_mid, float thickness, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (fb->rec) {
         float ro = r_mid + thickness * 0.5f + 1.0f;
         unsigned hh = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(
@@ -522,6 +542,7 @@ static int arc_angle_in(float theta, float a0, float a1)
 void gfx_arc(gfx_fb *fb, float cx, float cy, float r_mid, float thickness,
              float a0, float a1, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (a1 <= a0) return;
     if (a1 - a0 >= 6.2831f) { gfx_ring(fb, cx, cy, r_mid, thickness, color); return; }
     if (fb->rec) {
@@ -650,6 +671,7 @@ void gfx_arc(gfx_fb *fb, float cx, float cy, float r_mid, float thickness,
 void gfx_sweep(gfx_fb *fb, float cx, float cy, float r, float th,
                float a1, float snap, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (a1 <= 0.0f) return;
     /* Splitting an anti-aliased arc changes its pixels at the join: both arcs
      * paint a rounded cap there, so the overlapping fringe is blended twice.
@@ -696,6 +718,7 @@ void gfx_sweep(gfx_fb *fb, float cx, float cy, float r, float th,
 void gfx_line(gfx_fb *fb, float x0, float y0, float x1, float y1,
               float width, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     float half = width * 0.5f;
     if (fb->rec) {
         unsigned hh = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(
@@ -716,7 +739,7 @@ void gfx_line(gfx_fb *fb, float x0, float y0, float x1, float y1,
      * Far pixels are rejected on squared distance before the sqrt. */
     float vx = x1 - x0, vy = y1 - y0;
     float vlen2 = vx * vx + vy * vy;
-    if (vlen2 < 1e-6f) { GFX_COST(GFX_COST_LINE, fill_circle_raster(fb, x0, y0, half, color)); return; }
+    if (vlen2 < 1e-6f) { GFX_COST(GFX_COST_LINE, fill_circle_raster(fb, x0, y0, half, color, 0)); return; }
     float rmax = half + 1.0f, rmax2 = rmax * rmax;
     /* 2D dirty-rect x-window (buffer columns; sentinel cx1<=cx0 => full width) */
     int c0 = fb->cx0, c1 = fb->cx1;

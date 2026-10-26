@@ -32,14 +32,51 @@ int main(void)
     }
     int x, y;
     uint8_t touch[5] = {1, 0x81, 0xd1, 0x01, 0xd1};
-    assert(board_touch_decode(touch, &x, &y) && x == 465 && y == 465);
-    touch[2] = 0xd2; assert(!board_touch_decode(touch, &x, &y));
-    touch[2] = 0xd1; touch[1] = 0x41; assert(!board_touch_decode(touch, &x, &y));
-    touch[1] = 0x81; touch[0] = 0; assert(!board_touch_decode(touch, &x, &y));
+    assert(board_touch_decode(touch, &x, &y)==1 && x == 465 && y == 465);
+    touch[2] = 0xd2; assert(board_touch_decode(touch, &x, &y)==-1 && x==465 && y==465);
+    touch[2] = 0xd1; touch[1] = 0x41; assert(board_touch_decode(touch, &x, &y)==0);
+    touch[1] = 0x81; touch[0] = 0; assert(board_touch_decode(touch, &x, &y)==0);
+    touch[0]=1; touch[1]=0xc1; assert(board_touch_decode(touch,&x,&y)==-1);
+    touch[0]=2; touch[1]=0x81; assert(board_touch_decode(touch,&x,&y)==-1);
+    touch[0]=0; touch[1]=0xff; assert(board_touch_decode(touch,&x,&y)==0);
+    assert(board_touch_decode(NULL,&x,&y)==-1);
     uint8_t imu[12] = {0x00,0x10, 0x00,0xf0, 0x00,0x20, 0x40,0, 0xc0,0xff, 0,0x80};
     hal_imu m; board_imu_decode(imu, &m);
     assert(m.ax == 1 && m.ay == -1 && m.az == 2);
     assert(m.gx == 1 && m.gy == -1 && m.gz == -512);
+    {   /* QMI8658 FIFO: word count -> whole 6-axis samples, overflow flag, batch timestamps */
+        uint8_t st[2] = {12, 0}; int ov = 9;
+        assert(board_fifo_samples(st, &ov) == 2 && !ov);
+        st[0] = 11; assert(board_fifo_samples(st, &ov) == 1);      /* a partial sample is not counted */
+        st[0] = 0; st[1] = 0x23; assert(board_fifo_samples(st, &ov) == 128 && ov);
+        st[0] = 0xff; st[1] = 0x03; assert(board_fifo_samples(st, NULL) == 128); /* clamped */
+        st[0] = 0; st[1] = 0; assert(board_fifo_samples(st, &ov) == 0 && !ov);
+        assert(board_fifo_samples(NULL, &ov) == 0 && !ov);
+        board_fifo_clock c = {0}; int64_t t[16]; const int64_t P = 8921;
+        board_fifo_stamp(&c, 1000000, 3, P, t);
+        assert(t[2] == 1000000 && t[1] == 1000000 - P && t[0] == 1000000 - 2 * P && c.last_us == 1000000);
+        board_fifo_stamp(&c, 1000000 + 5 * P, 5, P, t);      /* exactly on time */
+        assert(t[4] == 1000000 + 5 * P && t[0] == 1000000 + P);
+        int64_t last = c.last_us;
+        board_fifo_stamp(&c, last + 4 * P + 3000, 4, P, t);  /* 3 ms late: a quarter is absorbed */
+        assert(c.last_us == last + 4 * P + 750 && t[0] > last);
+        last = c.last_us;
+        board_fifo_stamp(&c, last + 400 * P, 4, P, t);       /* a long stall re-anchors on the host clock */
+        assert(c.last_us == last + 400 * P && t[3] == c.last_us);
+        board_fifo_stamp(&c, c.last_us + 9 * P, 0, P, t);    /* an empty batch changes nothing */
+        assert(c.last_us == last + 400 * P);
+        /* 20 Hz reads of a 112 Hz stream with scheduling jitter: always strictly increasing and
+         * never far from the host clock. */
+        board_fifo_clock j = {0}; int64_t prev = 0, now = 5000000; unsigned seed = 7;
+        for (int i = 0; i < 5000; i++) {
+            seed = seed * 1103515245u + 12345u;
+            unsigned n = 3 + (seed >> 16) % 6;
+            now += (int64_t)n * P + (int64_t)((seed >> 8) % 2001) - 1000;
+            board_fifo_stamp(&j, now, n, P, t);
+            for (unsigned k = 0; k < n; k++) { assert(t[k] > prev); prev = t[k]; }
+            assert(t[n - 1] - now < 3 * P && now - t[n - 1] < 3 * P);
+        }
+    }
     const uint16_t pixels[] = {0x1234,2,3,4,5,0xabcd};
     const uint16_t rotated[] = {3,0xabcd,2,5,0x1234,4};
     uint16_t actual[8] = {0xbeef,0,0,0,0,0,0,0xcafe};
@@ -143,6 +180,7 @@ int main(void)
     assert(x == 345 && y == 100); /* release cannot turn a tap into a swipe */
     board_pointer_update(&x, &y, 4095, 4095, 0);
     assert(x == 345 && y == 100); /* failed reads retain the last valid point */
+    board_pointer_update(&x,&y,4095,4095,-1); assert(x==345 && y==100);
     puts("PASS (1.43C): RTC, touch press/release, QMI8658, pixels and 180-degree touch");
 #else
     board_pointer_update(&x, &y, 120, 365, 1);
@@ -153,6 +191,7 @@ int main(void)
     assert(x == 120 && y == 130);
     board_pointer_update(&x, &y, 4095, 4095, 0);
     assert(x == 120 && y == 130); /* failed reads retain the last valid point */
+    board_pointer_update(&x,&y,4095,4095,-1); assert(x==120 && y==130);
     puts("PASS: RTC, FT3168 press/release, QMI8658, CCW pixels and touch inverse");
 #endif
     return 0;

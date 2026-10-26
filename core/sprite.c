@@ -2,7 +2,10 @@
 #include "sprite.h"
 #include "hal.h"
 #include "gfx_cost.h"
+#include "cost_profile.h"
 #include <string.h>
+#undef sprite_alloc
+#undef sprite8_alloc
 
 int sprite_alloc(sprite *s, int w, int h)
 {
@@ -16,6 +19,9 @@ gfx_fb sprite_fb(const sprite *s)
     gfx_fb fb;
     memset(&fb, 0, sizeof fb);
     fb.px = s->px;
+#ifdef GFX_COST_MODEL
+    fb.cost_psram = 1;
+#endif
     fb.h = s->h;
     fb.cx0 = 0; fb.cx1 = s->w;    /* clip every primitive to the sprite's width */
     fb.stride = s->w;
@@ -24,6 +30,7 @@ gfx_fb sprite_fb(const sprite *s)
 
 void sprite_blit(gfx_fb *fb, const sprite *s, int x, int y, unsigned key)
 {
+    NOS_COST_SCOPE(NOS_COST_SPRITE565,!fb->rec);
     if (fb->rec) {
         gfx_rec_cmd(fb, x, y, x + s->w, y + s->h,
                     gfx_hash_u(gfx_hash_u(gfx_hash_u(0x5917u, key), (unsigned)x), (unsigned)y));
@@ -82,11 +89,12 @@ void sprite8_from(sprite8 *s, const sprite *src)
     }
 }
 
-void sprite8_blit(gfx_fb *fb, const sprite8 *s, int x, int y, const uint16_t *lut, unsigned key)
+/* ys = 1 draws every sprite row twice (h output rows) */
+static void blit8(gfx_fb *fb, const sprite8 *s, int x, int y, int h, int ys, const uint16_t *lut, unsigned key)
 {
     if (fb->rec) {
-        gfx_rec_cmd(fb, x, y, x + s->w, y + s->h,
-                    gfx_hash_u(gfx_hash_u(gfx_hash_u(0x8a31u, key), (unsigned)x), (unsigned)y));
+        gfx_rec_cmd(fb, x, y, x + s->w, y + h,
+                    gfx_hash_u(gfx_hash_u(gfx_hash_u(0x8a31u ^ (unsigned)ys, key), (unsigned)x), (unsigned)y));
         return;
     }
     if (!s->px || !lut) { GFX_COST(GFX_COST_BLIT, 0); return; }
@@ -99,14 +107,14 @@ void sprite8_blit(gfx_fb *fb, const sprite8 *s, int x, int y, const uint16_t *lu
     int bx = x + fb->ox;                      /* buffer column of sprite column 0 */
     int k0 = bx < c0 ? c0 - bx : 0, k1 = bx + s->w > c1 ? c1 - bx : s->w;
     if (k1 <= k0) { GFX_COST(GFX_COST_BLIT, 0); return; }
-    int r0 = fb->y_base - y - fb->oy, r1 = r0 + fb->h;  /* sprite rows inside this buffer */
+    int r0 = fb->y_base - y - fb->oy, r1 = r0 + fb->h;  /* output rows inside this buffer */
     if (r0 < 0) r0 = 0;
-    if (r1 > s->h) r1 = s->h;
+    if (r1 > h) r1 = h;
     /* sprite8 measured 34 ns/px, same class as the RGB565 blit */
     GFX_COST(GFX_COST_BLIT, r1 > r0 ? (unsigned)(r1 - r0) * (unsigned)(k1 - k0) : 0u);
     for (int r = r0; r < r1; r++) {
         uint16_t *d = gfx_row(fb, y + r + fb->oy - fb->y_base) + bx + k0;
-        const uint8_t *p = &s->px[r * s->w + k0];
+        const uint8_t *p = &s->px[(r >> ys) * s->w + k0];
         int n = k1 - k0;
         for (; n >= 4; n -= 4, p += 4, d += 4) {
             uint16_t a = lut[p[0]], b = lut[p[1]], c = lut[p[2]], e = lut[p[3]];
@@ -114,4 +122,16 @@ void sprite8_blit(gfx_fb *fb, const sprite8 *s, int x, int y, const uint16_t *lu
         }
         while (n--) *d++ = lut[*p++];
     }
+}
+
+void sprite8_blit(gfx_fb *fb, const sprite8 *s, int x, int y, const uint16_t *lut, unsigned key)
+{
+    NOS_COST_SCOPE(NOS_COST_SPRITE8,!fb->rec);
+    blit8(fb, s, x, y, s->h, 0, lut, key);
+}
+
+void sprite8_blit_y2(gfx_fb *fb, const sprite8 *s, int x, int y, int h, const uint16_t *lut, unsigned key)
+{
+    NOS_COST_SCOPE(NOS_COST_SPRITE8,!fb->rec);
+    blit8(fb, s, x, y, h < 2 * s->h ? h : 2 * s->h, 1, lut, key);
 }

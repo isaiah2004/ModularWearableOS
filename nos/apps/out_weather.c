@@ -21,8 +21,14 @@
  * is ONE damage command keyed by (condition, frame, scale). The loop plays twice on
  * open / tap / a new condition, then rests on its last frame, so the screen goes idle.
  * Per-dot work avoids libm: fast sqrt, a precomputed cloud, rows outside the stripe
- * skipped before any shape maths. */
+ * skipped before any shape maths.
+ *
+ * Motion (docs/MOTION30.html): the icon loops are decorative (every dot < 2 px a frame,
+ * AA dots at float positions); pages snap on the engine's pixel springs; a data swap is
+ * 4 frames out + 4 in on the perceptual ink levels (the temperature morphs across both);
+ * the scrollbar comes in over 3 frames and leaves over 6, no exponential tail. */
 #include "nos.h"
+#include "pblur.h"
 #include "ui.h"
 #include "dot.h"
 #include "motion.h"
@@ -30,6 +36,8 @@
 #include "hal_ext.h"
 #include "prefs.h"
 #include "apps/nos_apps.h"
+#include "scroll_diag.h"
+#include "diag_log.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -39,17 +47,18 @@
 #define LOOP  120                 /* frames per animation loop (4 s) */
 #define REST  (2 * LOOP - 1)      /* two loops, then hold (storm flash is off here) */
 #define GRID  7.0f                /* one dot pitch for every icon */
-#define SWAP_S 0.15f              /* each half of a data crossfade (out, then in) */
+#define SWAP_S M_FRAMES(4)        /* each half of a data crossfade (out, then in) */
+#define BAR_IN  M_FRAMES(3)       /* scrollbar fade in / out */
+#define BAR_OUT M_FRAMES(6)
 
 /* ------------------------------------------------------------- helpers */
 static int rows_hit(const gfx_fb *fb, float y0, float y1)
 {
-    if (fb->rec) return 1;
+    if (fb->rec && fb->h==GFX_H) return 1;
     float lo = (float)(fb->y_base - fb->oy), hi = lo + (float)fb->h;
     return y1 >= lo && y0 < hi;
 }
 static float lsin(int f, int period, float phase) { return gfx_fast_sin(2 * PI_F * ((float)(f % period) / period + phase)); }
-static float q8(float k) { return floorf(m_clamp(k, 0, 1) * 8.0f + 0.5f) / 8.0f; }
 static uint16_t fadec(uint16_t c, float k) { return k >= 1.0f ? c : ui_mix(C_BG, c, k); }
 
 /* ------------------------------------------------------------- dot weather icons
@@ -291,6 +300,9 @@ static const svc_weather_t *wx_data(void)
                                          "Snow", "Fog", "Windy", "Clear night" };
             svc_weather_t *d = &s_demo;
             d->valid = 1; d->cond = demo;
+            d->source = 2; d->updated_epoch = (uint32_t)hal_epoch_seconds();
+            if (!d->updated_epoch) d->updated_epoch = 1792569600u;
+            d->utc_offset_seconds = nos_prefs.tz_min * 60;
             d->temp_c = demo == WX_SNOW ? -2 : 24; d->feels_c = d->temp_c + 2;
             d->hi_c = d->temp_c + 3; d->lo_c = d->temp_c - 6;
             snprintf(d->text, sizeof d->text, "%s", txt[demo]);
@@ -300,6 +312,7 @@ static const svc_weather_t *wx_data(void)
             for (int i = 0; i < 12; i++) {
                 d->hours_c[i] = d->temp_c + 3.0f * gfx_fast_sin((i - 3) * 0.45f);
                 d->hours_cond[i] = i < 3 ? d->cond : i < 6 ? WX_PARTLY : i < 9 ? WX_CLOUDY : WX_NIGHT;
+                d->hours_epoch[i] = (int64_t)(d->updated_epoch / 3600 + 1 + i) * 3600;
             }
             d->ndays = 5;
             static const int dc[5] = { WX_PARTLY, WX_RAIN, WX_STORM, WX_CLOUDY, WX_CLEAR };
@@ -307,6 +320,8 @@ static const svc_weather_t *wx_data(void)
                 d->days[i].hi = d->hi_c + (float)((i * 7) % 5 - 2);
                 d->days[i].lo = d->lo_c + (float)((i * 3) % 4 - 1);
                 d->days[i].cond = i == 0 ? d->cond : dc[i];
+                d->days_epoch[i] = ((int64_t)d->updated_epoch + d->utc_offset_seconds) / 86400 * 86400 -
+                                   d->utc_offset_seconds + i * 86400;
             }
         }
     }
@@ -322,21 +337,81 @@ enum { WS_OK = 0, WS_UPDATING, WS_NODATA, WS_NOCONN };
 typedef struct { int ws; int phone; svc_weather_t d; } wview;
 static wview s_cur, s_prev;
 static int s_have_view;
-static float s_swap_t = -10;
-static float s_conn_since = -1;
+static nos_time_t s_swap_t = -10;
+static nos_time_t s_conn_since = -1;
 static unsigned s_cond_ver;          /* bumps on a new condition: the icon loop replays */
 static uint32_t s_view_frame;
+
+static int64_t wx_local_day(int64_t epoch, int offset)
+{
+    int64_t local = epoch + offset;
+    return local >= 0 ? local / 86400 : (local - 86399) / 86400;
+}
+
+/* Curate a cached snapshot against acquisition epochs, never against row numbers. */
+static void wx_prepare(svc_weather_t *out, const svc_weather_t *in)
+{
+    *out = *in;
+    int64_t now = (int64_t)hal_epoch_seconds();
+    if (now && out->updated_epoch && now >= out->updated_epoch) {
+        uint64_t age = (uint64_t)(now - out->updated_epoch);
+        if (age > out->age_seconds) out->age_seconds = age > UINT32_MAX ? UINT32_MAX : (uint32_t)age;
+    }
+    if (out->age_seconds >= 3600) out->stale = 1;
+    int n = 0;
+    for (int i = 0; i < in->nhours && i < 12; i++) {
+        if (in->hours_epoch[i] <= 0 || (now && in->hours_epoch[i] < now)) continue;
+        out->hours_c[n] = in->hours_c[i]; out->hours_cond[n] = in->hours_cond[i];
+        out->hours_epoch[n++] = in->hours_epoch[i];
+    }
+    out->nhours = n; n = 0;
+    for (int i = 0; i < in->ndays && i < 5; i++) {
+        if (in->days_epoch[i] <= 0 || (now && wx_local_day(in->days_epoch[i], in->utc_offset_seconds) <
+            wx_local_day(now, in->utc_offset_seconds))) continue;
+        out->days[n] = in->days[i]; out->days_epoch[n++] = in->days_epoch[i];
+    }
+    out->ndays = n;
+}
+
+static void wx_hour_label(const svc_weather_t *w, int i, char *out, int n)
+{
+    int64_t local = w->hours_epoch[i] + w->utc_offset_seconds;
+    int seconds = (int)((local % 86400 + 86400) % 86400);
+    snprintf(out, (size_t)n, "%02d:%02d", seconds / 3600, seconds / 60 % 60);
+}
+
+static const char *wx_day_label(const svc_weather_t *w, int i)
+{
+    int64_t day = wx_local_day(w->days_epoch[i], w->utc_offset_seconds);
+    int64_t now = (int64_t)hal_epoch_seconds();
+    if (now && day == wx_local_day(now, w->utc_offset_seconds)) return "TODAY";
+    return ui_weekday3((int)((day + 4) % 7 + 7) % 7);
+}
+
+static void wx_age_label(const svc_weather_t *w, char *out, int n)
+{
+    const char *state = w->fetching ? "UPDATING" : w->stale ? "STALE" : w->source == 1 ? "PHONE" : "WI-FI";
+    unsigned age = w->age_seconds;
+    if (!w->updated_epoch && !age) snprintf(out, (size_t)n, "%s / AGE UNKNOWN", state);
+    else if (age >= 86400) snprintf(out, (size_t)n, "%s / %uD AGO", state, age / 86400);
+    else if (age >= 3600) snprintf(out, (size_t)n, "%s / %uH AGO", state, age / 3600);
+    else snprintf(out, (size_t)n, "%s / %uM AGO", state, age / 60);
+}
 
 static int same_data(const svc_weather_t *a, const svc_weather_t *b)
 {
     if (a->cond != b->cond || a->temp_c != b->temp_c || a->feels_c != b->feels_c || a->hi_c != b->hi_c ||
         a->lo_c != b->lo_c || a->humidity != b->humidity || a->wind_kph != b->wind_kph ||
-        strcmp(a->text, b->text) || strcmp(a->loc, b->loc) || a->nhours != b->nhours || a->ndays != b->ndays)
+        strcmp(a->text, b->text) || strcmp(a->loc, b->loc) || a->nhours != b->nhours || a->ndays != b->ndays ||
+        a->stale != b->stale || a->fetching != b->fetching || a->source != b->source ||
+        a->generation != b->generation || a->updated_epoch != b->updated_epoch ||
+        a->utc_offset_seconds != b->utc_offset_seconds || strcmp(a->status, b->status))
         return 0;
     for (int i = 0; i < a->nhours && i < 12; i++)
-        if (a->hours_c[i] != b->hours_c[i] || a->hours_cond[i] != b->hours_cond[i]) return 0;
+        if (a->hours_c[i] != b->hours_c[i] || a->hours_cond[i] != b->hours_cond[i] || a->hours_epoch[i] != b->hours_epoch[i]) return 0;
     for (int i = 0; i < a->ndays && i < 5; i++)
-        if (a->days[i].hi != b->days[i].hi || a->days[i].lo != b->days[i].lo || a->days[i].cond != b->days[i].cond) return 0;
+        if (a->days[i].hi != b->days[i].hi || a->days[i].lo != b->days[i].lo || a->days[i].cond != b->days[i].cond ||
+            a->days_epoch[i] != b->days_epoch[i]) return 0;
     return 1;
 }
 /* Ticked by the app and the widget; only the first call in a frame works. */
@@ -344,17 +419,33 @@ static void wx_view_tick(void)
 {
     if (s_view_frame == nos_frame + 1u) return;
     s_view_frame = nos_frame + 1u;
-    const svc_weather_t *w = wx_data();
+    static svc_weather_t prepared;
+    wx_prepare(&prepared, wx_data());
+    const svc_weather_t *w = &prepared;
     const svc_sys_t *s = svc_sys();
     int ws;
     if (w->valid) ws = WS_OK;
+    else if (w->fetching) ws = WS_UPDATING;
     else if (!(s->phone_connected || s->wifi_up)) { s_conn_since = -1; ws = WS_NOCONN; }
     else {
         if (s_conn_since < 0) s_conn_since = nos_t;
         ws = nos_t - s_conn_since < 30.0f ? WS_UPDATING : WS_NODATA;
     }
+    /* One record per acquisition/state edge, never per age tick or rendered stripe.
+     * Source is 0 none / 1 phone / 2 Wi-Fi. Text/location/payload hashes stay private. */
+    if (!s_have_view || ws != s_cur.ws || w->source != s_cur.d.source ||
+        w->generation != s_cur.d.generation || w->stale != s_cur.d.stale ||
+        w->fetching != s_cur.d.fetching) {
+        uint32_t request = diag_action_request(DIAG_DOMAIN_WEATHER, DIAG_ACT_RECEIVE, (int32_t)w->generation);
+        diag_action_context(request, w->source, w->age_seconds > 0x7fffffffu ? 0x7fffffff : (int32_t)w->age_seconds);
+        diag_action_result(request, w->valid ? (w->stale ? DIAG_RESULT_STALE : DIAG_RESULT_SUCCESS) :
+                           w->fetching || ws == WS_UPDATING ? DIAG_RESULT_PENDING : DIAG_RESULT_FAILED,
+                           ws | (!!w->stale << 8) | (!!w->fetching << 9));
+    }
     int phone = ws != WS_OK && s->phone_connected;     /* only the empty copy depends on it */
-    if (s_have_view && ws == s_cur.ws && phone == s_cur.phone && (ws != WS_OK || same_data(w, &s_cur.d))) return;
+    if (s_have_view && ws == s_cur.ws && phone == s_cur.phone && same_data(w, &s_cur.d)) {
+        s_cur.d.age_seconds = w->age_seconds; return;
+    }
     if (s_have_view) {
         /* a change during a running swap retargets it without a pop: while the old view
          * is still going out only the incoming side changes; once the new one is coming
@@ -363,11 +454,12 @@ static void wx_view_tick(void)
         if (u >= SWAP_S) {
             float kin = u < 2 * SWAP_S ? (u - SWAP_S) / SWAP_S : 1;
             memcpy(&s_prev, &s_cur, sizeof s_prev);
-            s_swap_t = nos_t - SWAP_S * (1 - kin);
+            float lead = SWAP_S * (1 - kin) + M_FRAMES(1) < SWAP_S ? M_FRAMES(1) : 0;   /* this frame already fades */
+            s_swap_t = nos_t - SWAP_S * (1 - kin) - lead;
         }
     }
     s_cur.ws = ws; s_cur.phone = phone;
-    if (ws == WS_OK) memcpy(&s_cur.d, w, sizeof s_cur.d);
+    memcpy(&s_cur.d, w, sizeof s_cur.d);
     if (ws == WS_OK && (!s_have_view || s_prev.ws != WS_OK || s_prev.d.cond != w->cond)) s_cond_ver++;
     s_have_view = 1;
 }
@@ -377,8 +469,8 @@ static int swap_side(float *k)
 {
     float u = nos_t - s_swap_t;
     if (u >= 2 * SWAP_S) { *k = 1; return 1; }
-    if (u < SWAP_S) { *k = q8(1 - u / SWAP_S); return 0; }
-    *k = q8((u - SWAP_S) / SWAP_S);
+    if (u < SWAP_S) { *k = m_ink(1 - u / SWAP_S); return 0; }
+    *k = m_ink((u - SWAP_S) / SWAP_S);
     return 1;
 }
 
@@ -403,6 +495,7 @@ static int empty_icon(int ws) { return ws == WS_NOCONN ? DOT_ICON_BT : DOT_ICON_
 static const char *empty_head(int ws) { return ws == WS_NOCONN ? "Phone not connected" : "No weather yet"; }
 static const char *empty_body(const wview *v)
 {
+    if (v->d.status[0]) return v->d.status;
     if (v->ws == WS_NOCONN) return "Pair in Gadgetbridge as Bangle.js NOS";
     return v->phone ? "Your phone sends it" : "It comes over Wi-Fi";   /* one line: the state sits at y 340 */
 }
@@ -481,6 +574,8 @@ static void draw_glance(gfx_fb *fb, const svc_weather_t *w, float scroll, float 
     fmt_hl(t, sizeof t, w);
     if (OTH) fmt_hl(o, sizeof o, OTH);
     ui_label(fb, UI_CX, 324, t, fadec(tcol(C_SEC, t, OTH ? o : 0), TG), UI_CENTER);
+    wx_age_label(w, t, sizeof t);
+    ui_label(fb, UI_CX, 346, t, fadec(C_DIS, TG), UI_CENTER);
 }
 
 /* ------------------------------------------------------------- app state */
@@ -493,13 +588,14 @@ static int s_widget_frame;
 static struct {
     int frame;
     unsigned cond_ver;
-    float t0;
+    nos_time_t t0;
     mscroll sc;
     int dragging, touched;
-    float bar_alpha, bar_t;
+    nos_time_t bar_t; float bar_alpha, bar_k;   /* bar_k: linear fade progress, bar_alpha = its ink */
     int page;
-    int hour_now, wday;
     int strap_ok; float strap_c;
+    float band_prev;                 /* fling blur: last frame's drawn offset */
+    int band_lv;                     /* fling blur: this frame's level (0 = draw live) */
 } W;
 
 static void weather_enter(void)
@@ -514,6 +610,8 @@ static void weather_enter(void)
     W.cond_ver = s_cond_ver;
 }
 
+static void band_tick(float dt);
+
 static void weather_tick(float dt)
 {
     wx_view_tick();
@@ -524,17 +622,21 @@ static void weather_tick(float dt)
     if (pg < 0) pg = 0;
     if (pg > NPAGES - 1) pg = NPAGES - 1;
     if (pg != W.page) { W.page = pg; nos_feedback(FB_TICK); }
-    float target = nos_t - W.bar_t < 0.6f ? 1.0f : 0.0f;
-    W.bar_alpha += (target - W.bar_alpha) * m_clamp(dt * (target > W.bar_alpha ? 10.0f : 4.0f), 0, 1);
-    if (W.bar_alpha < 0.03f) W.bar_alpha = 0;
-    W.bar_alpha = floorf(W.bar_alpha * 16.0f + 0.5f) / 16.0f;
-    hal_datetime dtm;
-    hal_get_datetime(&dtm);
-    W.hour_now = dtm.hour;
-    W.wday = dtm.weekday;
+    /* the scrollbar: in over 3 frames, held 0.6 s after the last move, out over 6 */
+    if (nos_t - W.bar_t < 0.6f) W.bar_k = fminf(1.0f, W.bar_k + dt / BAR_IN);
+    else W.bar_k = fmaxf(0.0f, W.bar_k - dt / BAR_OUT);
+    W.bar_alpha = m_ink(W.bar_k);
     hal_env e;
-    W.strap_ok = (hal_ext_present() & EXT_ENV) && hal_env_get(&e) && e.valid;
+    W.strap_ok = (hal_ext_present() & EXT_ENV) && hal_env_get(&e) && e.valid && isfinite(e.temp_c);
     W.strap_c = W.strap_ok ? e.temp_c : 0;
+    band_tick(dt);
+#ifdef GFX_COST_MODEL
+    /* motion audit: the page scroll, the scrollbar's fade, a running data swap */
+    nos_motion_probe("weather.scroll", W.sc.dragging ? MC_FINGER : MC_MOMENTUM, floorf(W.sc.x + 0.5f));
+    nos_motion_probe("weather.bar.ink", MC_FADE, W.bar_alpha * 100.0f);
+    if (swapping()) { float k; int side = swap_side(&k); nos_motion_probe("weather.swap.ink", MC_FADE, (side ? k : -k) * 100.0f); }
+    nos_motion_probe("weather.icon.drift", MC_DECORATIVE, 3.0f * lsin(W.frame, LOOP, 0));
+#endif
 }
 
 static float build(void) { return m_clamp((nos_t - W.t0) / UI_ENTRY_S, 0, 1); }
@@ -550,10 +652,10 @@ static void fmt_facts(const svc_weather_t *w, char v[3][16], const char **unit)
     } else { snprintf(v[2], 16, UI_NONE); *unit = 0; }
 }
 
-static void draw_now(gfx_fb *fb, const svc_weather_t *w, float scroll, float g)
+static void draw_now(gfx_fb *fb, const svc_weather_t *w, float scroll, float g, int frame)
 {
     char t[40];
-    draw_glance(fb, w, scroll, g, W.frame);
+    draw_glance(fb, w, scroll, g, frame);
     char v[3][16], ov[3][16];
     const char *unit, *ounit = 0;
     fmt_facts(w, v, &unit);
@@ -597,7 +699,7 @@ static void draw_hours(gfx_fb *fb, const svc_weather_t *w)
         if (!rows_hit(fb, (float)yc - 60, (float)yc + 60)) continue;
         int oi = OTH && i < OTH->nhours && i < 12;
         char t[8], o[8];
-        snprintf(t, sizeof t, "%02d", (W.hour_now + 1 + i) % 24);
+        wx_hour_label(w, i, t, sizeof t);
         ui_label(fb, x, yc - 36, t, C_DIS, UI_CENTER);
         wx_icon(fb, w->hours_cond[i], (float)x, (float)yc + 2, 0.46f,
                 icon_g(1, w->hours_cond[i], oi ? &OTH->hours_cond[i] : 0), REST);   /* the hero's icons, frozen */
@@ -631,7 +733,7 @@ static void draw_days(gfx_fb *fb, const svc_weather_t *w)
         int oi = OTH && i < OTH->ndays && i < 5;
         /* a day whose numbers change fades as a whole (its bar moves) */
         float k = oi && OTH->days[i].hi == w->days[i].hi && OTH->days[i].lo == w->days[i].lo ? 1.0f : SK;
-        ui_label(fb, 72, y + 7, i == 0 ? "TODAY" : ui_weekday3(W.wday + i), i == 0 ? C_PRI : C_SEC, UI_LEFT);
+        ui_label(fb, 72, y + 7, wx_day_label(w, i), C_SEC, UI_LEFT);
         wx_icon(fb, w->days[i].cond, 176, (float)y, 0.36f, icon_g(1, w->days[i].cond, oi ? &OTH->days[i].cond : 0), REST);
         char t[8];
         fmt_t(t, sizeof t, w->days[i].lo);
@@ -672,26 +774,104 @@ static const wview *view_side(gfx_fb *fb, float entry, float *g_out)
     return v;
 }
 
+/* ---- motion blur (ui.h): the three pages as 90 px content bands, baked with 24 px of
+ * context. Settled data can use the cache during a drag or glide, according to the
+ * shared blur policy. Swaps, empty states and entry builds stay live. The bake preserves
+ * the current hero animation frame and leaves out the page-0 title, which fades
+ * with the scroll and is drawn live on top. */
+#define BAND_H 90
+#define BAND_X0 24
+#define BAND_X1 442
+#define NBANDS ((NPAGES * PAGE_H + BAND_H - 1) / BAND_H)
+static void band_draw(gfx_fb *fb, int i, int x0, int y, int x1, int h, void *ctx)
+{
+    (void)x0; (void)x1; (void)ctx;
+    const svc_weather_t *w = &s_cur.d;
+    gfx_fb sub;
+    if (!nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, y - i * BAND_H)) return;
+    int c0 = i * BAND_H - 24, c1 = i * BAND_H + h + 24;     /* content rows this band shows */
+    const svc_weather_t *saved_oth = OTH;
+    float saved_sk = SK, saved_tg = TG;
+    OTH = 0; SK = 1; TG = 1;
+    if (c0 < PAGE_H) draw_now(&sub, w, 60.0f, 1.0f, W.frame);  /* scroll 60: no title */
+    if (c1 > PAGE_H && c0 < 2 * PAGE_H) draw_hours(&sub, w);
+    if (c1 > 2 * PAGE_H) draw_days(&sub, w);
+    OTH = saved_oth; SK = saved_sk; TG = saved_tg;
+}
+static void band_range(float off, int *i0, int *i1)
+{
+    *i0 = (int)floorf(off / BAND_H);
+    *i1 = (int)floorf((off + GFX_H) / BAND_H);
+    if (*i0 < 0) *i0 = 0;
+    if (*i1 > NBANDS - 1) *i1 = NBANDS - 1;
+}
+static void band_tick(float dt)
+{
+    float off = floorf(W.sc.x + 0.5f), fr = dt * M_FPS, st = (off - W.band_prev) / (fr > 0.5f ? fr : 1.0f);
+    W.band_prev = off;
+    int free_glide = s_have_view && s_cur.ws == WS_OK && !swapping() && build() >= 1;
+    int held = W.dragging || W.sc.dragging || !free_glide;
+    W.band_lv = 0;
+    if (!s_have_view || s_cur.ws != WS_OK) return;
+    int i0, i1;
+    band_range(off, &i0, &i1);
+    ui_fblur_tick(&W, held, st, i0, i1, NBANDS, BAND_H, BAND_X0, BAND_X1, 1, band_draw, 0);
+    W.band_lv = free_glide && ui_fblur_active(&W);
+}
+
+static void weather_live_body(gfx_fb *fb,void *ctx)
+{
+    float off=*(const float *)ctx;
+    const svc_weather_t *w=&s_cur.d;
+    gfx_fb sub;
+    if(!nos_subview(fb,&sub,0,0,GFX_W,GFX_H,0,-(int)off)) return;
+    const svc_weather_t *saved_oth=OTH;float saved_sk=SK,saved_tg=TG;
+    OTH=0;SK=1;TG=1;
+    /* scroll=60 suppresses only draw_glance's title; real placement is sub.oy.
+     * The title is rendered once, above the mixed bands, by weather_draw. */
+    if(off<PAGE_H) draw_now(&sub,w,60.0f,1.0f,W.frame);
+    if(off>0 && off<2*PAGE_H) draw_hours(&sub,w);
+    if(off>PAGE_H) draw_days(&sub,w);
+    OTH=saved_oth;SK=saved_sk;TG=saved_tg;
+}
 static void weather_draw(gfx_fb *fb)
 {
     float g = 1;
     if (!s_have_view) return;
+    if (W.band_lv) {
+        float off = floorf(W.sc.x + 0.5f);
+        int b0, b1;
+        band_range(off, &b0, &b1);
+        ui_fblur_draw_bands(fb,&W,b0,b1,-(int)off,BAND_H,0,weather_live_body,&off);
+        gfx_fb sub;
+        if(off<60 && nos_subview(fb,&sub,0,0,GFX_W,GFX_H,0,-(int)off))
+            title_k(&sub,loc_of(&s_cur.d),off,C_SEC);
+        ui_scrollbar(fb,W.sc.x,NPAGES*PAGE_H,GFX_H,W.bar_alpha);
+        return;
+    }
+
     const wview *v = view_side(fb, build(), &g);
     if (!v) return;
     const svc_weather_t *w = &v->d;
     float off = floorf(W.sc.x + 0.5f);
     gfx_fb sub;
     if (nos_subview(fb, &sub, 0, 0, GFX_W, GFX_H, 0, -(int)off)) {
-        if (off < PAGE_H) draw_now(&sub, w, off, g);
+        if (off < PAGE_H) draw_now(&sub, w, off, g, W.frame);
         if (off > 0 && off < 2 * PAGE_H) draw_hours(&sub, w);
         if (off > PAGE_H) draw_days(&sub, w);
     }
+    /* drawn live while it moves (the band cache isn't ready): the engine's blur */
+    static nos_mb_track mb;
+    float mbs = nos_mblur_step(nos_mb_track_step(&mb, off), W.dragging);
+    if (mbs > 0 && mbs < PAGE_H * 0.5f) nos_mblur_v(fb, 0, GFX_H, mbs);
     OTH = 0; SK = 1; TG = 1;
     ui_scrollbar(fb, W.sc.x, NPAGES * PAGE_H, GFX_H, W.bar_alpha);
 }
 
 static int weather_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { W.dragging = W.touched = 0; msc_jump(&W.sc, W.sc.x); return 1; }
+
     if (s_cur.ws != WS_OK) return 0;
     switch (in->type) {
     case IN_DOWN:
@@ -727,7 +907,7 @@ static int weather_input(const nos_input *in)
 const nos_screen scr_weather = { "WEATHER", weather_enter, 0, weather_tick, weather_draw, weather_input, 0 };
 
 /* ------------------------------------------------------------- widget */
-static struct { int frame; unsigned cond_ver; float t0; int down; float press_until; } G;
+static struct { int frame; unsigned cond_ver; nos_time_t t0; int down; nos_time_t press_until; } G;
 
 static void wg_tick(float dt, int visible)
 {
@@ -745,8 +925,8 @@ static void wg_draw(gfx_fb *fb)
     /* pressed: the glance sits on a flat card for as long as the finger is down
      * (at least 3 frames), the Nothing "on raised" surface */
     if (s_cur.ws == WS_OK && (G.down || nos_t < G.press_until)) ui_rrect(fb, 66, 96, 334, 250, 40, C_SURF2);
-    const wview *v = view_side(fb, wg_build(), &g);
-    if (v) draw_glance(fb, &v->d, 0, g, G.frame);
+    const wview *v = pblur_baking ? &s_cur : view_side(fb, wg_build(), &g);
+    if (v) draw_glance(fb, &v->d, 0, g, pblur_baking ? REST : G.frame);
     OTH = 0; SK = 1; TG = 1;
 }
 static void wg_press(int x, int y, int down)
@@ -763,3 +943,9 @@ static void wg_tap(int x, int y)
 }
 
 const nos_widget wg_weather = { "WEATHER", wg_tick, wg_draw, wg_tap, wg_shown, wg_press };
+
+/* UI-task diagnostic: return the actual pager state without ticking/drawing. */
+void out_weather_scroll_snapshot(nos_scroll_snapshot *s)
+{
+    *s = (nos_scroll_snapshot){ 3, 2, W.page, NPAGES, W.dragging || W.sc.dragging, W.sc.x, W.sc.max };
+}

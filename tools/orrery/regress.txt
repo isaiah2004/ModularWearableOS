@@ -1,0 +1,15 @@
+face 8
+wait 1500
+set aod 1
+wait 1500
+shot r1_aod
+set aod 0
+wait 1500
+shot r2_wake_locked
+mark other_face
+face 0
+wait 1200
+hold 233 300 700
+wait 600
+expect top FACES
+log picker-on-dot-face-ok

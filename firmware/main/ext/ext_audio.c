@@ -1,3 +1,4 @@
+#include "sports.h"
 /* ext_audio.c — MAX98357A amp + INMP441 mic on ONE full-duplex I2S port.
  *
  *   IO1 BCLK, IO2 WS (shared), IO5 amp DIN, IO3 mic SD (data in), IO6 amp SD.
@@ -13,14 +14,19 @@
  * (shutdown) whenever no samples are being played, with a 60 ms tail.
  *
  * Tasks: "exta" (priority 3, PSRAM stack) pumps I2S in 4 ms blocks and is the
- * only code touching I2S. SD-card file I/O for playback/recording happens in the
- * slow "ext" task (audio_service) through PSRAM rings, so a slow card stalls
- * neither the pump nor the UI.
+ * only code touching I2S. A separate low-priority "extf" file owner processes
+ * bounded path requests and PSRAM rings, so SD latency cannot stall the shared
+ * sensor service task or the I2S pump. Files hold a mount lease until close.
  */
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include "ext_priv.h"
+#include "runtime_admission.h"
 #include "ext_sfx_synth.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
@@ -36,6 +42,7 @@
 #define REC_MAX_MS     (10 * 60 * 1000)    /* safety cap: a forgotten recorder cannot fill the card */
 #define FILE_CHUNK     2048                /* samples per SD transfer */
 #define MIC_WARMUP_MS  300                 /* INMP441 mutes ~2^18 SCK after clock start */
+#define AU_PATH_MAX 256
 
 typedef struct {
     /* rings (PSRAM) */
@@ -48,14 +55,18 @@ typedef struct {
     sfx_voice voice[2];
     int req[4]; int nreq; int stop_req;
     int volume;
-    /* playback (ext task owns the FILE) */
-    FILE *play_req, *play_f;
-    int play_req_flag, play_stop_req, playing, play_eof;
-    uint32_t play_left, play_req_left;       /* bytes of PCM still in the file */
+    /* File pointers belong exclusively to extf; callers enqueue paths only. */
+    FILE *play_f;
+    char play_path[AU_PATH_MAX],rec_path[AU_PATH_MAX],rec_temp[AU_PATH_MAX];
+    int play_req_flag,play_opening,play_stop_req,playing,play_eof,play_result;
+    int play_lease,rec_lease,close_error,file_idle;
+    uint32_t play_left;
     uint32_t play_pos;                       /* samples consumed by the pump */
     /* recording */
     FILE *rec_f;
-    int recording, rec_stop_req, rec_err;
+    int recording,rec_pending,rec_opening,rec_producing,rec_stop_req,rec_err,rec_status,rec_result;
+    uint32_t file_retry_at,io_calls,io_max_us,io_errors;
+    int last_io_op,last_errno;
     uint32_t rec_samples, rec_written, rec_drops;
     /* mic */
     uint32_t mic_last_ms, mic_start_ms;
@@ -73,14 +84,20 @@ typedef struct {
 
 static audio_state *A;
 static TaskHandle_t s_task;
+static TaskHandle_t s_file_task;
 static i2s_chan_handle_t s_tx, s_rx;
+static int s_tx_enabled,s_rx_enabled,s_audio_parked;
 
 static void wake(void) { if (s_task) xTaskNotifyGive(s_task); }
+static void file_wake(void) { if(s_file_task)xTaskNotifyGive(s_file_task); }
+static int port_down(void);
 
 /* ---------------------------------------------------------------- I2S */
 static int port_up(void)
 {
-    if (s_tx) return 1;
+    __atomic_store_n(&s_audio_parked,0,__ATOMIC_RELEASE);
+    if (A->running && s_tx && s_rx && s_tx_enabled && s_rx_enabled) return 1;
+    if((s_tx||s_rx)&&!port_down())return 0;
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
     cc.dma_desc_num = 4;
     cc.dma_frame_num = AU_BLOCK;
@@ -93,33 +110,39 @@ static int port_up(void)
                       .dout = EXT_PIN_AMP_DIN, .din = EXT_PIN_MIC_SD },
     };
     sc.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
-    if (i2s_channel_init_std_mode(s_tx, &sc) != ESP_OK || i2s_channel_init_std_mode(s_rx, &sc) != ESP_OK ||
-        i2s_channel_enable(s_tx) != ESP_OK || i2s_channel_enable(s_rx) != ESP_OK) {
-        i2s_del_channel(s_tx); i2s_del_channel(s_rx);
-        s_tx = s_rx = NULL;
-        return 0;
-    }
+    int ok=i2s_channel_init_std_mode(s_tx,&sc)==ESP_OK&&i2s_channel_init_std_mode(s_rx,&sc)==ESP_OK;
+    if(ok){ok=i2s_channel_enable(s_tx)==ESP_OK;s_tx_enabled=ok;}
+    if(ok){ok=i2s_channel_enable(s_rx)==ESP_OK;s_rx_enabled=ok;}
+    if(!ok){port_down();return 0;}
     A->running = 1; A->starts++;
     A->mic_start_ms = ext_ms();
     A->dc = 0; A->ms_avg = 0;
     return 1;
 }
 
-static void port_down(void)
+static int port_down(void)
 {
-    if (!s_tx) return;
-    gpio_set_level(EXT_PIN_AMP_SD, 0); A->amp = 0;
-    i2s_channel_disable(s_tx); i2s_channel_disable(s_rx);
-    i2s_del_channel(s_tx); i2s_del_channel(s_rx);
-    s_tx = s_rx = NULL;
-    A->running = 0;
+    if(gpio_set_level(EXT_PIN_AMP_SD,0)!=ESP_OK)return 0;
+    A->amp=0;
+    if(s_tx_enabled){if(i2s_channel_disable(s_tx)!=ESP_OK)return 0;s_tx_enabled=0;}
+    if(s_rx_enabled){if(i2s_channel_disable(s_rx)!=ESP_OK)return 0;s_rx_enabled=0;}
+    if(s_tx){if(i2s_del_channel(s_tx)!=ESP_OK)return 0;s_tx=NULL;}
+    if(s_rx){if(i2s_del_channel(s_rx)!=ESP_OK)return 0;s_rx=NULL;}
     /* Park the clocks low: no BCLK -> the mic sleeps. */
     static const int park[2] = { EXT_PIN_I2S_BCLK, EXT_PIN_I2S_WS };
     for (int i = 0; i < 2; i++) {
-        gpio_reset_pin(park[i]);                     /* detach from the I2S matrix signal */
-        gpio_set_direction(park[i], GPIO_MODE_OUTPUT);
-        gpio_set_level(park[i], 0);
+        if(gpio_reset_pin(park[i])!=ESP_OK || gpio_set_direction(park[i],GPIO_MODE_OUTPUT)!=ESP_OK ||
+           gpio_set_level(park[i],0)!=ESP_OK)return 0;
     }
+    A->running=0;
+    return 1;
+}
+static int audio_park(void)
+{
+    A->voice[0].id=A->voice[1].id=-1;
+    portENTER_CRITICAL(&ext_lock);A->nreq=0;portEXIT_CRITICAL(&ext_lock);
+    int parked=port_down();__atomic_store_n(&s_audio_parked,parked,__ATOMIC_RELEASE);
+    return parked;
 }
 
 /* ---------------------------------------------------------------- mic DSP */
@@ -153,22 +176,29 @@ static void mic_block(const int16_t *st, int n, uint32_t now)
             memmove(A->wave, A->wave + 1, 31);
             A->wave[31] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
             portEXIT_CRITICAL(&ext_lock);
+            float reading[]={A->db,(float)A->wave_peak,(float)v};sports_emit(SP_MIC,reading,3);
             A->wave_peak = 0; A->wave_cnt = 0;
         }
     }
-    if (A->recording && !A->rec_stop_req && warm) {
+    portENTER_CRITICAL(&ext_lock);
+    int capture=A->recording&&!A->rec_stop_req&&warm&&!ext_shutdown_requested();
+    if(capture)A->rec_producing=1;
+    portEXIT_CRITICAL(&ext_lock);
+    if (capture) {
         uint32_t head, tail;
         portENTER_CRITICAL(&ext_lock);
         head = A->rec_head; tail = A->rec_tail;
         portEXIT_CRITICAL(&ext_lock);
-        if (REC_RING - (head - tail) < (uint32_t)n) { A->rec_drops += n; }
+        if (REC_RING - (head - tail) < (uint32_t)n) {
+            portENTER_CRITICAL(&ext_lock);A->rec_drops+=n;A->rec_err=1;A->rec_stop_req=1;portEXIT_CRITICAL(&ext_lock);
+        }
         else {
             for (int i = 0; i < n; i++) A->rec[(head + i) % REC_RING] = mono[i];
             portENTER_CRITICAL(&ext_lock);
             A->rec_head = head + n;
             portEXIT_CRITICAL(&ext_lock);
         }
-        A->rec_samples += n;
+        portENTER_CRITICAL(&ext_lock);A->rec_samples+=n;A->rec_producing=0;portEXIT_CRITICAL(&ext_lock);
     }
 }
 
@@ -180,7 +210,7 @@ static void mic_probe(void)
     int32_t mn[2] = { 32767, 32767 }, mx[2] = { -32768, -32768 };
     if (!port_up()) return;
     uint32_t t0 = ext_ms();
-    while ((uint32_t)(ext_ms() - t0) < 650) {
+    while (ext_elapsed(ext_ms(),t0) < 650 && !ext_shutdown_requested()) {
         size_t got = 0;
         memset(buf, 0, sizeof buf);
         i2s_channel_write(s_tx, buf, sizeof buf, &got, 50);
@@ -266,6 +296,10 @@ static void audio_task(void *arg)
     mic_probe();
     for (;;) {
         uint32_t now = ext_ms();
+        if(ext_shutdown_requested()) {
+            audio_park();
+            ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(100));continue;
+        }
         if (!need(now)) {
             port_down();
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -289,105 +323,8 @@ static void audio_task(void *arg)
     }
 }
 
-/* ---------------------------------------------------------------- file I/O (ext task) */
-static void wav_header(FILE *f, uint32_t data_bytes)
-{
-    uint8_t h[44];
-    uint32_t v;
-    memcpy(h, "RIFF", 4); v = 36 + data_bytes; memcpy(h + 4, &v, 4);
-    memcpy(h + 8, "WAVEfmt ", 8); v = 16; memcpy(h + 16, &v, 4);
-    uint16_t fmt[2] = { 1, 1 }; memcpy(h + 20, fmt, 4);                 /* PCM, mono */
-    v = AU_FS; memcpy(h + 24, &v, 4); v = AU_FS * 2; memcpy(h + 28, &v, 4);
-    uint16_t ba[2] = { 2, 16 }; memcpy(h + 32, ba, 4);
-    memcpy(h + 36, "data", 4); memcpy(h + 40, &data_bytes, 4);
-    fwrite(h, 1, sizeof h, f);
-}
-
-static void play_close(void)
-{
-    if (A->play_f) fclose(A->play_f);
-    A->play_f = NULL;
-}
-
-uint32_t audio_service(uint32_t now)
-{
-    if (!A) return 1000;
-    uint32_t wait = 200;
-    /* ---- playback */
-    FILE *req = NULL; int stop;
-    portENTER_CRITICAL(&ext_lock);
-    if (A->play_req_flag) { req = A->play_req; A->play_req = NULL; A->play_req_flag = 0; }
-    stop = A->play_stop_req; A->play_stop_req = 0;
-    portEXIT_CRITICAL(&ext_lock);
-    if (stop || req) {
-        play_close();
-        portENTER_CRITICAL(&ext_lock);
-        A->pcm_gen++; A->pcm_head = A->pcm_tail = 0; A->play_pos = 0;
-        A->playing = 0; A->play_eof = 1;
-        portEXIT_CRITICAL(&ext_lock);
-    }
-    if (req) {
-        /* hal_audio_play_file already validated the header and positioned the file
-         * at the PCM data; play_left was set there. */
-        A->play_f = req;
-        A->play_left = A->play_req_left;
-        portENTER_CRITICAL(&ext_lock);
-        A->play_eof = 0; A->playing = 1;
-        portEXIT_CRITICAL(&ext_lock);
-        wake();
-    }
-    if (A->play_f) {
-        uint32_t head, tail;
-        portENTER_CRITICAL(&ext_lock);
-        head = A->pcm_head; tail = A->pcm_tail;
-        portEXIT_CRITICAL(&ext_lock);
-        uint32_t room = PCM_RING - (head - tail);
-        if (room >= FILE_CHUNK) {
-            uint32_t want = A->play_left / 2 < FILE_CHUNK ? A->play_left / 2 : FILE_CHUNK;
-            size_t got = want ? fread(A->chunk, 2, want, A->play_f) : 0;
-            for (size_t i = 0; i < got; i++) A->pcm[(head + i) % PCM_RING] = A->chunk[i];
-            A->play_left -= (uint32_t)got * 2;
-            portENTER_CRITICAL(&ext_lock);
-            A->pcm_head = head + (uint32_t)got;
-            if (!got) A->play_eof = 1;
-            portEXIT_CRITICAL(&ext_lock);
-            if (!got) play_close();
-            wait = 20;
-        } else wait = 60;
-    }
-    /* ---- recording */
-    if (A->rec_f) {
-        uint32_t head, tail;
-        portENTER_CRITICAL(&ext_lock);
-        head = A->rec_head; tail = A->rec_tail;
-        portEXIT_CRITICAL(&ext_lock);
-        uint32_t avail = head - tail;
-        int stopping = A->rec_stop_req || A->rec_err || A->rec_samples >= (uint32_t)REC_MAX_MS * (AU_FS / 1000);
-        while (avail >= FILE_CHUNK || (stopping && avail)) {
-            uint32_t n = avail < FILE_CHUNK ? avail : FILE_CHUNK;
-            for (uint32_t i = 0; i < n; i++) A->chunk[i] = A->rec[(tail + i) % REC_RING];
-            if (fwrite(A->chunk, 2, n, A->rec_f) != n) { A->rec_err = 1; stopping = 1; }
-            A->rec_written += n;
-            tail += n; avail -= n;
-            portENTER_CRITICAL(&ext_lock);
-            A->rec_tail = tail;
-            portEXIT_CRITICAL(&ext_lock);
-            if (A->rec_err) break;
-        }
-        if (stopping) {
-            uint32_t bytes = A->rec_written * 2;
-            if (fseek(A->rec_f, 0, SEEK_SET) == 0) wav_header(A->rec_f, bytes);
-            fclose(A->rec_f);
-            A->rec_f = NULL;
-            portENTER_CRITICAL(&ext_lock);
-            A->recording = 0; A->rec_stop_req = 0;
-            portEXIT_CRITICAL(&ext_lock);
-        }
-        wait = 50;
-    }
-    (void)now;
-    return wait;
-}
+/* Dedicated bounded file owner; never called by the sensor task. */
+#include "ext_audio_files.inc"
 
 /* ---------------------------------------------------------------- API */
 void audio_init(void)
@@ -402,12 +339,17 @@ void audio_init(void)
     A->play_eof = 1;
     A->mic_last_ms = ext_ms() - NOS_EXT_IDLE_MS - 1;
     A->need_until = ext_ms();
+    A->file_idle=1;A->rec_result=HAL_REC_DONE;A->play_result=1;
     ext_present_bits |= EXT_SPEAKER;                 /* cannot be probed; default on */
     if (xTaskCreatePinnedToCoreWithCaps(audio_task, "exta", 4096, NULL, 3, &s_task,
                                         tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS) {
         s_task = NULL;
         ext_present_bits &= ~(uint32_t)(EXT_SPEAKER | EXT_MIC);
     }
+    nos_mem_external("audio_task_stack", 4096, s_task != NULL);
+    if(xTaskCreatePinnedToCoreWithCaps(audio_file_task,"extf",4096,NULL,0,&s_file_task,
+                                     tskNO_AFFINITY,MALLOC_CAP_SPIRAM)!=pdPASS)s_file_task=NULL;
+    nos_mem_external("audio_file_task_stack",4096,s_file_task!=NULL);
 }
 
 UBaseType_t audio_stack_free(void) { return s_task ? uxTaskGetStackHighWaterMark(s_task) : 0; }
@@ -415,7 +357,7 @@ int audio_amp_on(void) { return A && A->amp; }
 
 void hal_sfx(int id)
 {
-    if (!A || !s_task || id < 0 || id >= SFX_NRECIPES || !A->volume) return;
+    if (!A || !s_task || id < 0 || id >= SFX_NRECIPES || !A->volume || ext_shutdown_requested()) return;
     portENTER_CRITICAL(&ext_lock);
     if (A->nreq < 4) A->req[A->nreq++] = id;
     portEXIT_CRITICAL(&ext_lock);
@@ -431,95 +373,94 @@ void hal_sfx_stop(void)
 }
 void hal_audio_volume(int pct) { if (A) A->volume = pct < 0 ? 0 : pct > 100 ? 100 : pct; }
 
-/* Accepts a 16 kHz mono 16-bit WAV (header parsed, "data" chunk located) or a
- * headerless .pcm/.raw file of the same format. */
+/* Queue a copied path; validation and opening happen on extf. */
 int hal_audio_play_file(const char *path)
 {
-    if (!A || !s_task || !path) return 0;
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
-    uint8_t h[12];
-    uint32_t data = 0;
-    fseek(f, 0, SEEK_END); long size = ftell(f); fseek(f, 0, SEEK_SET);
-    if (size > 12 && fread(h, 1, 12, f) == 12 && !memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4)) {
-        uint8_t ch[8];
-        int ok = 0;
-        while (fread(ch, 1, 8, f) == 8) {
-            uint32_t len; memcpy(&len, ch + 4, 4);
-            if (!memcmp(ch, "fmt ", 4)) {
-                uint8_t fm[16];
-                if (len < 16 || fread(fm, 1, 16, f) != 16) break;
-                uint16_t fmt, chn, bits; uint32_t rate;
-                memcpy(&fmt, fm, 2); memcpy(&chn, fm + 2, 2); memcpy(&rate, fm + 4, 4); memcpy(&bits, fm + 14, 2);
-                if (fmt != 1 || chn != 1 || bits != 16 || rate != AU_FS) break;
-                fseek(f, (long)(len - 16 + (len & 1)), SEEK_CUR);
-            } else if (!memcmp(ch, "data", 4)) { data = len; ok = 1; break; }
-            else fseek(f, (long)(len + (len & 1)), SEEK_CUR);
-        }
-        if (!ok) { fclose(f); return 0; }
-    } else {
-        fseek(f, 0, SEEK_SET);
-        data = (uint32_t)(size > 0 ? size : 0);
-    }
+    if(!A||!s_task||!s_file_task||!path||!*path||strlen(path)>=AU_PATH_MAX||ext_shutdown_requested()||
+       !nos_runtime_recording_allowed())return 0;
     portENTER_CRITICAL(&ext_lock);
-    FILE *old = A->play_req_flag ? A->play_req : NULL;
-    A->play_req = f; A->play_req_flag = 1; A->play_req_left = data;
-    portEXIT_CRITICAL(&ext_lock);
-    if (old) fclose(old);
-    return 1;
+    if(A->play_req_flag||A->close_error||ext_shutdown_requested()||!nos_runtime_recording_allowed()){portEXIT_CRITICAL(&ext_lock);return 0;}
+    snprintf(A->play_path,sizeof A->play_path,"%s",path);A->play_req_flag=1;A->play_result=0;
+    portEXIT_CRITICAL(&ext_lock);file_wake();return 1;
 }
-int  hal_audio_playing(void) { return A && (A->playing || A->play_req_flag); }
-uint32_t hal_audio_play_pos_ms(void) { return A ? A->play_pos / (AU_FS / 1000) : 0; }
+int hal_audio_playing(void)
+{
+    if(!A)return 0;
+    int playing;
+    portENTER_CRITICAL(&ext_lock);playing=A->playing||A->play_req_flag||A->play_opening;portEXIT_CRITICAL(&ext_lock);
+    return playing;
+}
+int hal_audio_play_result(void)
+{
+    if(!A)return -1;
+    portENTER_CRITICAL(&ext_lock);int result=A->play_result;
+    if(result==0&&!A->playing&&!A->play_req_flag&&!A->play_opening)result=1;
+    portEXIT_CRITICAL(&ext_lock);return result;
+}
+uint32_t hal_audio_play_pos_ms(void){return A?A->play_pos/(AU_FS/1000):0;}
 void hal_audio_play_stop(void)
 {
-    if (!A) return;
-    portENTER_CRITICAL(&ext_lock);
-    A->play_stop_req = 1;
-    portEXIT_CRITICAL(&ext_lock);
+    if(!A)return;
+    portENTER_CRITICAL(&ext_lock);A->play_stop_req=1;portEXIT_CRITICAL(&ext_lock);file_wake();
 }
-
 float hal_mic_db(void)
 {
-    if (!A || !A->mic_ok) return -1.0f;
-    A->mic_last_ms = ext_ms();
-    if (!A->running) wake();
-    return A->db;
+    if(!A||!A->mic_ok||ext_shutdown_requested())return -1;
+    A->mic_last_ms=ext_ms();if(!A->running)wake();return A->db;
 }
 int hal_mic_wave(uint8_t out[32])
 {
-    if (!A || !A->mic_ok) return 0;
-    A->mic_last_ms = ext_ms();
-    if (!A->running) wake();
-    portENTER_CRITICAL(&ext_lock);
-    memcpy(out, A->wave, 32);
-    portEXIT_CRITICAL(&ext_lock);
-    return 32;
+    if(!A||!A->mic_ok||!out||ext_shutdown_requested())return 0;
+    A->mic_last_ms=ext_ms();if(!A->running)wake();
+    portENTER_CRITICAL(&ext_lock);memcpy(out,A->wave,32);portEXIT_CRITICAL(&ext_lock);return 32;
 }
-int hal_rec_start(const char *path)
+int hal_rec_start_exclusive(const char *path)
 {
-    if (!A || !A->mic_ok || !path || A->recording) return 0;
-    FILE *f = fopen(path, "wb");
-    if (!f) return 0;
-    wav_header(f, 0);
+    if(!A||!s_task||!s_file_task||!A->mic_ok||!path||!*path||strlen(path)>=AU_PATH_MAX-6||ext_shutdown_requested()||
+       !nos_runtime_recording_allowed())return 0;
     portENTER_CRITICAL(&ext_lock);
-    A->rec_head = A->rec_tail = 0;
-    A->rec_samples = A->rec_written = A->rec_drops = 0;
-    A->rec_err = 0; A->rec_stop_req = 0;
-    A->rec_f = f; A->recording = 1;
-    portEXIT_CRITICAL(&ext_lock);
-    A->mic_last_ms = ext_ms();
-    wake();
-    return 1;
+    if(A->rec_status==1||A->rec_status==2||A->rec_f||A->close_error||ext_shutdown_requested()||!nos_runtime_recording_allowed()){
+        portEXIT_CRITICAL(&ext_lock);return 0;
+    }
+    snprintf(A->rec_path,sizeof A->rec_path,"%s",path);
+    A->rec_head=A->rec_tail=0;A->rec_samples=A->rec_written=A->rec_drops=0;
+    A->rec_err=A->rec_stop_req=A->rec_producing=0;A->file_retry_at=ext_ms();
+    A->rec_pending=1;A->rec_status=1;A->rec_result=HAL_REC_PENDING;
+    portEXIT_CRITICAL(&ext_lock);A->mic_last_ms=ext_ms();file_wake();return 1;
 }
+int hal_rec_start(const char *path){return hal_rec_start_exclusive(path)==1;}
 void hal_rec_stop(void)
 {
-    if (!A) return;
+    if(!A)return;
     portENTER_CRITICAL(&ext_lock);
-    if (A->recording) A->rec_stop_req = 1;
-    portEXIT_CRITICAL(&ext_lock);
+    if(A->rec_status==1||A->rec_status==2){A->rec_stop_req=1;A->rec_status=2;}
+    portEXIT_CRITICAL(&ext_lock);file_wake();
 }
-int hal_rec_active(void) { return A && A->recording && !A->rec_stop_req; }
-uint32_t hal_rec_ms(void) { return A ? A->rec_samples / (AU_FS / 1000) : 0; }
+int hal_rec_status(void)
+{
+    if(!A)return 0;
+    portENTER_CRITICAL(&ext_lock);int status=A->rec_status;portEXIT_CRITICAL(&ext_lock);return status;
+}
+int hal_rec_result(void)
+{
+    if(!A)return HAL_REC_ERROR;
+    portENTER_CRITICAL(&ext_lock);int result=A->rec_result;portEXIT_CRITICAL(&ext_lock);return result;
+}
+int hal_rec_active(void){int status=hal_rec_status();return status==1||status==2;}
+uint32_t hal_rec_ms(void){return A?A->rec_samples/(AU_FS/1000):0;}
+int audio_shutdown_poll(uint32_t now)
+{
+    (void)now;
+    if(!A)return 1;
+    hal_sfx_stop();hal_audio_play_stop();hal_rec_stop();wake();file_wake();
+    if(!s_task)audio_park();
+    portENTER_CRITICAL(&ext_lock);
+    int idle=A->file_idle&&!A->playing&&!A->recording&&!A->play_req_flag&&!A->play_opening&&!A->rec_pending&&!A->rec_opening;
+    int error=A->close_error;
+    portEXIT_CRITICAL(&ext_lock);
+    if(error)return -1;
+    return idle&&__atomic_load_n(&s_audio_parked,__ATOMIC_ACQUIRE)?1:0;
+}
 
 void audio_debug(void)
 {
@@ -530,4 +471,9 @@ void audio_debug(void)
     printf("EXT mic ok=%d slot=%d db=%.1f | play=%d pos=%ums | rec=%d %ums written=%u drops=%u err=%d\n",
            A->mic_ok, A->mic_slot, (double)A->db, A->playing, (unsigned)hal_audio_play_pos_ms(),
            A->recording, (unsigned)hal_rec_ms(), (unsigned)A->rec_written, (unsigned)A->rec_drops, A->rec_err);
+    printf("EXT audio_fs task=%d stack_free=%u pending=%d/%d rec_status=%d result=%d leases=%d/%d close_error=%d io_calls=%u io_max_us=%u io_errors=%u last_op=%d errno=%d parked=%d\n",
+           s_file_task!=NULL,s_file_task?(unsigned)uxTaskGetStackHighWaterMark(s_file_task):0,
+           A->play_req_flag,A->rec_pending,A->rec_status,A->rec_result,A->play_lease,A->rec_lease,A->close_error,
+           (unsigned)A->io_calls,(unsigned)A->io_max_us,(unsigned)A->io_errors,A->last_io_op,A->last_errno,
+           __atomic_load_n(&s_audio_parked,__ATOMIC_ACQUIRE));
 }

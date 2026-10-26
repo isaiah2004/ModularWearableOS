@@ -364,7 +364,7 @@ struct gif_w {
     uint8_t *pbuf;
 };
 
-int gif_delay_30fps(int k) { return k % 3 == 2 ? 4 : 3; }
+int gif_delay_fps(int k, int fps) { return ((k + 1) * 100 / fps) - (k * 100 / fps); }
 
 typedef struct { FILE *f; uint8_t blk[256]; int nblk; uint32_t acc; int nacc; } lzw_out;
 static void lo_byte(lzw_out *o, uint8_t v)

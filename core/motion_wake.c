@@ -70,7 +70,8 @@ int motion_wake_update(motion_wake_state *s,const hal_imu *m,uint32_t now,int va
         if(now-s->cooldown_ms<2000)return 0;
         s->stage=MW_WAITING;
     }
-    if(linear>.65f || s->speed>280) {
+    /* a brisk look turns the wrist at 300-500 deg/s: only a real impact or a fling cancels */
+    if(linear>.9f || s->speed>600) {
         cancel(s);s->stage=MW_COOLDOWN;s->cooldown_ms=now;return 0;
     }
     if(!s->candidate) {
@@ -106,9 +107,10 @@ int motion_wake_update(motion_wake_state *s,const hal_imu *m,uint32_t now,int va
     int sufficient=s->candidate==MOTION_WAKE_TURN ?
         (s->angle>=20 && dot3(s->origin,s->gravity)<.91f) :
         (s->angle>=12 || (s->peak_linear>.12f && s->linear_ms>=100));
-    /* End in the learned reading cone (45 degrees) and hold for 160 ms.
-     * This avoids waking just because the watch happens to lie face-up. */
-    if(sufficient && s->view_dot>.7071f && linear<.12f && s->speed<32 && jitter<.055f)
+    /* End in the learned reading cone (55 degrees: a natural look tilts the face toward
+     * the eyes) and hold for 160 ms, allowing a walking arm's tremor. This avoids waking
+     * just because the watch happens to lie face-up. */
+    if(sufficient && s->view_dot>.5736f && linear<.15f && s->speed<45 && jitter<.08f)
         s->hold_ms+=elapsed;
     else s->hold_ms=0;
     if(s->hold_ms>=160) {

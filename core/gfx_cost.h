@@ -43,14 +43,34 @@ enum {
     GFX_COST_LINE,      /* 723  AA line / taper */
     GFX_COST_DIM,       /*   8  engine: transition dimming (nos.c dim_rows) */
     GFX_COST_SELECT,    /*   6  engine: iris/dissolve per-pixel layer select (composite_two) */
+    GFX_COST_ORR_WALK,  /* 1000 ns per ORRERY list visit/setup; explicit CPU proxy, not pixels */
+    GFX_COST_ORR_BUILD, /* geometry visits, once in tick when retaining drawing commands */
+    GFX_COST_ORR_INDEX, /* 250 ns: retained index fetch, x bounds and dispatch (no geometry) */
+    GFX_COST_PSRAM_WRITE, /* +56 ns/px over internal fill: total 60 ns */
+    GFX_COST_PSRAM_RMW, /* +744 ns/px read/modify/write, plus 56 ns destination write */
+    GFX_COST_ORR_CPU, /* 1 ns: face-only aggregate board calibration residual */
+    GFX_COST_ORR_PIXEL, /* 550 ns: projected integer dot stamp, round-4 board fit */
+    GFX_COST_ORR_CAPTURE, /* 5600 ns/command base, category capture fits in sim */
+    GFX_COST_ORR_BUCKET, /* 150 ns/command or stripe reference, round-4 fit */
+    GFX_COST_ORR_GEOMETRY, /* 150 ns/chunk vertex bound, provisional */
+    GFX_COST_ORR_RUN, /* 60 ns: cached coverage fetch/blend, provisional */
+    GFX_COST_ORR_LIT, /* 1100 ns: shaded pixel, interior squared-distance test */
+    GFX_COST_ORR_PRE_CPU, /* 1 ns: board capture residual, before bus overlap */
+    GFX_COST_ORR_POSTDIM, /* round-6 retained stripe scan; baseline calibration only */
+    GFX_COST_ORR_MATH, /* weighted software-double kernels; scrub-3 aggregate fit */
     GFX_COST_NCLASS
 };
 
 #ifdef GFX_COST_MODEL
+void gfx_cost_psram_edge(unsigned px);
+#define GFX_COST_PSRAM_EDGE(px) gfx_cost_psram_edge((unsigned)(px))
 void gfx_cost_add(int cls, unsigned px, int calls);   /* sim/nos_sim.c */
+void gfx_cost_orr_math_scope(int on);
+void gfx_cost_orr_math(unsigned units);
 #define GFX_COST(cls, px)    gfx_cost_add((cls), (unsigned)(px), 1)
 #define GFX_COST_PX(cls, px) gfx_cost_add((cls), (unsigned)(px), 0)
 #else
+#define GFX_COST_PSRAM_EDGE(px) ((void)(px))
 #define GFX_COST(cls, px)    ((void)(px))
 #define GFX_COST_PX(cls, px) ((void)(px))
 #endif

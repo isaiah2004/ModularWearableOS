@@ -1,0 +1,46 @@
+# Actual simulator screens for the Sports handoff gallery.
+wait 100
+set step_rate 168
+set gps_motion 3
+set hr_sample 148 0.95 1
+open workout
+wait 900
+shot select_sport
+tap 312 244
+wait 5500
+shot gps_ready
+tap 233 372
+wait 300250
+shot run_live
+tap 154 372
+wait 2000
+shot run_lap
+set nofix 1
+wait 3000
+shot run_waiting_gps
+set nofix 0
+wait 3000
+tap 312 372
+wait 500
+shot run_paused
+tap 154 372
+wait 500
+shot finish_confirmation
+tap 312 372
+wait 700
+shot run_saved
+tap 154 372
+wait 700
+shot run_details
+pop
+wait 700
+tap 312 372
+wait 700
+tap 233 410
+wait 700
+shot workout_history
+workout history 0 recorded_run
+expect workout state 3
+expect workout save 2
+expect workout history 1
+expect motionok

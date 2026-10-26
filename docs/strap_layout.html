@@ -44,7 +44,7 @@
     <button id="bWrist">Wrist</button>
     <button id="bShell">Pod shells</button>
     <button id="bWires">Wires</button>
-    <label>wrist <input id="wrist" type="number" min="140" max="230" step="5" style="width:60px"> mm</label><label><input id="audio" type="checkbox"> audio</label>
+    <label>wrist <input id="wrist" type="number" min="140" max="280" step="5" style="width:60px"> mm</label><label><input id="audio" type="checkbox"> audio</label><label><input id="gpsMod" type="checkbox"> GPS module</label>
     <button id="bTop">Top</button><button id="bSide">Side</button><button id="bUnder">Under</button>
   </div>
   <div id="legend"></div>
@@ -52,10 +52,12 @@
 <div id="side">
   <h1>Strap layout: 1.43-B watch + add-ons</h1>
   <div class="dim">All units mm. Wrist modelled as an ellipse (60:42 aspect) with the circumference set at the top left; pods are packed outward from the watch automatically. Parts are placed by arc length <i>s</i> along the strap from the top of the wrist (+ = 12 o'clock side, − = 6 o'clock side). Checks below are computed from the geometry; part sizes marked ~ are typical/unverified and should be measured.</div>
+  <div class="dim" style="margin-top:6px">Pods, 12 o'clock side: <b>navigation</b> (GPS, compass, BME280) · <b>swap pack A</b> · <b>cellular</b> (A7672S modem + call audio, on the flatter underside). 6 o'clock side: <b>interface</b> (gesture, UV, motor, NFC) · <b>audio</b> · <b>hub</b> (nRF52840: LoRa, ECG, motion-capture receiver) · <b>swap pack B</b>. Under the watch: <b>health core</b> (PPG, skin temp, EDA and ECG electrodes). Packs feed one VBAT wire through ideal diodes, so either can be pulled while the other runs the watch. Untick <i>GPS module</i> to use the modem's built-in GNSS instead.</div>
   <h2>Fit checks</h2><div id="checks"></div>
   <h2>Parts &amp; dimensions</h2><div id="parts"></div>
   <h2>Power budget (per day)</h2><div id="powerCtl"></div><div id="power"></div>
-  <h2>Cost (verified in-stock prices)</h2><div id="cost"></div>
+  <h2>Cost (prices as seen)</h2><div id="cost"></div>
+  <h2>Still to price</h2><div id="unpriced"></div>
   <h2>Wiring to the back headers</h2><div id="pins"></div>
 </div>
 
@@ -64,15 +66,16 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
-/* ---------------- options (URL: ?wrist=170&audio=0) ---------------- */
+/* ---------------- options (URL: ?wrist=230&audio=0&gps=0) ---------------- */
 const Q = new URLSearchParams(location.search);
-const WRIST = +(Q.get('wrist') || 170);          // wrist circumference, mm
+const WRIST = +(Q.get('wrist') || 230);          // wrist circumference, mm
 const AUDIO = Q.get('audio') !== '0';             // mic + amp + speaker on the watch
+const GPS = Q.get('gps') !== '0';                 // HGLRC M100 module; off = use the A7672S-FASE built-in GNSS
 
 /* ---------------- wrist + strap geometry ---------------- */
 const STRAP_T = 2.0;             // flexible strap base thickness
 const STRAP_W = 26;              // strap width (z, along the forearm)
-const CRADLE_H = 7.5;            // carrier under the watch case (holds cell A + header plugs)
+const CRADLE_H = 5.5;            // carrier under the watch case (skin sensors + header plugs; no cell)
 const WATCH_R = 23, WATCH_H = 12.3, WATCH_R_BTN = 24;
 const WALL = 0.8, GAP = 2.0, CLASP = 4;   // pod wall, flex gap between pods, clasp length
 const N = 4000;
@@ -117,28 +120,53 @@ function liftUnder(s, L) {
 
 /* ---------------- parts ---------------- */
 /* L: along strap, W: across (z), H: height, z: offset across within the pod,
-   base: height above the strap top (stacking), skin: sits in a strap window touching skin. */
+   base: height above the strap top (stacking), skin: sits in a strap window touching skin.
+   Under-watch parts (UNDER) use x/z on the carrier floor instead of a pod.
+   bus 'local' = wired inside its pod or to the hub, not back to the watch headers. */
 const PARTS = {
-  gps:  { name:'GPS · HGLRC M100 Mini (u-blox M10)', L:15, W:15, H:5.2, z:-5.5, color:0x3fa7ff, bus:'uart2', dims:'15×15×5.2', ver:true,  note:'ceramic antenna faces out (sky)' },
-  bme:  { name:'BME280 · 7Semi Nano',                L:15, W:10, H:2.5, z: 8.0, color:0x52d6c4, bus:'i2c',  dims:'15×10×2.5', ver:true,  note:'vent hole in the lid; away from skin heat' },
-  mag:  { name:'Compass · GY-271 (QMC5883L)',        L:13.4, W:13.3, H:3, z:14, color:0xb48cff, bus:'i2c', dims:'13.4×13.3×3', ver:true, note:'beside the LTE module, far from the speaker and motor magnets; calibrate hard-iron offset in place' },
-  lte:  { name:'LTE · Quectel EG800AK-CN Pico (7Semi)', L:23, W:26, H:6, z:-7, color:0xff9f43, bus:'uart', dims:'26×23×6', ver:true, note:'under the wrist, where it is flat' },
-  mic:  { name:'Mic · INMP441',                       L:14, W:14, H:3, z:11, round:true, color:0xff8fd0, bus:'i2s', dims:'Ø14×3 ~', ver:false, note:'beside the amp; sound port in the lid', audio:true },
-  ant:  { name:'LTE antenna · FPC4814 (adhesive)',   L:14, W:40, H:0.3, z:0.5, base:7.0, color:0xffd36b, bus:'rf', flex:true, dims:'48×14×0.1', ver:true, note:'stuck inside the pod lid across the forearm; the last 4 mm each end fold down the pod sides' },
-  apds: { name:'Light/prox/gesture · APDS-9960',     L:15, W:20, H:3, z:-4, base:2.5, color:0xffe14d, bus:'i2c', dims:'20×15×3', ver:true, note:'window in the lid, faces out like the screen' },
-  hr:   { name:'Heart rate · MAX30102 (black)',      L:13, W:13, H:4, z:-4, skin:true, color:0xff4d6d, bus:'i2c', dims:'~13×13×4', ver:false, note:'strap window: sensor presses on the side of the wrist' },
+  /* 12 o'clock side: navigation */
+  gps:  { name:'GPS · HGLRC M100 Mini (u-blox M10)', L:15, W:15, H:5.2, z:-5.5, color:0x3fa7ff, bus:'uart2', dims:'15×15×5.2', ver:true,  note:'optional: untick GPS module if the A7672S-FASE built-in GNSS holds a fix on the wrist. Ceramic antenna faces out (sky)', gps:true },
+  mag:  { name:'Compass · GY-271 (QMC5883L)',        L:13.4, W:13.3, H:3, z:9.5, color:0xb48cff, bus:'i2c', dims:'13.4×13.3×3', ver:true, note:'beside the GPS, away from the modem PA, both speakers and the motor; calibrate hard-iron offset in place' },
+  bme:  { name:'BME280 · 7Semi Nano',                L:15, W:10, H:2.5, z:9.5, base:3.5, color:0x52d6c4, bus:'i2c',  dims:'15×10×2.5', ver:true,  note:'stacked over the compass so its vent hole meets the lid; away from skin heat' },
+  /* 12 o'clock side: cellular + calls */
+  lte:  { name:'LTE · SIMCom A7672S-FASE on your carrier PCB', L:26, W:28, H:5.4, z:-8.5, color:0xff9f43, bus:'uart', dims:'~26×28×5.4', ver:false, note:'24×24×2.4 LCC+LGA module (VoLTE + 2G fallback + GNSS + BLE) on a small carrier: nano-SIM holder on the back, bulk caps, U.FL for LTE and GNSS. Check its I/O level (1.8 V?) before wiring to 3.3 V. Prove calls on a dev board first' },
+  cspk: { name:'Call speaker · 8 Ω 1 W 1510',         L:10, W:15, H:3.6, z:14, color:0x6c6c7a, bus:'local', dims:'15×10×3.6', ver:true, note:'on the modem earpiece output (EAR_P/N): earpiece volume, raise the wrist. Add a PAM8302 if you want speakerphone' },
+  cmic: { name:'Call mic · electret capsule Ø6',      L:6, W:6, H:2.7, z:-16, base:5.6, round:true, color:0xff8fd0, bus:'local', dims:'Ø6×2.7 ~', ver:false, note:'on the modem MIC_P/N; sits on the carrier with a sound port in the lid, ~30 mm from the call speaker. Tune the modem echo-cancel settings' },
+  ant:  { name:'LTE antenna · FPC4814 (adhesive)',   L:14, W:40, H:0.3, z:0.5, base:8.6, color:0xffd36b, bus:'rf', flex:true, dims:'48×14×0.1', ver:true, note:'stuck inside the pod lid across the forearm; the last 4 mm each end fold down the pod sides' },
+  /* swap packs: one per side, at the strap ends where they are easy to reach */
+  pwrA: { name:'Pack A socket · LM66100 + pogo + 1M/1M divider', L:12, W:16, H:1.6, z:0, color:0xff4d4d, bus:'pwr', dims:'~12×16×1.6', ver:false, note:'ideal diode onto the shared VBAT wire: pull either pack and the other carries the watch. Divider goes to a hub ADC for pack %' },
+  batA: { name:'Swap pack A · LiPo 602040 420 mAh (PCM)', L:20, W:42, H:6, z:0, base:1.8, color:0x2ecc71, bus:'local', dims:'6×20×42', ver:true, note:'removable sled on magnetic pogo pins, long side across the forearm. Charge off-wrist at ≤210 mA (0.5C), never from the watch board (its charger is set to ~2 A)' },
+  /* 6 o'clock side: interface */
+  apds: { name:'Light/prox/gesture · APDS-9960',     L:15, W:20, H:3, z:-4, color:0xffe14d, bus:'i2c', dims:'20×15×3', ver:true, note:'window in the lid, faces out like the screen' },
   vib:  { name:'Your coin vibration motor (~Ø10)',   L:10, W:10, H:3, z:12, round:true, color:0xc0c0c0, bus:'gpio', dims:'Ø10×3 coin ~', ver:false, note:'module PCB size unknown: measure it' },
+  uv:   { name:'UV + light · LTR390',                L:13, W:13, H:2, z:11.5, base:3.5, color:0xd4a5ff, bus:'i2c', dims:'~13×13×2', ver:false, note:'stacked over the motor, window in the lid beside the APDS. Breakout sizes vary: measure' },
+  nfc:  { name:'NFC tag · ST25DV04K + loop antenna',  L:15, W:30, H:0.3, z:-1, base:6.0, color:0xe0e0ff, bus:'local', flex:true, dims:'~30×15×0.3', ver:false, note:'loop runs round the two windows in the lid; phone-tappable. On the hub\'s own I2C: its 0x53/0x57 clash with the LTR390 and MAX30102' },
+  /* 6 o'clock side: audio */
   amp:  { name:'Amp · MAX98357A (SmartElex)',         L:17.8, W:19.4, H:3, z:-7, color:0x8bd450, bus:'i2s', dims:'19.4×17.8×3', ver:true, note:'SD pin to a GPIO so it can shut down', audio:true },
   spk:  { name:'Speaker · 8 Ω 1 W 1510',              L:10, W:15, H:3.6, z:-7, base:3.3, color:0x6c6c7a, bus:'audio', dims:'15×10×3.6', ver:true, note:'stacked on the amp, grille in the lid', audio:true },
-  batB: { name:'Cell B · LiPo 602040 420 mAh (PCM)', L:20, W:42, H:6, z:0, color:0x2ecc71, bus:'pwr', dims:'6×20×42', ver:true, note:'long side across the forearm' },
-  batA: { name:'Cell A · LiPo 602040 420 mAh (PCM)', L:42, W:20, H:6, z:0, x:0, color:0x2ecc71, bus:'pwr', dims:'6×20×42', ver:true, note:'in the carrier under the watch' },
+  mic:  { name:'Mic · INMP441',                       L:14, W:14, H:3, z:11, round:true, color:0xff8fd0, bus:'i2s', dims:'Ø14×3 ~', ver:false, note:'beside the amp; sound port in the lid', audio:true },
+  /* 6 o'clock side: hub */
+  hub:  { name:'Hub · Seeed XIAO nRF52840',           L:21, W:17.8, H:3.5, z:-9.5, color:0x00c2a8, bus:'i2c', dims:'21×17.8×~3.5', ver:false, note:'I2C target on the watch bus, so it costs no watch pins. Runs LoRa, the motion-capture receiver (Smol Slime ESB), the ECG/EDA inputs, the NFC tag and the pack dividers. Powered from VBAT' },
+  lora: { name:'LoRa · Wio-SX1262 for XIAO',          L:21, W:17.8, H:3, z:-9.5, base:3.7, color:0x7bed9f, bus:'local', dims:'~21×17.8×3', ver:false, note:'stacked on the XIAO; India 865–867 MHz; Meshtastic-capable' },
+  ecg:  { name:'ECG + bioimpedance · ProtoCentral tinyECG (MAX30001)', L:21, W:17.8, H:3, z:9.5, color:0xff6b81, bus:'local', dims:'~21×17.8×3', ver:false, note:'SPI to the hub. Single lead: back electrode under the watch + finger pad on this lid. Not a medical device' },
+  lant: { name:'LoRa antenna · 868 MHz FPC (adhesive)', L:14, W:18, H:0.3, z:-9.5, base:7.0, color:0xffd36b, bus:'rf', flex:true, dims:'~18×14×0.1', ver:false, note:'inside the lid over the XIAO stack, clear of the metal finger pad' },
+  ecgpad: { name:'ECG finger pad · stainless disc',   L:10, W:10, H:1, z:9.5, base:7.0, round:true, color:0xbfc7d5, bus:'local', dims:'Ø10×1 ~', ver:false, note:'set into the lid; touch it with the other hand for an ECG' },
+  pwrB: { name:'Pack B socket · LM66100 + pogo + 1M/1M divider', L:12, W:16, H:1.6, z:0, color:0xff4d4d, bus:'pwr', dims:'~12×16×1.6', ver:false, note:'same as pack A socket' },
+  batB: { name:'Swap pack B · LiPo 602040 420 mAh (PCM)', L:20, W:42, H:6, z:0, base:1.8, color:0x2ecc71, bus:'local', dims:'6×20×42', ver:true, note:'same as pack A; swap one at a time' },
+  /* under the watch: health core, all touching the top of the wrist */
+  hr:   { name:'Heart rate · MAX30102 (black)',      L:13, W:13, H:4, x:0, z:0, skin:true, color:0xff4d6d, bus:'i2c', dims:'~13×13×4', ver:false, note:'centred under the watch on the top of the wrist, where commercial watches measure; window in the carrier' },
+  temp: { name:'Skin temp · MAX30205',               L:10, W:8, H:2, x:12, z:11, skin:true, color:0xff9966, bus:'i2c', dims:'~10×8×2', ver:false, note:'needs a metal-to-skin thermal path; I2C 0x48 on the watch bus' },
+  edaA: { name:'EDA electrode + · stainless disc',   L:8, W:8, H:1, x:-13, z:-8, round:true, skin:true, color:0xbfc7d5, bus:'local', dims:'Ø8×1 ~', ver:false, note:'skin conductance (EDA/GSR) pair: resistor divider into a hub ADC' },
+  edaB: { name:'EDA electrode − · stainless disc',   L:8, W:8, H:1, x:-13, z:8, round:true, skin:true, color:0xbfc7d5, bus:'local', dims:'Ø8×1 ~', ver:false, note:'second EDA electrode' },
+  ecgB: { name:'ECG back electrode · stainless disc', L:10, W:10, H:1, x:13, z:0, round:true, skin:true, color:0xbfc7d5, bus:'local', dims:'Ø10×1 ~', ver:false, note:'wrist side of the single-lead ECG; wired to the tinyECG in the hub pod' },
 };
+const UNDER = ['hr', 'temp', 'edaA', 'edaB', 'ecgB'];
 /* pods, in order outward from the watch */
 const PODS = {
-  [+1]: [['gps', 'bme'], ['lte', 'mag', 'ant']],
-  [-1]: [['apds', 'hr', 'vib'], ['amp', 'spk', 'mic'], ['batB']],
+  [+1]: [['gps', 'mag', 'bme'], ['pwrA', 'batA'], ['lte', 'cspk', 'cmic', 'ant']],   // modem goes past the tight side-of-wrist curve
+  [-1]: [['apds', 'vib', 'uv', 'nfc'], ['amp', 'spk', 'mic'], ['hub', 'lora', 'ecg', 'lant', 'ecgpad'], ['pwrB', 'batB']],
 };
-for (const k in PODS) PODS[k] = PODS[k].map(ids => ids.filter(id => AUDIO || !PARTS[id].audio)).filter(ids => ids.length);
+for (const k in PODS) PODS[k] = PODS[k].map(ids => ids.filter(id => (AUDIO || !PARTS[id].audio) && (GPS || !PARTS[id].gps))).filter(ids => ids.length);
 
 /* pack pods along each strap from the case edge; returns pod centres, strap ends and slack */
 function pack(Wr) {
@@ -157,10 +185,10 @@ function pack(Wr) {
 }
 const PK = pack(W);
 let minWrist = null;
-for (let c = 130; c <= 240; c += 0.5) { if (pack(makeWrist(c)).slack >= 0) { minWrist = c; break; } }
+for (let c = 130; c <= 280; c += 0.5) { if (pack(makeWrist(c)).slack >= 0) { minWrist = c; break; } }
 const parts = [];
 for (const side of [+1, -1]) for (const pod of PK.sides[side].pods) for (const id of pod.ids) parts.push(Object.assign({ id, side, s: pod.s, pod }, PARTS[id]));
-parts.push(Object.assign({ id: 'batA', side: 0 }, PARTS.batA));
+for (const id of UNDER) parts.push(Object.assign({ id, side: 0 }, PARTS[id]));
 const half = Math.max(0, PK.slack) / 2;
 const CLASP_S = PK.sides[1].end + GAP + half + CLASP / 2;      // 12-side strap end
 const CLASP_S6 = -(PK.sides[-1].end + GAP + half + CLASP / 2); // 6-side strap end
@@ -259,8 +287,9 @@ function partMesh(p) {
 }
 for (const p of parts) {
   const m = partMesh(p); p.mesh = m;
-  if (p.side === 0) {   // in the cradle, centred under the watch
-    const y = B + 1 + p.H / 2;
+  if (p.side === 0) {   // on the carrier floor under the watch; skin parts sit on the wrist surface
+    const skinY = B * Math.sqrt(Math.max(0, 1 - (p.x / A) ** 2));
+    const y = skinY + (p.skin ? 0 : 1) + p.H / 2;
     addMover(m, { p: new THREE.Vector3(p.x, y, p.z), q: IDQ.clone() }, { p: new THREE.Vector3(p.x, y + FLAT_LIFT, p.z), q: IDQ.clone() });
   } else {
     const up = p.skin ? p.H / 2 - 0.0 : STRAP_T + (p.base || 0) + p.H / 2;
@@ -287,12 +316,12 @@ for (const side of [+1, -1]) for (const pod of PK.sides[side].pods) {
 }
 
 /* wires: one bundle per part, running along the strap centre-line back to the header plugs */
-const BUS = { i2c:[0x4da3ff,'I2C + 3V3'], i2s:[0xc77dff,'I2S'], uart:[0xff9f43,'UART (LTE)'], uart2:[0x3fe0ff,'UART (GPS)'], gpio:[0xdddddd,'GPIO'], pwr:[0xff4d4d,'VBAT'], rf:[0xffd36b,'RF coax'], audio:[0x8bd450,'speaker'] };
+const BUS = { i2c:[0x4da3ff,'I2C + 3V3'], i2s:[0xc77dff,'I2S'], uart:[0xff9f43,'UART (LTE)'], uart2:[0x3fe0ff,'UART (GPS)'], gpio:[0xdddddd,'GPIO'], pwr:[0xff4d4d,'VBAT'], rf:[0xffd36b,'RF coax'], audio:[0x8bd450,'speaker'], local:[0x777777,'in-pod / to hub'] };
 function buildWires(m) {
   for (const w of wires) { scene.remove(w); w.geometry.dispose(); } wires.length = 0;
   let lane = 0;
   for (const p of parts) {
-    if (!p.side || p.bus === 'audio') continue;
+    if (!p.side || p.bus === 'audio' || p.bus === 'local') continue;
     const zl = -9 + (lane++ % 10) * 2, pts = [];
     const sEnd = p.s, sStart = p.side * (W.sEdge - 3), steps = 40;
     for (let i = 0; i <= steps; i++) {
@@ -310,7 +339,7 @@ function buildWires(m) {
 let showWires = true; buildWires(0);
 
 /* legend */
-document.getElementById('legend').innerHTML = Object.values(BUS).map(([c, n]) => `<span style="background:#${c.toString(16).padStart(6,'0')}"></span>${n}`).join(' &nbsp; ');
+document.getElementById('legend').innerHTML = Object.entries(BUS).filter(([k]) => k !== 'local').map(([, v]) => v).map(([c, n]) => `<span style="background:#${c.toString(16).padStart(6,'0')}"></span>${n}`).join(' &nbsp; ');
 
 /* morph */
 let morph = 0, target = 0;
@@ -331,9 +360,9 @@ $('bShell').onclick = () => shells.forEach(s => s.visible = !s.visible);
 $('bWires').onclick = () => { showWires = !showWires; wires.forEach(w => w.visible = showWires); };
 function setView(p) { cam.position.set(...p); ctl.target.set(0, target > .5 ? 0 : 5, 0); }
 $('bTop').onclick = () => setView([0, 260, 0.1]); $('bSide').onclick = () => setView([0, 10, 260]); $('bUnder').onclick = () => setView([0, -240, 60]);
-$('wrist').value = WRIST; $('audio').checked = AUDIO;
-const reopen = () => { const u = new URL(location.href); u.searchParams.set('wrist', $('wrist').value); u.searchParams.set('audio', $('audio').checked ? 1 : 0); location.href = u; };
-$('wrist').onchange = reopen; $('audio').onchange = reopen;
+$('wrist').value = WRIST; $('audio').checked = AUDIO; $('gpsMod').checked = GPS;
+const reopen = () => { const u = new URL(location.href); u.searchParams.set('wrist', $('wrist').value); u.searchParams.set('audio', $('audio').checked ? 1 : 0); u.searchParams.set('gps', $('gpsMod').checked ? 1 : 0); location.href = u; };
+$('wrist').onchange = reopen; $('audio').onchange = reopen; $('gpsMod').onchange = reopen;
 window.__layout = { setMorph: m => { target = morph = m; applyMorph(m); }, setView, cam, ctl };
 
 function resize() { const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); labelR.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); }
@@ -374,10 +403,18 @@ for (const side of [+1, -1]) {
 ok(PK.slack >= 0 ? 'ok' : 'bad', PK.slack >= 0
   ? `Fits a ${WRIST} mm wrist with ${PK.slack.toFixed(1)} mm to spare at the clasp`
   : `Does NOT fit a ${WRIST} mm wrist: short by ${(-PK.slack).toFixed(1)} mm of strap`);
-ok('dim', `Smallest wrist this layout fits: ${minWrist ?? '>240'} mm (${AUDIO ? 'with' : 'without'} audio)`);
-// cradle: cell A vs the header plugs and the case outline
-{ const c = parts.find(p => p.id === 'batA'); const corner = Math.hypot(c.L / 2, c.W / 2);
-  ok(corner <= WATCH_R_BTN ? 'ok' : 'bad', `Cell A corners reach r=${corner.toFixed(1)} mm (carrier r=${WATCH_R_BTN}); clears header plugs at |z|≥14 since it spans |z|≤${c.W/2}`);
+ok('dim', `Smallest wrist this layout fits: ${minWrist ?? '>280'} mm (${AUDIO ? 'with' : 'without'} audio, ${GPS ? 'with' : 'without'} the GPS module)`);
+// carrier: under-watch skin parts vs the case outline, each other, and the header plugs (|x|≤4.75, |z|≥14 at the case back)
+{ const U = parts.filter(p => p.side === 0), box = p => p.round ? [p.x - p.L / 2, p.x + p.L / 2, p.z - p.L / 2, p.z + p.L / 2] : [p.x - p.L / 2, p.x + p.L / 2, p.z - p.W / 2, p.z + p.W / 2];
+  let reach = 0;
+  for (const p of U) reach = Math.max(reach, p.round ? Math.hypot(p.x, p.z) + p.L / 2 : Math.hypot(Math.abs(p.x) + p.L / 2, Math.abs(p.z) + p.W / 2));
+  ok(reach <= WATCH_R_BTN ? 'ok' : 'bad', `Under-watch skin parts reach r=${reach.toFixed(1)} mm (carrier r=${WATCH_R_BTN})`);
+  for (let i = 0; i < U.length; i++) for (let j = i + 1; j < U.length; j++) {
+    const [a0, a1, a2, a3] = box(U[i]), [b0, b1, b2, b3] = box(U[j]);
+    if (Math.min(a1, b1) - Math.max(a0, b0) > -0.5 && Math.min(a3, b3) - Math.max(a2, b2) > -0.5) ok('bad', `${U[i].id} overlaps ${U[j].id} under the watch`);
+  }
+  const plugHit = U.filter(p => { const [x0, x1, z0, z1] = box(p); return x0 < 4.75 && x1 > -4.75 && (z1 > 14 || z0 < -14) && p.H > CRADLE_H - 4.5; });
+  ok(plugHit.length ? 'bad' : 'ok', plugHit.length ? `${plugHit.map(p => p.id).join(', ')} hit the header plugs` : `Skin parts clear the header plugs (they hang ${4.5} mm into the ${CRADLE_H} mm carrier)`);
   ok('warn', `Watch stack: case ${WATCH_H} + carrier ${CRADLE_H} = ${(WATCH_H + CRADLE_H).toFixed(1)} mm above the wrist top`); }
 ok('dim', `Strap leaves the carrier at |s|=${W.sEdge.toFixed(1)} mm; ${GAP} mm flex gaps; ${WALL} mm pod walls`);
 $('checks').innerHTML = out.join('');
@@ -393,29 +430,39 @@ const ctlDefs = [
   ['lteData','LTE data active (min/day)', 0, 60, 1, 10],
   ['audio',  'Speaker playing (min/day)', 0, 60, 1, 10],
   ['hrDuty', 'Heart-rate duty (%)', 0, 100, 1, 10],
+  ['calls',  'Calls (min/day)', 0, 120, 1, 10],
+  ['mocap',  'Motion-capture receiver on (min/day)', 0, 240, 5, 30],
+  ['lora',   'LoRa listening (h/day)', 0, 24, 0.5, 0],
 ];
 const st = Object.fromEntries(ctlDefs.map(d => [d[0], d[5]]));
 st.fw = 'managed'; st.cells = 2;
 $('powerCtl').innerHTML = '<div class="ctl">' + ctlDefs.map(([k, n, a, b, s, v]) => `<span>${n}</span><input type="range" min="${a}" max="${b}" step="${s}" value="${v}" data-k="${k}"><span id="v_${k}" class="n">${v}</span>`).join('') +
   `<span>Firmware</span><select id="fw" style="grid-column:span 2"><option value="managed">with light sleep (to build)</option><option value="today">as it is today (no CPU sleep)</option></select>` +
-  `<span>Cells (420 mAh each)</span><select id="cells" style="grid-column:span 2"><option>1</option><option selected>2</option></select></div>`;
+  `<span>Swap packs fitted (420 mAh each)</span><select id="cells" style="grid-column:span 2"><option>1</option><option selected>2</option></select></div>`;
 document.querySelectorAll('#powerCtl input').forEach(i => i.oninput = () => { st[i.dataset.k] = +i.value; $('v_' + i.dataset.k).textContent = i.value; power(); });
 $('fw').onchange = e => { st.fw = e.target.value; power(); }; $('cells').onchange = e => { st.cells = +e.target.value; power(); };
+const nBrk = parts.filter(p => ['gps', 'bme', 'hr', 'apds', 'mag', 'amp', 'mic', 'uv', 'temp'].includes(p.id)).length;  // breakouts with an LDO/LED
 function power() {
   const today = st.fw === 'today', on = st.screen, off = 24 - on;
   const rows = [
     ['Watch (ESP32-S3 + AMOLED), screen on', on + ' h × ' + (today ? 130 : 120) + ' mA', on * (today ? 130 : 120), 'estimate'],
     ['Watch, screen off', off.toFixed(2) + ' h × ' + (today ? 50 : 8) + ' mA', off * (today ? 50 : 8), today ? 'CPU stays at 240 MHz (BATTERY_FIT.md)' : 'needs light sleep + IMU wake'],
-    ['LTE idle', today ? '24 h × 8.8 mA (idle)' : '24 h × 0.40 mA (sleep)', today ? 24 * 8.845 : 24 * 0.40, 'Evelta page: sleep 0.40 / idle 8.845 mA'],
+    ['Modem standby (registered, so calls ring)', today ? '24 h × ~8.8 mA (idle)' : '24 h × ~1.5 mA (sleep via DTR)', today ? 24 * 8.8 : 24 * 1.5, 'estimate: the EG800AK page listed 0.40 sleep / 8.845 idle; measure the A7672S'],
     ['LTE data', st.lteData + ' min × ~150 mA', st.lteData / 60 * 150, 'estimate'],
-    ['GPS', st.gps + ' min × ~30 mA', st.gps / 60 * 30, 'estimate, u-blox M10 + LDO/LED'],
+    ['Calls', st.calls + ' min × ~300 mA', st.calls / 60 * 300, 'estimate: VoLTE call + call speaker'],
+    ['GPS', st.gps + ' min × ~30 mA', st.gps / 60 * 30, GPS ? 'estimate, u-blox M10 + LDO/LED' : 'estimate, modem GNSS'],
     ['Heart rate', st.hrDuty + '% × ~1.5 mA', 24 * st.hrDuty / 100 * 1.5, 'estimate'],
     ['APDS-9960 (light only)', '24 h × 0.2 mA', 24 * 0.2, 'gesture/prox costs more'],
-    ['BME280 + compass', 'on demand', 0.5, ''],
+    ['BME280 + compass + LTR390', 'on demand', 1, ''],
+    ['Skin temp, EDA, ECG', 'on demand', 0.5, 'ECG only while a finger is on the pad'],
+    ['Hub (XIAO nRF52840) idle', '24 h × ~0.05 mA', 24 * 0.05, 'estimate: radio off, I2C target waiting'],
+    ['Motion-capture receiver', st.mocap + ' min × ~8 mA', st.mocap / 60 * 8, 'estimate: hub radio listening for the body trackers'],
+    ['LoRa listening', st.lora + ' h × ~6 mA', st.lora * 6, 'estimate: SX1262 receive + hub'],
     ['Mic', '15 min × 1.4 mA', 0.35, 'Robocraze page: 1.4 mA'],
     ['Amp + speaker', st.audio + ' min × ~80 mA' + (today ? ' + 2.4 mA idle' : ''), st.audio / 60 * 80 + (today ? 24 * 2.4 : 0), 'idle 0 only if SD pin is driven low'],
     ['Vibration', '100 buzzes × 0.3 s × 80 mA', 0.7, ''],
-    ['Breakout LDOs/LEDs', today ? '6 power LEDs × 1.5 mA' : 'LEDs removed, 6 LDOs × 0.1 mA', today ? 24 * 9 : 24 * 0.6, 'desolder the power LEDs'],
+    ['Pack dividers', '2 × 2 µA', 24 * 0.004, '1M/1M on each pack'],
+    ['Breakout LDOs/LEDs', today ? nBrk + ' power LEDs × 1.5 mA' : 'LEDs removed, ' + nBrk + ' LDOs × 0.1 mA', today ? 24 * 1.5 * nBrk : 24 * 0.1 * nBrk, 'desolder the power LEDs'],
   ];
   const tot = rows.reduce((a, r) => a + r[2], 0);
   const nominal = st.cells * 420, usable = nominal * 0.8, hours = usable / tot * 24, need = tot / 0.8;
@@ -423,14 +470,14 @@ function power() {
     `<tr class="tot"><td>Total per day</td><td></td><td class="n">${tot.toFixed(0)}</td></tr>
      <tr><td colspan=2>Battery needed for 24 h (80% usable)</td><td class="n tot">${need.toFixed(0)} mAh</td></tr>
      <tr><td colspan=2>Runtime on ${st.cells} × 420 = ${nominal} mAh</td><td class="n tot ${hours >= 24 ? 'ok' : 'bad'}">${hours.toFixed(1)} h</td></tr></table>
-     <div class="dim">Planning estimates, not measurements: measure battery-side current on the real watch before trusting them.</div>`;
+     <div class="dim">Runtime is per set of charged packs: swap in charged spares to keep going. Planning estimates, not measurements: measure battery-side current on the real watch before trusting them.</div>`;
 }
 power();
 
 /* ---------------- cost ---------------- */
 const cost = [
   ['Robocraze (Bengaluru, same-day ship before 3 PM, free over ₹999)', [
-    ['HGLRC M100 Mini GPS', 1502, 'https://robocraze.com/products/hglrc-m100-mini-gps'],
+    ...(GPS ? [['HGLRC M100 Mini GPS', 1502, 'https://robocraze.com/products/hglrc-m100-mini-gps']] : []),
     ['7Semi BME280 Nano', 500, 'https://robocraze.com/products/7semi-bme280-temperature-humidity-pressure-sensor-breakout-module-i2c-spi-1'],
     ['MAX30102 black 3.3–5 V', 257, 'https://robocraze.com/products/max30102-3-3-to-5v-pulse-oximeter-heart-rate-sensor-module-black'],
     ['APDS-9960', 239, 'https://robocraze.com/products/apds-9960-rgb-and-gesture-sensor'],
@@ -438,13 +485,15 @@ const cost = [
     ['SmartElex MAX98357A', 190, 'https://robocraze.com/products/smartelex-max98357a-i2s-audio-breakout-amplifier-for-raspberry-pi-and-microcontrollers'],
     ['INMP441 mic', 135, 'https://robocraze.com/products/inmp441-mems-high-precision-omnidirectional-microphone-module-i2s'],
   ]],
+  ['Sharvi Electronics (price seen 2026-10-12; stock not shown)', [
+    ['SIMCom A7672S-FASE bare module (₹1,200.16 + GST)', 1487, 'https://sharvielectronics.com/product/a7672s-fase-4g-lte-with-gnss-ble-simcom-wireless-solution-module/'],
+  ]],
   ['Evelta (Mumbai, ships within 24 h)', [
-    ['7Semi EG800AK-CN LTE Pico (incl. GST)', 867, 'https://evelta.com/7semi-eg800ak-cn-4g-lte-pico-module'],
     ['2× 2×7 1.27 mm female header (₹58.79 + GST each)', 139, 'https://evelta.com/2x7-pin-1-27mm-pitch-female-square-pin/'],
   ]],
   ['Probots (Bengaluru, 1-day dispatch)', [
     ['2× LiPo 602040 420 mAh with PCM (₹175 each)', 350, 'https://probots.co.in/3-7v-420mah-lipo-battery-602040-rechargeable-lithium-polymer-cell-with-protection-pcb.html'],
-    ['8 Ω 1 W 1510 speaker', 49, 'https://probots.co.in/8-ohm-1w-1510-mm-oval-mini-audio-speaker.html'],
+    [(AUDIO ? '2' : '1') + '× 8 Ω 1 W 1510 speaker (' + (AUDIO ? 'audio + call' : 'call') + ')', AUDIO ? 98 : 49, 'https://probots.co.in/8-ohm-1w-1510-mm-oval-mini-audio-speaker.html'],
   ]],
   ['Quartz Components', [
     ['FPC4814 LTE antenna, IPX', 64, 'https://quartzcomponents.com/products/gsm-3g-4g-2-5dbi-l90-1-13-cable-ipx-antenna-fpc4814'],
@@ -454,11 +503,30 @@ let grand = 0;
 $('cost').innerHTML = '<table>' + cost.map(([shop, items]) => {
   const sub = items.reduce((a, i) => a + i[1], 0); grand += sub;
   return `<tr><th colspan=2>${shop}</th></tr>` + items.map(i => `<tr><td><a href="${i[2]}" style="color:#9cf">${i[0]}</a></td><td class="n">₹${i[1]}</td></tr>`).join('') + `<tr><td class="dim">subtotal</td><td class="n">₹${sub}</td></tr>`;
-}).join('') + `<tr class="tot"><td>Total parts</td><td class="n">₹${grand}</td></tr><tr><td colspan=2 class="dim">+ shipping for Evelta, Probots and Quartz (Robocraze is free over ₹999). Excludes your vibration motor, 30 AWG silicone wire, heat-shrink and the printed strap. Prices as seen 2026-10-09.</td></tr></table>`;
+}).join('') + `<tr class="tot"><td>Total parts</td><td class="n">₹${grand}</td></tr><tr><td colspan=2 class="dim">+ shipping for Sharvi, Evelta, Probots and Quartz (Robocraze is free over ₹999). Excludes your vibration motor, 30 AWG silicone wire, heat-shrink, the printed strap and everything under "Still to price". Prices as seen 2026-10-09 unless noted.</td></tr></table>`;
+
+/* parts in the plan without a verified Indian price yet */
+const unpriced = [
+  ['A7672S dev board (USB/UART)', 'bench-test calls on your SIM before soldering the bare module'],
+  ['A7672S carrier PCB parts', 'nano-SIM holder, bulk caps (≥1000 µF if 2G is allowed), 2× U.FL, PWRKEY transistor, level shifter if the I/O is 1.8 V'],
+  ...(GPS ? [] : [['GNSS antenna for the modem', 'replaces the M100 when the GPS module is unticked']]),
+  ['Electret mic capsule Ø6', 'call mic on the modem MIC input'],
+  ['Seeed XIAO nRF52840', 'hub'],
+  ['Wio-SX1262 for XIAO + 868 MHz FPC antenna', 'LoRa'],
+  ['ProtoCentral tinyECG (MAX30001)', 'listed at US$43.95 on protocentral.com; ECG + bioimpedance'],
+  ['LTR390 breakout', 'UV + ambient light'],
+  ['MAX30205 breakout', 'skin temperature'],
+  ['ST25DV04K + 13.56 MHz loop antenna', 'NFC tag'],
+  ['2× LM66100 + SC-70 adapter boards', 'ideal diodes for the swap packs (TI, 1.5 A, 0.5 µA)'],
+  ['2× magnetic pogo connectors (2–4 pin)', 'swap-pack sockets'],
+  ['4× stainless electrode discs', 'EDA pair, ECG back electrode, ECG finger pad'],
+  ['TP4056 board with ~5.6 kΩ RPROG', 'off-wrist pack charger at ~210 mA'],
+];
+$('unpriced').innerHTML = '<table>' + unpriced.map(([n, d]) => `<tr><td>${n}<div class="dim">${d}</div></td></tr>`).join('') + '</table>';
 
 /* ---------------- pins ---------------- */
 const pins = [
-  ['J1-2', 'VBAT', 'Cell B +, LTE VCC, amp VIN, motor VCC', 'battery net (same as the J7 socket)'],
+  ['J1-2', 'VBAT', 'both pack sockets (LM66100 outputs), modem VBAT, amp VIN, motor VCC, hub', 'battery net (same as the J7 socket); nothing plugged into J7. The board charger is set to ~2 A, and the ideal diodes stop it charging the packs'],
   ['J1-6', 'GND', 'common ground', ''],
   ['J1-8', 'IO16', 'motor IN', ''],
   ['J1-13', 'IO1', 'I2S BCLK (mic SCK + amp BCLK)', ''],
@@ -466,12 +534,17 @@ const pins = [
   ['J1-9', 'IO3', 'mic SD (data in)', ''],
   ['J1-7', 'IO5', 'amp DIN', ''],
   ['J1-5', 'IO6', 'amp SD (shutdown)', 'low = off'],
-  ['J1-12', 'IO7', 'GPS TX → ESP RX (UART1)', ''],
-  ['J1-10', 'IO17', 'ESP TX → GPS RX', 'optional, for UBX config'],
-  ['J3-2', 'IO18', 'LTE PWRKEY', ''],
-  ['J3-3 / J3-5', 'SCL / SDA', 'BME280, APDS-9960, GY-271, MAX30102', 'shared with touch/IMU/RTC'],
-  ['J3-9 / J3-11', 'RXD / TXD', 'LTE UART', 'UART0 pins'],
-  ['J3-1 / J3-13', '3V3', 'all I2C sensors, mic, GPS', '~40 mA total'],
+  ...(GPS ? [
+    ['J1-12', 'IO7', 'GPS TX → ESP RX (UART1)', 'modem RI/DTR then go to hub GPIOs'],
+    ['J1-10', 'IO17', 'ESP TX → GPS RX', 'optional, for UBX config'],
+  ] : [
+    ['J1-12', 'IO7', 'modem RI (ring) → ESP', 'freed by dropping the GPS module; wakes the watch for calls and SMS'],
+    ['J1-10', 'IO17', 'ESP → modem DTR', 'lets the modem sleep while staying registered'],
+  ]),
+  ['J3-2', 'IO18', 'modem PWRKEY', ''],
+  ['J3-3 / J3-5', 'SCL / SDA', 'BME280, APDS-9960, GY-271, LTR390, MAX30102, MAX30205, hub (XIAO as I2C target)', 'shared with touch/IMU/RTC. The ST25DV goes on the hub\'s own I2C (address clash)'],
+  ['J3-9 / J3-11', 'RXD / TXD', 'modem UART (A7672S)', 'UART0 pins; level-shift if the A7672S I/O is 1.8 V'],
+  ['J3-1 / J3-13', '3V3', 'I2C sensors, mic' + (GPS ? ', GPS' : ''), '~40 mA total; the hub takes VBAT, not 3V3'],
 ];
 $('pins').innerHTML = '<table><tr><th>Pin</th><th>Signal</th><th>Goes to</th></tr>' + pins.map(p => `<tr><td>${p[0]}</td><td>${p[1]}</td><td>${p[2]}${p[3] ? `<div class="dim">${p[3]}</div>` : ''}</td></tr>`).join('') +
   '</table><div class="dim">J1/J3 are 2×7, 1.27 mm pitch, reached through the windows in the case back. Pin numbers from the official schematic; confirm against the back label before soldering.</div>';

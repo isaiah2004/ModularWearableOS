@@ -1,0 +1,80 @@
+# The same service snapshot drives sport-specific visible metrics.
+wait 100
+set step_rate 120
+set gps_motion 2.5
+set hr_sample 144 0.95 1
+workout start 0
+open workout
+wait 6500
+shot sport_walk
+workout info profile_walk
+expect workout sport 0
+expect workout steps 12 14
+workout finish
+wait 200
+workout discard
+home
+wait 500
+workout start 1
+open workout
+wait 6500
+shot sport_run
+workout info profile_run
+expect workout sport 1
+expect workout steps 12 14
+workout finish
+wait 200
+workout discard
+home
+wait 500
+workout start 2
+open workout
+wait 6500
+shot sport_cycle
+workout info profile_cycle
+expect workout sport 2
+expect workout steps 0
+expect workout cadence_valid 0
+workout finish
+wait 200
+workout discard
+home
+wait 500
+workout start 3
+open workout
+wait 6500
+shot sport_hike
+workout info profile_hike
+expect workout sport 3
+expect workout steps 12 14
+workout finish
+wait 200
+workout discard
+home
+wait 500
+workout start 4
+open workout
+wait 6500
+shot sport_treadmill
+workout info profile_treadmill
+expect workout sport 4
+expect workout steps 12 14
+expect workout gps_status 0
+expect workout distance_valid 0
+workout finish
+wait 200
+workout discard
+home
+wait 500
+workout start 5
+open workout
+wait 6500
+shot sport_general
+workout info profile_general
+expect workout sport 5
+expect workout steps 0
+expect workout gps_status 0
+expect workout distance_valid 0
+workout finish
+wait 200
+expect workout history 6

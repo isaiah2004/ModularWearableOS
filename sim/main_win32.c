@@ -272,6 +272,8 @@ void hal_batt_log_tick(void) {}
 int hal_media_colors(uint16_t *ring, uint16_t *ab, uint16_t *sb, uint16_t *at, uint16_t *st)
 { (void)ring; (void)ab; (void)sb; (void)at; (void)st; return 0; }
 const uint16_t *hal_media_cover(int *px, unsigned *gen) { (void)px; (void)gen; return 0; }
+const uint16_t *hal_media_cover_acquire(int *px, unsigned *gen) { return hal_media_cover(px,gen); }
+void hal_media_cover_release(const uint16_t *pixels) { (void)pixels; }
 
 int hal_imu_sample(hal_imu *o,uint32_t *sample_ms)
 { *sample_ms=hal_millis();return hal_imu_read(o); }

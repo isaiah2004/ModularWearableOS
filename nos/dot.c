@@ -1,3 +1,4 @@
+#include "cost_profile.h"
 /* dot.c — dot-matrix type, icons and glyph rings (see dot.h).
  *
  * Rendering model
@@ -36,6 +37,7 @@
 #include "gfx_cost.h"
 #include "hal.h"
 #include <string.h>
+#include <stdlib.h>
 
 #define DOT_GAP_NONE 0xFF
 #define MAXCH        64          /* glyphs per string handled */
@@ -62,7 +64,6 @@ static const uint8_t k_fw[DOT_FONT_COUNT] = { 5, 5, 3 };   /* nominal cell width
 static const uint8_t k_fh[DOT_FONT_COUNT] = { 7, 9, 5 };   /* cap height in cells */
 
 static dglyph *g_tab;            /* [DOT_FONT_COUNT * NSLOT + DOT_ICON_COUNT] */
-static int     g_tab_failed;
 
 static void parse_art(dglyph *g, int w, const char *art)
 {
@@ -82,10 +83,9 @@ static void parse_art(dglyph *g, int w, const char *art)
 static int tables(void)
 {
     if (g_tab) return 1;
-    if (g_tab_failed) return 0;
     int n = DOT_FONT_COUNT * NSLOT + DOT_ICON_COUNT;
     dglyph *t = (dglyph *)hal_big_alloc((uint32_t)(sizeof(dglyph) * (unsigned)n));
-    if (!t) { g_tab_failed = 1; return 0; }
+    if (!t) return 0;
     const dot_art *fonts[DOT_FONT_COUNT] = { dot_art_5x7, dot_art_tall, dot_art_3x5 };
     for (int f = 0; f < DOT_FONT_COUNT; f++)
         for (int i = 0; i < NSLOT; i++)
@@ -213,6 +213,19 @@ static dmask *bake_mask(int q)
     return m;
 }
 
+/* Masks are immutable after publication. A foreground first use can race the
+ * background prewarmer: the CAS loser owns only its unpublished allocation. */
+static dmask *publish_mask(dmask **slot,dmask *candidate)
+{
+    if(!candidate) return __atomic_load_n(slot,__ATOMIC_ACQUIRE);
+    dmask *winner=NULL;
+    if(__atomic_compare_exchange_n(slot,&winner,candidate,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) return candidate;
+    /* Preserve allocation accounting/header ownership when tracking is enabled.
+     * Never free the published winner. */
+    hal_big_free(candidate);
+    return winner;
+}
+
 /* Mask for diameter d (quantised to 0.25 px); NULL when d is ~0, too large, or
  * memory ran out (callers fall back to gfx_fill_circle for the latter two). */
 static const dmask *mask_get(float d, int *q_out)
@@ -220,14 +233,13 @@ static const dmask *mask_get(float d, int *q_out)
     int q = (int)(d * 4.0f + 0.5f);
     *q_out = q;
     if (q <= 0 || q > MASK_QMAX) return NULL;
-    if (!g_masks && !dot_prebake_begin()) return NULL;
-    dmask *m = __atomic_load_n(&g_masks[q], __ATOMIC_ACQUIRE);
-    if (!m) {
-        m = bake_mask(q);
-        dmask *none = NULL;           /* the background baker may have won: keep its mask */
-        if (m && !__atomic_compare_exchange_n(&g_masks[q], &none, m, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-            m = none;
+    dmask **masks=__atomic_load_n(&g_masks,__ATOMIC_ACQUIRE);
+    if(!masks) {
+        if(!dot_prebake_begin()) return NULL;
+        masks=__atomic_load_n(&g_masks,__ATOMIC_ACQUIRE);
     }
+    dmask *m=__atomic_load_n(&masks[q],__ATOMIC_ACQUIRE);
+    if(!m) m=publish_mask(&masks[q],bake_mask(q));
     return m;
 }
 
@@ -236,19 +248,22 @@ static const dmask *mask_get(float d, int *q_out)
  * watch, which turned first wakes and picker builds into 50-470 ms frames. ~550 KB. */
 int dot_prebake_begin(void)
 {
-    if (g_masks) return 1;
-    g_masks = (dmask **)hal_big_alloc((uint32_t)sizeof(dmask *) * (MASK_QMAX + 1));
-    if (!g_masks) return 0;
-    memset(g_masks, 0, sizeof(dmask *) * (MASK_QMAX + 1));
+    if(__atomic_load_n(&g_masks,__ATOMIC_ACQUIRE)) return 1;
+    size_t bytes=sizeof(dmask *)*(MASK_QMAX+1);
+    dmask **candidate=(dmask **)hal_big_alloc((uint32_t)bytes);
+    if(!candidate) return __atomic_load_n(&g_masks,__ATOMIC_ACQUIRE)!=NULL;
+    memset(candidate,0,bytes);
+    dmask **winner=NULL;
+    if(!__atomic_compare_exchange_n(&g_masks,&winner,candidate,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) hal_big_free(candidate);
     return 1;
 }
 void dot_prebake_all(void)
 {
     if (!dot_prebake_begin()) return;
+    dmask **masks=__atomic_load_n(&g_masks,__ATOMIC_ACQUIRE);
     for (int q = 1; q <= MASK_QMAX; q++) {
-        if (__atomic_load_n(&g_masks[q], __ATOMIC_ACQUIRE)) continue;
-        dmask *m = bake_mask(q), *none = NULL;
-        if (m) __atomic_compare_exchange_n(&g_masks[q], &none, m, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        if(__atomic_load_n(&masks[q],__ATOMIC_ACQUIRE)) continue;
+        publish_mask(&masks[q],bake_mask(q));
     }
 }
 
@@ -460,7 +475,18 @@ typedef struct {
     unsigned seed;
     int gcols, grows;  /* size of the whole animated block, in cells */
     float ext;         /* half extent of a dot incl. AA */
+    int r0, r1;        /* common stripe limits before glyph-specific row clamp */
 } drawctx;
+
+static void draw_row_bounds(drawctx *c, float oy)
+{
+    /* Every glyph in a text run shares this origin, pitch and stripe. Preserve
+     * the original expression/order; compute its two software divides once.
+     * Icons pass their own top-left origin, rather than the text-run origin. */
+    c->r0 = ifloor(((float)c->k->ylo - c->ext - oy) / c->pitch - 0.5f);
+    c->r1 = iceil(((float)c->k->yhi + c->ext - oy) / c->pitch + 0.5f);
+    if (c->r0 < 0) c->r0 = 0;
+}
 
 static void draw_cells(const drawctx *c, const dglyph *g, float ox, float oy, int col0,
                        int box0, int boxw, int boxrows, unsigned gidx)
@@ -470,9 +496,7 @@ static void draw_cells(const drawctx *c, const dglyph *g, float ox, float oy, in
     int rows = g ? g->rows : 0;
     if (boxrows > rows && c->ghost) rows = boxrows;
     /* glyph rows overlapping this stripe only */
-    int r0 = ifloor(((float)k->ylo - c->ext - oy) / pitch - 0.5f);
-    int r1 = iceil(((float)k->yhi + c->ext - oy) / pitch + 0.5f);
-    if (r0 < 0) r0 = 0;
+    int r0 = c->r0, r1 = c->r1;
     if (r1 > rows) r1 = rows;
     int cmin = box0 < col0 ? box0 : col0;
     int cmax = col0 + (g ? g->w : 0);
@@ -502,6 +526,7 @@ static void draw_cells(const drawctx *c, const dglyph *g, float ox, float oy, in
 static int text_impl(gfx_fb *fb, const dot_style *st, float x, float y, const char *s,
                      int align, float p, int mode, unsigned seed)
 {
+    NOS_COST_SCOPE(NOS_COST_TEXT,!fb->rec);
     if (!st || st->pitch <= 0.0f || !tables()) return 0;
     dlayout L;
     float pitch = st->pitch, d = st_dot(st);
@@ -536,7 +561,8 @@ static int text_impl(gfx_fb *fb, const dot_style *st, float x, float y, const ch
     clip_init(&k, fb);
     if (!clip_hit(&k, xl - pad, y - pad, xl + wpx + pad, y + (float)vrows * pitch + pad)) return ret;
     if (p <= 0.0f && !st->ghost) return ret;
-    drawctx c = { &k, pitch, d, st->color, st->ghost, p, mode, seed, L.cells, vrows, d * 0.5f + 1.0f };
+    drawctx c = { &k, pitch, d, st->color, st->ghost, p, mode, seed, L.cells, vrows, d * 0.5f + 1.0f, 0, 0 };
+    draw_row_bounds(&c, y);
     int font = st_font(st), boxrows = k_fh[font];
     for (int i = 0; i < L.n; i++) {
         const dslot *sl = &L.s[i];
@@ -646,6 +672,7 @@ int dot_text_morph(gfx_fb *fb, const dot_style *st, float x, float y,
 /* ---- single dot ----------------------------------------------------------- */
 void dot_disc(gfx_fb *fb, float cx, float cy, float d, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (d <= 0.0f) return;
     float e = d * 0.5f + 1.0f;
     if (fb->rec) {
@@ -662,6 +689,7 @@ void dot_disc(gfx_fb *fb, float cx, float cy, float d, uint16_t color)
 void dot_icon_anim(gfx_fb *fb, int icon, float cx, float cy, float pitch, float dot,
                    uint16_t color, float p, int mode)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (icon <= DOT_ICON_NONE || icon >= DOT_ICON_COUNT || pitch <= 0.0f || !tables()) return;
     const dglyph *g = &g_tab[DOT_FONT_COUNT * NSLOT + icon];
     if (!g->w) return;
@@ -681,7 +709,8 @@ void dot_icon_anim(gfx_fb *fb, int icon, float cx, float cy, float pitch, float 
     dclip k;
     clip_init(&k, fb);
     if (!clip_hit(&k, cx - half - pad, cy - half - pad, cx + half + pad, cy + half + pad)) return;
-    drawctx c = { &k, pitch, dot, color, 0, p, mode, (unsigned)icon, 11, 11, dot * 0.5f + 1.0f };
+    drawctx c = { &k, pitch, dot, color, 0, p, mode, (unsigned)icon, 11, 11, dot * 0.5f + 1.0f, 0, 0 };
+    draw_row_bounds(&c, cy - half);
     draw_cells(&c, g, cx - half, cy - half, 0, 0, 0, 0, (unsigned)icon);
 }
 
@@ -707,6 +736,33 @@ static void lit_dot(const dclip *k, float cx, float cy, float d, float f, uint16
 
 #define RING_CHUNKS 16
 
+/* Four immutable unit circles, shared by all radii and colours. PSRAM holds at
+ * most 32 KiB; allocation failure retains the direct path. The angles use the
+ * original multiplication order so recording and raster pixels stay identical. */
+#define RING_CACHE_SLOTS 4
+typedef struct { int n; unsigned age; float *xy; } ring_circle;
+static ring_circle s_ring_circle[RING_CACHE_SLOTS];
+static unsigned s_ring_age;
+static const float *ring_units(int n)
+{
+    ring_circle *slot = &s_ring_circle[0];
+    for (int j = 0; j < RING_CACHE_SLOTS; j++) {
+        ring_circle *c = &s_ring_circle[j];
+        if (c->n == n && c->xy) { c->age = ++s_ring_age; return c->xy; }
+        if (c->age < slot->age) slot = c;
+    }
+    if (!slot->xy) slot->xy = hal_big_alloc(1024u * 2u * sizeof(float));
+    if (!slot->xy) return NULL;
+    float step = 6.2831853f / (float)n;
+    for (int i = 0; i < n; i++) {
+        float a = step * (float)i;
+        slot->xy[2 * i] = gfx_fast_sin(a);
+        slot->xy[2 * i + 1] = gfx_fast_cos(a);
+    }
+    slot->n = n; slot->age = ++s_ring_age;
+    return slot->xy;
+}
+
 void dot_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d,
               float lit0, float lit1, uint16_t on, uint16_t off)
 {
@@ -722,6 +778,7 @@ void dot_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d,
         lit0 -= sh; lit1 -= sh;
     }
     float step = 6.2831853f / (float)n, e = d * 0.5f + 1.0f;
+    const float *unit = ring_units(n);
     if (fb->rec) {
         int K = n < RING_CHUNKS ? n : RING_CHUNKS;
         for (int ch = 0; ch < K; ch++) {
@@ -731,7 +788,8 @@ void dot_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d,
             h = gfx_hash_f(gfx_hash_f(gfx_hash_f(gfx_hash_f(h, cx), cy), r), d);
             for (int i = i0; i < i1; i++) {
                 float a = step * (float)i;
-                float px = cx + r * gfx_fast_sin(a), py = cy - r * gfx_fast_cos(a);
+                float px = cx + r * (unit ? unit[2 * i] : gfx_fast_sin(a));
+                float py = cy - r * (unit ? unit[2 * i + 1] : gfx_fast_cos(a));
                 if (px < x0) x0 = px;
                 if (px > x1) x1 = px;
                 if (py < y0) y0 = py;
@@ -750,9 +808,9 @@ void dot_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d,
     if (!clip_hit(&k, cx - re, cy - re, cx + re, cy + re)) return;
     for (int i = 0; i < n; i++) {
         float a = step * (float)i;
-        float py = cy - r * gfx_fast_cos(a);
+        float py = cy - r * (unit ? unit[2 * i + 1] : gfx_fast_cos(a));
         if (py + e <= (float)k.ylo || py - e >= (float)k.yhi) continue;
-        float px = cx + r * gfx_fast_sin(a);
+        float px = cx + r * (unit ? unit[2 * i] : gfx_fast_sin(a));
         float f = lit_frac((float)i, lit0, lit1), f2 = lit_frac((float)(i + n), lit0, lit1);
         if (f2 > f) f = f2;
         if (f <= 0.0f && !off) continue;

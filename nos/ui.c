@@ -1,9 +1,12 @@
+#include "cost_profile.h"
 /* ui.c — NOS design system. See ui.h. */
 #include "ui.h"
 #include "nos.h"
 #include "prefs.h"
 #include "hal_ext.h"
 #include "gfx_cost.h"
+#include "sprite.h"
+#include "hal.h"
 #ifdef NOS_FONT_SHIM          /* until nos/fonts lands: borrow the old core fonts */
 #define nf_hero    font_big
 #define nf_display font_large
@@ -18,6 +21,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+
+uint16_t nos_c_red = 0xD0C4, nos_c_red_d = 0xB083, nos_c_green = 0x4CEB, nos_c_amber = 0xD548;
+void ui_theme_inverted(int on)
+{
+    uint16_t m = on ? 0xFFFFu : 0u;
+    nos_c_red = 0xD0C4u ^ m; nos_c_red_d = 0xB083u ^ m;
+    nos_c_green = 0x4CEBu ^ m; nos_c_amber = 0xD548u ^ m;
+    nos_invalidate();                          /* every accent on the glass is redrawn */
+}
 
 const font_t *UI_F_HERO    = &nf_hero;
 const font_t *UI_F_DISPLAY = &nf_display;
@@ -68,6 +80,15 @@ uint16_t ui_dim(uint16_t c, float k) { return ui_mix(0, c, k); }
 /* ----------------------------------------------------------------- text */
 static const font_glyph *glyph(const font_t *f, unsigned code)
 {
+    /* Direct contiguous-code hit; duplicate neighbours retain the original
+     * sorted-table binary-search selection, including differing metrics. */
+    if (f->nglyphs > 0 && code >= f->glyphs[0].code) {
+        unsigned index = code - f->glyphs[0].code;
+        if (index < (unsigned)f->nglyphs && f->glyphs[index].code == code &&
+            (!index || f->glyphs[index - 1].code != code) &&
+            (index + 1 >= (unsigned)f->nglyphs || f->glyphs[index + 1].code != code))
+            return &f->glyphs[index];
+    }
     int lo = 0, hi = f->nglyphs - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -120,6 +141,7 @@ static void blit_glyph(gfx_fb *fb, const font_t *f, const font_glyph *g, int x, 
 int ui_text(gfx_fb *fb, const font_t *f, int x, int y, const char *s, uint16_t color,
             int align, int tracking)
 {
+    NOS_COST_SCOPE(NOS_COST_TEXT,!fb->rec);
     if (!s || !*s) return 0;
     int w = ui_text_width(f, s, tracking);
     if (align == UI_CENTER) x -= w / 2;
@@ -267,6 +289,7 @@ static void fill_run(uint16_t *p, int n, uint16_t color)
 
 void ui_rrect(gfx_fb *fb, float x, float y, float w, float h, float r, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (w <= 0 || h <= 0) return;
     if (r > w * 0.5f) r = w * 0.5f;
     if (r > h * 0.5f) r = h * 0.5f;
@@ -330,6 +353,7 @@ void ui_rrect(gfx_fb *fb, float x, float y, float w, float h, float r, uint16_t 
 
 void ui_rrect_line(gfx_fb *fb, float x, float y, float w, float h, float r, float t, uint16_t color)
 {
+    NOS_COST_SCOPE(NOS_COST_SHAPE,!fb->rec);
     if (w <= 0 || h <= 0 || t <= 0) return;
     if (r > w * 0.5f) r = w * 0.5f;
     if (r > h * 0.5f) r = h * 0.5f;
@@ -397,7 +421,10 @@ void ui_title(gfx_fb *fb, const char *s, float scroll)
     float k = 1.0f - m_clamp(scroll / 60.0f, 0, 1);
     if (k <= 0.02f) return;
     int y = 70 - (int)lroundf((1 - k) * 18.0f);
-    ui_label(fb, UI_CX, y, s, ui_dim(C_SEC, k), UI_CENTER);
+    int w=ui_label(fb, UI_CX, y, s, ui_dim(C_SEC, k), UI_CENTER);
+    int x=(int)UI_CX-w/2;
+    ui_fblur_coverage_exclude(fb,x-2,y-UI_F_LABEL->ascent-2,
+                             x+w+2,y+UI_F_LABEL->line_height-UI_F_LABEL->ascent+2);
 }
 
 void ui_clock_small(gfx_fb *fb, int y)
@@ -426,6 +453,12 @@ void ui_scrollbar(gfx_fb *fb, float offset, float content, float view, float alp
     if (a1 - a0 < 0.06f) a1 = a0 + 0.06f;
     gfx_arc(fb, UI_CX, UI_CY, UI_R - 9, 5, lo, hi, ui_dim(C_LINE2, alpha));
     gfx_arc(fb, UI_CX, UI_CY, UI_R - 9, 5, a0, a1, ui_dim(C_PRI, alpha));
+    /* The scrollbar is an arc. Both its moving thumb and fading track are live;
+     * revoke only their conservative right-bezel bounding box. */
+    float r=UI_R-9;
+    ui_fblur_coverage_exclude(fb,(int)floorf(UI_CX+gfx_fast_sin(lo)*r-4),
+        (int)floorf(UI_CY-gfx_fast_cos(lo)*r-4),(int)ceilf(UI_CX+r+4),
+        (int)ceilf(UI_CY-gfx_fast_cos(hi)*r+4));
 }
 
 void ui_page_dots_a(gfx_fb *fb, int cx, int y, int n, float pos, float alpha)
@@ -577,6 +610,7 @@ void ui_state(gfx_fb *fb, int cx, int y, const char *s, uint16_t color)
 /* ---------------------------------------------------------------- list */
 void ui_list_init(ui_list *l, int n, int row_h, int top, ui_row_fn draw_row, void (*on_tap)(int))
 {
+    ui_fblur_invalidate(l, 0, 0x7fffffff);
     memset(l, 0, sizeof *l);
     l->n = n; l->row_h = row_h; l->top = top; l->bottom_pad = 90;
     l->draw_row = draw_row; l->on_tap = on_tap;
@@ -586,6 +620,7 @@ void ui_list_init(ui_list *l, int n, int row_h, int top, ui_row_fn draw_row, voi
 }
 void ui_list_set_n(ui_list *l, int n)
 {
+    if(l->n != n) ui_fblur_invalidate(l, 0, 0x7fffffff);
     l->n = n;
     float max = (float)(l->top + n * l->row_h + l->bottom_pad - GFX_H);
     msc_bounds(&l->sc, 0, max > 0 ? max : 0);
@@ -605,6 +640,8 @@ int ui_list_input(ui_list *l, const nos_input *in)
 {
     static int s_was_moving;
     switch (in->type) {
+    case IN_CANCEL:
+        l->pressed=-1;l->dragging=0;s_was_moving=0;msc_release(&l->sc,0);return 1;
     case IN_DOWN:
         s_was_moving = l->sc.moving && fabsf(l->sc.v) > 60.0f;
         msc_grab(&l->sc);
@@ -647,10 +684,30 @@ int ui_list_input(ui_list *l, const nos_input *in)
     }
 }
 
+static void list_row_full(gfx_fb *fb, int i, int x0, int y, int x1, int h, void *ctx);
 void ui_list_tick(ui_list *l, float dt)
 {
     /* the bar shows only while the content actually moves (a resting tap must not flash it) */
     if (msc_step(&l->sc, dt) && (l->dragging || l->sc.moving)) l->bar_t = nos_t;
+#ifdef GFX_COST_MODEL
+    {   /* motion audit: the drawn offset, as "list.<screen>" */
+        char nm[40];
+        const nos_screen *top = nos_top();
+        snprintf(nm, sizeof nm, "list.%s", top && top->name ? top->name : "?");
+        nos_motion_probe(nm, l->dragging ? MC_FINGER : MC_MOMENTUM, -floorf(l->sc.x + 0.5f));
+    }
+#endif
+    if (l->draw_row) {   /* motion cache: normalized displacement selects blur during drags and flings */
+        float off = floorf(l->sc.x + 0.5f), fr = dt * M_FPS;
+        float st = (off - l->fb_prev) / (fr > 0.5f ? fr : 1.0f);
+        l->fb_prev = off;
+        int i0 = (int)floorf((off - l->top) / l->row_h), i1 = (int)floorf((off - l->top + GFX_H) / l->row_h);
+        int x0, x1;
+        ui_row_span(UI_CY + l->row_h * 0.5f, (float)l->margin, &x0, &x1);   /* the middle row's span */
+        ui_fblur_tick(l, l->dragging, st, i0, i1, l->n, l->row_h, x0, x1, 0, list_row_full, l);
+        nos_blur_note(NOS_BS_LIST, l->dragging || st != 0.0f, ui_fblur_active(l),
+                      ui_fblur_ready(l, i0 < 0 ? 0 : i0, i1 > l->n - 1 ? l->n - 1 : i1));
+    }
     float idle = nos_t - l->bar_t;
     float target = idle < 0.6f ? 1.0f : 0.0f;
     /* linear fade (in 0.1 s, out 0.3 s) then quantise: an exponential fade rounded to
@@ -659,6 +716,12 @@ void ui_list_tick(ui_list *l, float dt)
     if (target > l->bar_alpha) l->bar_alpha = l->bar_alpha + step > target ? target : l->bar_alpha + step;
     else l->bar_alpha = l->bar_alpha - step < target ? target : l->bar_alpha - step;
     l->bar_alpha = floorf(l->bar_alpha * 16.0f + 0.5f) / 16.0f;
+}
+
+static void list_row_full(gfx_fb *fb, int i, int x0, int y, int x1, int h, void *ctx)
+{
+    const ui_list *l = ctx;
+    l->draw_row(fb, i, x0, y, x1, h, 1.0f, 0);
 }
 
 void ui_list_draw(gfx_fb *fb, ui_list *l)
@@ -677,6 +740,7 @@ void ui_list_draw(gfx_fb *fb, ui_list *l)
         int x0, x1;
         ui_row_span(edge_y, (float)l->margin, &x0, &x1);
         if (x1 - x0 < 60) continue;
+        if (i != l->pressed && ui_fblur_active(l) && ui_fblur_draw(fb, l, i, y, fade)) continue;
         l->draw_row(fb, i, x0, y, x1, l->row_h, fade, i == l->pressed);
     }
     float content = (float)(l->top + l->n * l->row_h + l->bottom_pad);
@@ -689,6 +753,8 @@ void ui_draw_banner(gfx_fb *fb, const char *title, const char *body, int icon, f
     /* top 52 / width 300 keeps the rounded corners inside the glass; two body lines */
     const float w = 300, h = 136, top = UI_BANNER_TOP + y;
     float x = UI_CX - w / 2;
+    ui_fblur_coverage_exclude(fb, (int)floorf(x) - 1, (int)floorf(top) - 1,
+                             (int)ceilf(x + w) + 1, (int)ceilf(top + h) + 1);
     ui_rrect(fb, x, top, w, h, 40, pressed ? C_LINE2 : C_SURF2);   /* pressed cards: C_LINE2 */
     float iy = top + 34;
     dot_icon(fb, icon ? icon : DOT_ICON_BELL, x + 42, iy, 2.6f, 2.1f, C_WHITE);   /* never a red */
@@ -719,31 +785,42 @@ const char *ui_module_short(uint32_t ext)
     }
 }
 
-void ui_draw_toast(gfx_fb *fb, const char *text, float t)
+/* The toast's caps text ("[ SAVED ]"), width and resting top: as high as the pill's end
+ * caps clear the bezel by 12 px, lower for long copy (y 30 fits ~229 px). */
+static void toast_geom(const char *text, char b[52], float *w, float *y0)
 {
-    /* drops in from behind the top bezel at full colour and goes back up: no grey
-     * fade over whatever is under it (§8: no fade-ups) */
-    float k = t < 0.12f ? bezier_ease(&EASE_DECEL, t / 0.12f)
-            : t > 0.86f ? 1.0f - bezier_ease(&EASE_ACCEL, (t - 0.86f) / 0.14f) : 1.0f;
-    k = m_clamp(k, 0, 1);
-    if (k <= 0 || t >= 1) return;
-    /* states read as bracketed caps text: "[ SAVED ]" */
-    char b[52];
     int i = 0, o = 0;
     while (text[i] == '[' || text[i] == ' ') i++;
     b[o++] = '['; b[o++] = ' ';
     for (; text[i] && o < 46; i++) b[o++] = (char)toupper((unsigned char)text[i]);
     while (o > 2 && (b[o - 1] == ']' || b[o - 1] == ' ')) o--;
     b[o++] = ' '; b[o++] = ']'; b[o] = 0;
-    int tw = ui_text_width(UI_F_LABEL, b, LABEL_TRACK);
-    float w = tw + 40.0f, h = 42;
-    /* the top of the glass, never over the thumb-zone actions: as high as the pill's
-     * end caps clear the bezel by 12 px, lower for long copy (y 30 fits ~229 px) */
-    float y0 = 30;
-    for (; y0 < 72; y0 += 2) {
-        float dx = w * 0.5f - h * 0.5f, dy = UI_CY - (y0 + h * 0.5f);
+    const float h = 42;
+    *w = ui_text_width(UI_F_LABEL, b, LABEL_TRACK) + 40.0f;
+    float y = 30;
+    for (; y < 72; y += 2) {
+        float dx = *w * 0.5f - h * 0.5f, dy = UI_CY - (y + h * 0.5f);
         if (gfx_fast_sqrt(dx * dx + dy * dy) + h * 0.5f + 12.0f <= UI_R) break;
     }
+    *y0 = y;
+    float wmax = 2.0f * (ui_half_width(y + h * 0.5f) - 12.0f - h * 0.5f) + h;
+    if (*w > wmax) *w = wmax;
+}
+float ui_toast_travel(const char *text)
+{
+    char b[52]; float w, y0;
+    toast_geom(text, b, &w, &y0);
+    return y0 + 42 + 4;                               /* fully above the glass */
+}
+
+void ui_draw_toast(gfx_fb *fb, const char *text, float off)
+{
+    /* drops in from behind the top bezel at full colour and goes back up: no grey
+     * fade over whatever is under it (section 8: no fade-ups). The engine plans `off`. */
+    char b[52]; float w, y0;
+    const float h = 42;
+    toast_geom(text, b, &w, &y0);
+    if (off >= y0 + h + 4) return;
 #ifdef GFX_COST_MODEL
     /* sim only: copy past ~9 caps pushes the pill down onto the content */
     static char s_warned[52];
@@ -752,11 +829,72 @@ void ui_draw_toast(gfx_fb *fb, const char *text, float t)
         fprintf(stderr, "WARNING: toast %s is too long for the top slot (drops to y %.0f)\n", b, y0);
     }
 #endif
-    float wmax = 2.0f * (ui_half_width(y0 + h * 0.5f) - 12.0f - h * 0.5f) + h;
-    if (w > wmax) w = wmax;
-    float y = floorf(y0 - (1 - k) * (y0 + h + 4) + 0.5f);   /* k = 0: fully above the glass */
+    float y = floorf(y0 - off + 0.5f);
+    float ink_w = (float)ui_text_width(UI_F_LABEL, b, LABEL_TRACK);
+    if (ink_w < w) ink_w = w;
+    ui_fblur_coverage_exclude(fb, (int)floorf(UI_CX - ink_w / 2) - 1, (int)y - 1,
+                             (int)ceilf(UI_CX + ink_w / 2) + 1, (int)(y + h) + 1);
     ui_rrect(fb, UI_CX - w / 2, y, w, h, h / 2, C_WHITE);
     ui_text(fb, UI_F_LABEL, UI_CX, (int)(y + h / 2 + UI_F_LABEL->ascent * 0.5f - 2), b, C_BG, UI_CENTER, LABEL_TRACK);
+}
+
+/* --------------------------------------------------------------- smear */
+int ui_ripple_blur = 1;
+
+void ui_trail_push(ui_trail *t, float x, float y)
+{
+    for (int i = 2; i > 0; i--) { t->x[i] = t->x[i - 1]; t->y[i] = t->y[i - 1]; }
+    t->x[0] = x; t->y[0] = y;
+    if (t->n < 3) t->n++;
+}
+void ui_trail_reset(ui_trail *t, float x, float y)
+{
+    for (int i = 0; i < 3; i++) { t->x[i] = x; t->y[i] = y; }
+    t->n = 3;
+}
+float ui_trail_step(const ui_trail *t, int i)
+{
+    if (i < 0 || i + 1 >= t->n) return 0;
+    float dx = t->x[i] - t->x[i + 1], dy = t->y[i] - t->y[i + 1];
+    return gfx_fast_sqrt(dx * dx + dy * dy);
+}
+/* The ghost's colour: what `fb` would write for c at ink k, drawn into a view without the
+ * dim. The same pixels as nos_ink_dim, but a real colour change, so the damage recorder
+ * (which hashes colours, not fb->dim) repaints a ghost that lands where the object was. */
+static uint16_t ghost_ink(const gfx_fb *fb, gfx_fb *plain, uint16_t c, float k)
+{
+    gfx_fb g = *fb;
+    nos_ink_dim(&g, k);
+    *plain = *fb;
+    plain->dim = 0;
+    return gfx_ink(&g, c);
+}
+static int trail_fast(const ui_trail *t, int i, float min_step)
+{
+    if (i + 1 >= t->n) return 0;
+    float dx = t->x[i] - t->x[i + 1], dy = t->y[i] - t->y[i + 1];
+    return dx * dx + dy * dy > min_step * min_step;
+}
+void ui_smear_disc(gfx_fb *fb, const ui_trail *t, float r, uint16_t color, float min_step, int ghosts)
+{
+    /* ghost i sits where the disc was i frames ago, if the step that left it was fast;
+     * the farther one first, so the nearer (brighter) one draws over it */
+    for (int i = ghosts >= 2 ? 2 : 1; i >= 1; i--) {
+        if (!trail_fast(t, i - 1, min_step)) continue;
+        gfx_fb g;
+        uint16_t c = ghost_ink(fb, &g, color, i == 1 ? UI_GHOST1 : UI_GHOST2);
+        gfx_fill_circle(&g, t->x[i], t->y[i], r, c);
+    }
+}
+void ui_smear_stretch(gfx_fb *fb, const ui_trail *t, float r, uint16_t color, float min_step)
+{
+    if (!trail_fast(t, 0, min_step)) return;
+    float dx = t->x[0] - t->x[1], dy = t->y[0] - t->y[1];
+    float tx = t->x[0] - dx * 0.5f, ty = t->y[0] - dy * 0.5f;   /* half a step behind */
+    gfx_fb g;
+    uint16_t c = ghost_ink(fb, &g, color, UI_GHOST1);
+    if (dy == 0) gfx_fill_pill(&g, tx < t->x[0] ? tx : t->x[0], ty, tx < t->x[0] ? t->x[0] : tx, r, c);
+    else gfx_taper(&g, tx, ty, t->x[0], t->y[0], r * 0.7f, r, c);
 }
 
 /* --------------------------------------------------------- formatting */

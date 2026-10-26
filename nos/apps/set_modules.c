@@ -1,7 +1,8 @@
 /* set_modules.c — Modules: diagnostics dashboard for every board part and strap module,
  * and the hardware bring-up tool for the real watch.
  *
- * List: a summary (online count + one dot per module), then BOARD and STRAP sections.
+ * List: a summary (online count + one rounded square per module, in fours), then BOARD
+ * and STRAP sections.
  * Each row: status dot (white = present/ok, grey = absent), name, bus/part, live value,
  * chevron. Live values refresh at 1 Hz so the text is readable and damage settles.
  * The list ends with RUN DIAGNOSTICS, which pushes the pass/fail test run (set_diag.c).
@@ -28,6 +29,8 @@
 #include "hal_ext.h"
 #include "prefs.h"
 #include "apps/nos_apps.h"
+#include "prog.h"
+#include "diag_log.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,7 +45,7 @@ enum { M_TOUCH = 0, M_IMU, M_RTC, M_SD, M_BATT, M_WIFI, M_BLE,
 #define PRESS_TRAVEL 8           /* ...and drops it once the finger has moved 8 px (a scroll) */
 #define ROW_GAP     24           /* least gap between a row's name and its value */
 #define LIVE_S 1.0f              /* live text readings refresh at 1 Hz */
-#define MORPH_S 0.28f
+#define MORPH_F 8                /* a dot-matrix value morphs over 8 whole frames */
 
 typedef struct {
     const char *name, *bus, *title;
@@ -88,6 +91,18 @@ static const char *const k_sfx_names[SFX_COUNT] = {
     "Success", "Error", "Charge", "Boot", "Shutter" };
 
 /* ======================================================================= helpers */
+/* Motion (docs/MOTION30.html): whole frames throughout. EASE_STEADY as frame tables (R3):
+ * the peak step stays <= 1.56x the average and nothing creeps at the end. */
+static const mframes MF_STEADY4 = { 4, { 38, 70, 92, 100 } };
+static const mframes MF_STEADY5 = { 5, { 31, 58, 80, 95, 100 } };
+/* A state swap `k` whole frames in: the old one fades over its first frame (100, 38 %),
+ * the new one comes in over the next 4 (12, 38, 62, 100 %), perceptual ink (R4, R9). */
+#define SWAP_F 5
+static void swap_inks(int k, float *kout, float *kin)
+{
+    *kout = k >= 2 ? 0.0f : m_ink(1.0f - k / 2.0f);
+    *kin = k < 2 ? 0.0f : m_ink((k - 1) / (float)(SWAP_F - 1));
+}
 static float qfade(float yc)
 {
     float d = fabsf(yc - UI_CY);
@@ -126,7 +141,7 @@ static int lab_u_w(const char *v, const char *u)
     return w;
 }
 
-typedef struct { char from[24], to[24]; float t0; } mmt;
+typedef struct { char from[24], to[24]; nos_time_t t0; } mmt;
 static void mmt_set(mmt *m, const char *s, int init)
 {
     if (init) { snprintf(m->to, sizeof m->to, "%s", s); memcpy(m->from, m->to, sizeof m->from); m->t0 = -100; return; }
@@ -135,9 +150,9 @@ static void mmt_set(mmt *m, const char *s, int init)
     snprintf(m->to, sizeof m->to, "%s", s);
     m->t0 = nos_t;
 }
-static void mmt_draw(gfx_fb *fb, const mmt *m, const dot_style *st, float x, float y, float dur)
+static void mmt_draw(gfx_fb *fb, const mmt *m, const dot_style *st, float x, float y, int frames)
 {
-    float p = (nos_t - m->t0) / dur;
+    float p = m_frame_k(m->t0) / (float)frames;
     if (p >= 1) dot_text_a(fb, st, x, y, m->to, 1);
     else dot_text_morph(fb, st, x, y, m->from, m->to, 1, p);
 }
@@ -172,6 +187,7 @@ static struct {
     char vu[M_COUNT][8];         /* case-kept unit of val */
     hal_imu imu; int imu_ok;
     hal_storage sd;
+    hal_flash_info fl;       /* the watch's own flash (Settings > Storage) */
     hal_power pw;
     hal_gps gps; int gps_ok;
     hal_lte lte; int lte_ok;
@@ -182,15 +198,21 @@ static struct {
     float mic_db;
     hal_datetime dt;
     int touch_x, touch_y, touched;
-    float sd_t;
+    nos_time_t sd_t;
 } V;
+
+static int imu_usable(const hal_imu *imu)
+{
+    return isfinite(imu->ax) && isfinite(imu->ay) && isfinite(imu->az) &&
+           isfinite(imu->gx) && isfinite(imu->gy) && isfinite(imu->gz);
+}
 
 static void sample(int poll_hr, int poll_mic)
 {
     uint32_t ext = hal_ext_present();
-    V.imu_ok = hal_imu_read(&V.imu);
+    V.imu_ok = hal_imu_read(&V.imu) && imu_usable(&V.imu);
     hal_get_datetime(&V.dt);
-    if (nos_t - V.sd_t > 1.0f || V.sd_t == 0) { hal_storage_get(&V.sd); V.sd_t = nos_t; }
+    if (nos_t - V.sd_t > 1.0f || V.sd_t == 0) { hal_storage_get(&V.sd); hal_flash_info_get(&V.fl); V.sd_t = nos_t; }
     hal_power_get(&V.pw);
     V.gps_ok = (ext & EXT_GPS) && hal_gps_get(&V.gps);
     V.lte_ok = (ext & EXT_LTE) && hal_lte_get(&V.lte);
@@ -228,7 +250,7 @@ int set_modules_online(int *total)
 {
     int ok[M_COUNT];
     hal_imu imu; hal_storage sd; hal_power pw;
-    int iok = hal_imu_read(&imu);
+    int iok = hal_imu_read(&imu) && imu_usable(&imu);
     hal_storage_get(&sd);
     hal_power_get(&pw);
     presence(ok, iok, &sd, &pw);
@@ -332,10 +354,12 @@ static struct {
     int8_t unit_e[NLE * 6];
     int nunits;
     int inited, was_moving;
-    float t0, next;
+    nos_time_t t0; nos_time_t next;
     mmt sum;
     int online;
-    int flash_e; float flash_t;
+    int flash_e; nos_time_t flash_t;
+    float fb_prev; int fb_lv;    /* fling blur: last drawn offset, this frame's blur level */
+    int sample_hold;             /* only fast motion postpones live list readings */
 } ML;
 
 static void mods_count(void)
@@ -363,6 +387,8 @@ static void modules_enter(void)
         ML.L.bar_t = -10.0f;
         ML.t0 = nos_enter_t();
         ML.inited = 1;
+        ML.fb_prev = floorf(ui_list_offset(&ML.L) + 0.5f);
+        ML.fb_lv = ML.sample_hold = 0;
     }
     hal_gps_enable(1);              /* satellites in the list, also under its own detail pages */
     V.sd_t = 0;
@@ -380,10 +406,30 @@ static void modules_leave(void)
     if (!nos_leaving_covered() && !svc_track_active()) hal_gps_enable(0);
 }
 
+#ifdef GFX_COST_MODEL
+/* motion audit: a build-in value is on the glass only once it shows (`vis`); its first
+ * visible frame reports where it starts (`from`) as the move's origin */
+static void probe_vis(const char *name, int cls, int vis, float px, float from, int *seen)
+{
+    if (!vis) { *seen = 0; return; }
+    if (!*seen) nos_motion_probe(name, cls, from);
+    *seen = 1;
+    nos_motion_probe(name, cls, px);
+}
+#endif
+static float mbuild(float y, float *dy);
+static int s_mband_baking;
+static float sum_sweep(void);
+#define SQ_SIDE   10.0f        /* the summary: sixteen 10 px rounded squares ... */
+#define SQ_GAP    6.0f         /* ... 6 px apart ... */
+#define SQ_GROUP  18.0f        /* ... in fours, 18 px between the groups */
+static void mband_tick(float dt);
 static void modules_tick(float dt)
 {
     ui_list_tick(&ML.L, dt);
-    if (nos_t >= ML.next) {
+    /* live values wait out a fast glide (unreadable then): a changed row would drop its
+     * blurred band and strobe sharp mid-fling */
+    if (nos_t >= ML.next && !ML.sample_hold) {
         sample(0, 1);
         list_values();
         mods_count();
@@ -391,19 +437,49 @@ static void modules_tick(float dt)
         mmt_set(&ML.sum, b, 0);
         ML.next = nos_t + LIVE_S;
     }
+    mband_tick(dt);
+#ifdef GFX_COST_MODEL
+    {   /* motion audit: the build-in's drawn offsets and the summary dots */
+        static int seen[5];
+        if (m_frame_k(ML.t0) <= 1) seen[0] = seen[1] = 0;     /* a fresh build */
+        float bdy, e = mbuild(60.0f, &bdy);
+        probe_vis("mod.build0", MC_MICRO, e > 0, bdy, 14, &seen[0]);
+        probe_vis("mod.build0.ink", MC_FADE, e > 0, e * 100.0f, 0, &seen[1]);
+        float e5 = mbuild(460.0f, &bdy);
+        probe_vis("mod.build5", MC_MICRO, e5 > 0, bdy, 14, &seen[2]);
+        float sw = sum_sweep();
+        probe_vis("mod.sum.sweep", MC_FILL, sw > 0, sw * (SQ_SIDE + SQ_GAP), 0, &seen[3]);
+        (void)seen[4];
+    }
+#endif
 }
 
 static float mlist_off(void) { return floorf(ui_list_offset(&ML.L) + 0.5f); }
 
+/* build-in: rows rise 14 px and fade in, one 80 px band a frame from the top down (6
+ * bands, R9), each over 5 frames: the rise on MF_STEADY5 in whole pixels, the ink in
+ * perceptual steps. Returns the ink (0 = not drawn yet). */
 static float mbuild(float y, float *dy)
 {
-    int k = (int)((y - 60.0f) / 80.0f);
-    if (k < 0) k = 0;
-    if (k > 5) k = 5;
-    float p = m_clamp((nos_t - ML.t0 - k * 0.034f) / 0.20f, 0, 1);
-    float e = floorf(bezier_ease(&EASE_STANDARD, p) * 8.0f + 0.5f) / 8.0f;
-    *dy = (1.0f - e) * 14.0f;
-    return e;
+    if (s_mband_baking) { *dy = 0; return 1.0f; }
+    int band = (int)((y - 60.0f) / 80.0f);
+    if (band < 0) band = 0;
+    if (band > 5) band = 5;
+    int k = m_stagger_k(m_frame_k(ML.t0), band, 1);
+    *dy = floorf((1.0f - mf_at(&MF_STEADY5, k)) * 14.0f + 0.5f);
+    return m_ink(k / 5.0f);
+}
+/* The summary's squares: the grey track arrives with its row; the online modules then
+ * light white in one sweep from the left (EASE_STEADY over 18 whole frames from frame 3,
+ * 0.6 s), each stepping grey -> white in 8 ink steps as the sweep crosses it. Returns
+ * the squares swept so far (0..M_COUNT). */
+#define SUM_SWEEP_F 18
+static float sum_sweep(void)
+{
+    int k = m_frame_k(ML.t0) - 2;
+    if (k <= 0) return 0;
+    if (k >= SUM_SWEEP_F) return (float)M_COUNT;
+    return floorf((float)M_COUNT * bezier_ease(&EASE_STEADY, (float)k / SUM_SWEEP_F) * 8.0f + 0.5f) / 8.0f;
 }
 
 static void draw_summary(gfx_fb *fb, float y, float k)
@@ -412,17 +488,19 @@ static void draw_summary(gfx_fb *fb, float y, float k)
     float pitch = hero_pitch(ML.sum.to);
     dot_style hs = { DOT_FONT_TALL, pitch, pitch * 0.8f, ui_dim(C_WHITE, k), 0, 1, 1 };
     if (bp < 1) dot_text_anim(fb, &hs, UI_CX, y + 2, ML.sum.to, 1, bp, DOT_REVEAL_RANDOM, 21);
-    else mmt_draw(fb, &ML.sum, &hs, UI_CX, y + 2, MORPH_S);
+    else mmt_draw(fb, &ML.sum, &hs, UI_CX, y + 2, MORPH_F);
     ui_label(fb, UI_CX, (int)(y + 108), "ONLINE", ui_dim(C_SEC, k), UI_CENTER);
-    /* one dot per module, in list order: the whole bus at a glance */
-    const float pitch_d = 16.0f;
-    float x0 = UI_CX - (M_COUNT - 1) * pitch_d * 0.5f;
+    /* one rounded square per module, in list order and in fours so the missing ones can
+     * be counted: online white, absent the grey track. Each square is one primitive. */
+    const float sp = SQ_SIDE + SQ_GAP;
+    float wtot = M_COUNT * SQ_SIDE + (M_COUNT - M_COUNT / 4) * SQ_GAP + (M_COUNT / 4 - 1) * SQ_GROUP;
+    float x0 = floorf(UI_CX - wtot * 0.5f + 0.5f), sy = y + 137;
+    float sw = sum_sweep();
     for (int m = 0; m < M_COUNT; m++) {
-        float p = m_clamp((nos_t - ML.t0 - 0.08f - m * 0.012f) / 0.12f, 0, 1);
-        p = floorf(p * 4.0f + 0.5f) / 4.0f;
-        if (p <= 0) continue;
-        float gx = m >= M_BOARD_N ? 8.0f : 0.0f;     /* gap between board and strap */
-        dot_disc(fb, x0 + m * pitch_d + gx - 4.0f, y + 142, 8.0f * p, ui_dim(V.ok[m] ? C_WHITE : C_LINE2, k));
+        float sx = x0 + m * sp + (float)(m / 4) * (SQ_GROUP - SQ_GAP);
+        float on = V.ok[m] ? floorf(m_clamp(sw - (float)m, 0, 1) * 8.0f + 0.5f) / 8.0f : 0.0f;
+        uint16_t c = on >= 1 ? C_WHITE : on > 0 ? ui_mix(C_LINE2, C_WHITE, on) : C_LINE2;
+        ui_rrect(fb, sx, sy, SQ_SIDE, SQ_SIDE, 2.8f, ui_dim(c, k));
     }
 }
 
@@ -431,7 +509,7 @@ static void draw_lrow(gfx_fb *fb, int e, float y, float h, int pressed)
     const lentry *le = &LE[e];
     float bdy, bk = mbuild(y, &bdy);
     if (bk <= 0) return;
-    y += floorf(bdy + 0.5f);
+    y += bdy;
     float cy = y + h * 0.5f;
     float k = qfade(cy) * bk;
     if (le->kind == LK_SUM) { draw_summary(fb, y, k); return; }
@@ -479,22 +557,72 @@ static void draw_lrow(gfx_fb *fb, int e, float y, float h, int pressed)
     chevron(fb, rx, cy - 11, ui_dim(C_DIS, k));
 }
 
-static void modules_draw(gfx_fb *fb)
+/* ---- fling blur (ui.h): the list body in 90 px content bands, baked with their 24 px
+ * context; rows with live values re-bake (or stay sharp) when their look changes */
+#define BAND_H 90
+static int mbands(void) { return (ML.nunits * MU + BAND_H - 1) / BAND_H; }
+static void mband_draw(gfx_fb *fb, int i, int x0, int y, int x1, int h, void *ctx)
 {
-    float off = mlist_off();
-    ui_title(fb, "MODULES", off);
+    (void)x0; (void)x1; (void)ctx;
+    s_mband_baking = 1;
+    for (int e = 0; e < NLE; e++) {
+        float eh = (float)(lunits(LE[e].kind) * MU);
+        float ey = (float)y + (float)(ML.start[e] * MU - i * BAND_H);
+        if (ey + eh < y - 24 || ey > y + h + 24) continue;
+        draw_lrow(fb, e, ey, eh, 0);
+    }
+    s_mband_baking = 0;
+}
+static void mband_range(float off, int *i0, int *i1)
+{
+    *i0 = (int)floorf((off - MTOP) / BAND_H);
+    *i1 = (int)floorf((off - MTOP + GFX_H) / BAND_H);
+    if (*i0 < 0) *i0 = 0;
+    if (*i1 > mbands() - 1) *i1 = mbands() - 1;   /* the bottom pad has no band */
+}
+static void mband_tick(float dt)
+{
+    float off = mlist_off(), fr = dt * M_FPS, st = (off - ML.fb_prev) / (fr > 0.5f ? fr : 1.0f);
+    ML.fb_prev = off;
+    /* Keep the original fast-motion sampling policy independent of the retained
+     * cache's lower shutter thresholds. Slow drags still refresh live readings. */
+    ML.sample_hold = nos_mblur && !NOS_HELD_SHARP(ML.L.dragging) && ui_fblur_level(st) > 0;
+    int i0, i1, x0, x1;
+    mband_range(off, &i0, &i1);
+    ui_row_span(UI_CY + BAND_H * 0.5f, 6.0f, &x0, &x1);
+    ui_fblur_tick(&ML, ML.L.dragging, st, i0, i1, mbands(), BAND_H, x0, x1, 1, mband_draw, 0);
+    ML.fb_lv = ui_fblur_active(&ML);
+}
+
+static void modules_live_body(gfx_fb *fb,void *ctx)
+{
+    float off=*(const float *)ctx;
     int pe = -1;
     if (ML.flash_e >= 0 && nos_t - ML.flash_t < PRESS_FLASH) pe = ML.flash_e;
     else if (ML.L.pressed >= 0 && ML.L.pressed < ML.nunits && nos_t - ML.L.press_t > PRESS_HOLD && nos_touch_travel() <= PRESS_TRAVEL) pe = ML.unit_e[ML.L.pressed];
     for (int e = 0; e < NLE; e++) {
         float h = (float)(lunits(LE[e].kind) * MU);
         float y = MTOP + ML.start[e] * MU - off;
+        if(y+h+32+fb->oy<fb->y_base) continue;
+        if(y-32+fb->oy>=fb->y_base+fb->h) break;
         if (y + h < 0) continue;
         if (y > GFX_H) break;
         draw_lrow(fb, e, y, h, e == pe && LE[e].kind >= LK_ROW);
     }
-    float content = (float)(MTOP + ML.nunits * MU + ML.L.bottom_pad);
-    ui_scrollbar(fb, ML.L.sc.x, content, GFX_H, ML.L.bar_alpha);
+}
+static void modules_draw(gfx_fb *fb)
+{
+    float off=mlist_off();
+    float content=(float)(MTOP+ML.nunits*MU+ML.L.bottom_pad);
+    int b0,b1;mband_range(off,&b0,&b1);
+    if(ML.fb_lv && ML.L.pressed<0 && m_frame_k(ML.t0)>=13 &&
+       !(ML.flash_e>=0 && nos_t-ML.flash_t<PRESS_FLASH)) {
+        ui_fblur_draw_bands(fb,&ML,b0,b1,MTOP-(int)off,BAND_H,qfade,modules_live_body,&off);
+        ui_title(fb,"MODULES",off);
+    } else {
+        ui_title(fb,"MODULES",off);modules_live_body(fb,&off);
+    }
+    ui_scrollbar(fb,ML.L.sc.x,content,GFX_H,ML.L.bar_alpha);
 }
 
 static const nos_screen scr_mod_detail, scr_mod_touch;
@@ -504,6 +632,7 @@ void set_modules_open_sd(void) { open_detail(M_SD, 1); }
 
 static int modules_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { ML.was_moving = 0; ML.flash_e = -1; return ui_list_input(&ML.L, in); }
     if (in->type == IN_DOWN) {
         V.touch_x = in->x; V.touch_y = in->y; V.touched = 1;
         ML.was_moving = ML.L.sc.moving && fabsf(ML.L.sc.v) > 60.0f;
@@ -539,8 +668,8 @@ const nos_screen scr_modules = { "MODULES", modules_enter, modules_leave, module
 /* ======================================================================= detail */
 static struct {
     int m;
-    float t0, next;
-    int pressed; float flash_t;  /* action button */
+    nos_time_t t0; nos_time_t next;
+    int pressed; nos_time_t flash_t;  /* action button */
     mmt hero;
     char unit[32], unit_u[12];   /* label under the hero, + case-kept unit */
     int ustate;                  /* the label is a state: "[ OFF ]" */
@@ -548,18 +677,24 @@ static struct {
     /* haptic / speaker play lists */
     ui_list L;
     int was_moving;
-    int last_play; float play_t;
-    int flash_row; float flash_rt;
+    int last_play; nos_time_t play_t;
+    int flash_row; nos_time_t flash_rt;
+    float fb_prev; int fb_lv;    /* fling blur: last drawn offset, this frame's blur level */
     /* touch test */
     int tgt_hit[5]; int tgt_done;
     int fx, fy, fdown;
+    /* IMU: the bubble rides two pixel springs toward the reading (a level's viscous
+     * lag: <= 13 px a frame, crisp 1 px stop, no jitter repaints) */
+    mspring bub_x, bub_y;
     /* compass */
-    int calibrating;
+    int calibrating, cal_seen_low;
+    uint32_t cal_trace, lte_trace;
+    ui_trail north;              /* the north dot's last positions: a ghost when it sweeps fast (R7) */
     /* LTE */
-    int lte_req; float lte_req_t;
+    int lte_req; nos_time_t lte_req_t;
     /* light */
-    int gest; float gest_t;
-    int sig;                     /* last LTE / SD state signature */
+    int gest; nos_time_t gest_t;
+    int sig;                     /* last LTE / SD / IMU validity state */
     /* mic */
     float peak;
     uint8_t wave[32];
@@ -567,14 +702,24 @@ static struct {
     int alarm_on;
     /* opened from Settings: a user page (row title, no bus or wiring lines) */
     int from_set;
-    int hrs, hrs_prev; float hrs_t, hr_contact_t;   /* HR: 0 measuring, 1 no contact, 2 a reading */
+    nos_time_t sd_retry_t;          /* Storage: the last TRY AGAIN tap */
+    int hrs, hrs_prev; nos_time_t hrs_t; nos_time_t hr_contact_t;   /* HR: 0 measuring, 1 no contact, 2 a reading */
 } D;
 
+/* Targets 0x6000 + M_* identify hardware modules, never live readings. */
+static uint32_t module_action(uint16_t action, int old)
+{
+    uint32_t request = diag_action_request(DIAG_DOMAIN_SENSOR, action, 0x6000 + D.m);
+    diag_action_context(request, (int32_t)diag_log_name_id("MODULES"), old);
+    return request;
+}
 static void open_detail(int m, int from_settings)
 {
     /* the radios have one page each in the OS, in Settings; Modules adds its bus line */
     if (m == M_WIFI || m == M_BLE) { set_settings_open_radio(m == M_BLE, 1); return; }
     D.m = m;
+    uint32_t request = module_action(DIAG_ACT_SET, from_settings);
+    diag_action_result(request, DIAG_RESULT_SUCCESS, m); /* selected module */
     D.from_set = from_settings;
     nos_push(m == M_TOUCH ? &scr_mod_touch : &scr_mod_detail, TX_PUSH);
 }
@@ -612,6 +757,11 @@ static void detail_values(int init)
     for (int i = 0; i < 3; i++) { D.line[i][0] = 0; D.lu[i][0] = 0; }
     switch (D.m) {
     case M_IMU: {
+        if (!V.imu_ok) {
+            snprintf(h, sizeof h, UI_NONE);
+            snprintf(D.unit, sizeof D.unit, "NO REPLY");
+            break;
+        }
         float g = sqrtf(V.imu.ax * V.imu.ax + V.imu.ay * V.imu.ay + V.imu.az * V.imu.az);
         float tilt = g > 0.05f ? acosf(m_clamp(fabsf(V.imu.az) / g, 0, 1)) * 57.29578f : 0;
         snprintf(h, sizeof h, "%.0f\xC2\xB0", tilt);
@@ -642,7 +792,7 @@ static void detail_values(int init)
         int mv = rail_mv(&V.pw);
         if (mv > 0) snprintf(h, sizeof h, "%.2f", mv / 1000.0f); else snprintf(h, sizeof h, UI_NONE);
         snprintf(D.unit, sizeof D.unit, "VOLTS ON THE RAIL");
-        int pct = V.pw.battery_percent ? V.pw.battery_percent : hal_battery_percent();
+        int pct = V.pw.battery_percent > 0 ? V.pw.battery_percent : hal_battery_percent();
         if (V.pw.external_power == 1) dline(0, "USB POWER", 0);
         else { snprintf(b, sizeof b, "%d%% ESTIMATE", pct); dline(0, b, 0); }
         dline(1, "GPIO4  ADC1 CH3  3:1", 0);
@@ -725,7 +875,44 @@ static void detail_values(int init)
         break;
     default: break;
     }
-    mmt_set(&D.hero, h, init);
+    mmt_set(&D.hero, h, init || (D.m == M_IMU && !V.imu_ok));
+}
+
+/* the bubble's target from the accelerometer, px from the dial centre */
+#define BUB_R 54.0f
+static void bubble_target(float *bx, float *by)
+{
+    float x = m_clamp(V.imu.ax, -1, 1) * BUB_R, y = m_clamp(V.imu.ay, -1, 1) * BUB_R;
+    float d = sqrtf(x * x + y * y);
+    if (d > BUB_R - 10) { x *= (BUB_R - 10) / d; y *= (BUB_R - 10) / d; }
+    *bx = x; *by = y;
+}
+/* the compass's north dot on the 206 px dial, half-pixel steps */
+static void north_pos(float *x, float *y)
+{
+    float a = -V.mag.heading_deg * 0.0174533f;
+    *x = floorf((UI_CX + sinf(a) * 206) * 2 + 0.5f) * 0.5f;
+    *y = floorf((UI_CY - cosf(a) * 206) * 2 + 0.5f) * 0.5f;
+}
+static void detail_motion(int init, float dt)
+{
+    if (D.m == M_IMU && V.imu_ok) {
+        float bx, by;
+        bubble_target(&bx, &by);
+        if (init) { msp_init_px(&D.bub_x, bx, SPRING_SNAPPY); msp_init_px(&D.bub_y, by, SPRING_SNAPPY); }
+        else if (fabsf(bx - D.bub_x.target) >= 1.0f || fabsf(by - D.bub_y.target) >= 1.0f) {
+            msp_to(&D.bub_x, bx);            /* sensor noise under 1 px never moves it */
+            msp_to(&D.bub_y, by);
+        }
+        msp_step(&D.bub_x, dt);
+        msp_step(&D.bub_y, dt);
+    }
+    if (D.m == M_MAG && V.mag_ok) {
+        float x, y;
+        north_pos(&x, &y);
+        if (init) ui_trail_reset(&D.north, x, y);
+        else ui_trail_push(&D.north, x, y);
+    }
 }
 
 static void detail_sensors(int on)
@@ -755,23 +942,31 @@ static void detail_enter(void)
     D.L.bottom_pad = GFX_H / 2 - PLAY_ROW / 2;
     ui_list_set_n(&D.L, n);
     D.L.bar_t = -10.0f;
+    D.fb_prev = floorf(ui_list_offset(&D.L) + 0.5f);
+    D.fb_lv = 0;
     V.sd_t = 0;
     sample(D.m == M_HR, D.m == M_MIC);
     if (D.m == M_MIC && V.mic_db > 0) D.peak = V.mic_db;
     detail_values(1);
+    detail_motion(1, 0);
     D.next = nos_t + LIVE_S;
 }
 static void detail_leave(void)
 {
     if (nos_leaving_covered()) return;           /* covered: sensors and tests keep running */
     detail_sensors(0);
-    if (D.m == M_MAG && D.calibrating) { hal_mag_calibrate(0); D.calibrating = 0; }
+    if (D.m == M_MAG && D.calibrating) {
+        hal_mag_calibrate(0); D.calibrating = 0;
+        diag_action_result(D.cal_trace, DIAG_RESULT_CANCELLED, 0); D.cal_trace = 0;
+    }
+    if (D.lte_trace) { diag_action_result(D.lte_trace, DIAG_RESULT_CANCELLED, D.lte_req); D.lte_trace = 0; }
     if (D.m == M_HAPTIC && D.alarm_on) { hal_haptic_stop(); D.alarm_on = 0; }
 }
 
+static void pband_tick(float dt);
 static void detail_tick(float dt)
 {
-    if (is_list_page()) ui_list_tick(&D.L, dt);
+    if (is_list_page()) { ui_list_tick(&D.L, dt); pband_tick(dt); }
     /* visuals every frame (bubble, dial, traces), text at 1 Hz */
     sample(D.m == M_HR, D.m == M_MIC);
     if (D.m == M_MIC) {
@@ -782,9 +977,11 @@ static void detail_tick(float dt)
         int g = hal_light_gesture();
         if (g != GEST_NONE) { D.gest = g; D.gest_t = nos_t; nos_feedback(FB_TICK); detail_values(0); }
     }
-    if (D.m == M_MAG && D.calibrating && V.mag_ok && V.mag.cal_progress >= 1.0f) {
+    if (D.m == M_MAG && D.calibrating && V.mag_ok && V.mag.cal_progress < 0.1f) D.cal_seen_low = 1;
+    if (D.m == M_MAG && D.calibrating && D.cal_seen_low && V.mag_ok && V.mag.cal_progress >= 1.0f) {
         hal_mag_calibrate(0);
         D.calibrating = 0;
+        diag_action_result(D.cal_trace, DIAG_RESULT_SUCCESS, 1); D.cal_trace = 0;
         nos_feedback(FB_SUCCESS);
         nos_toast("CALIBRATED");
         detail_values(0);
@@ -794,16 +991,48 @@ static void detail_tick(float dt)
         int st = V.hr_ok && V.hr.on_wrist && V.hr.bpm ? 2 : nos_t - D.hr_contact_t >= 1.0f ? 1 : 0;
         if (st != D.hrs) { D.hrs_prev = D.hrs; D.hrs = st; D.hrs_t = nos_t; detail_values(0); }
     }
-    if (D.m == M_LTE && D.lte_req && ((V.lte_ok && V.lte.powered) == (D.lte_req > 0) || nos_t - D.lte_req_t > 20.0f))
-        D.lte_req = 0;
+    if (D.m == M_LTE && D.lte_req) {
+        int reached = V.lte_ok && (!!V.lte.powered == (D.lte_req > 0));
+        if (reached || nos_t - D.lte_req_t > 20.0f) {
+            diag_action_result(D.lte_trace, reached ? DIAG_RESULT_SUCCESS : DIAG_RESULT_FAILED,
+                               reached ? !!V.lte.powered : -1);
+            D.lte_trace = 0; D.lte_req = 0;
+        }
+    }
     /* state changes (not readings) show at once, so the text never contradicts the button */
     int sig = D.m == M_LTE ? (V.lte_ok ? 1 + V.lte.powered * 2 + V.lte.sim * 4 + V.lte.registered * 16 : 0) :
-              D.m == M_SD ? V.sd.mounted : 0;
-    if (sig != D.sig) { D.sig = sig; detail_values(0); }
+              D.m == M_SD ? V.sd.mounted : D.m == M_IMU ? V.imu_ok : 0;
+    if (sig != D.sig) {
+        D.sig = sig; detail_values(0);
+        if (D.m == M_IMU && V.imu_ok) detail_motion(1, 0);
+    }
     if (nos_t >= D.next) { detail_values(0); D.next = nos_t + LIVE_S; }
+    detail_motion(0, dt);
+#ifdef GFX_COST_MODEL
+    if (D.m == M_IMU && V.imu_ok) {             /* motion audit: the bubble as drawn */
+        nos_motion_probe("mod.bubble.x", MC_TRACKED, floorf(D.bub_x.x * 2 + 0.5f) * 0.5f);
+        nos_motion_probe("mod.bubble.y", MC_TRACKED, floorf(D.bub_y.x * 2 + 0.5f) * 0.5f);
+    }
+    if (D.m == M_MAG && V.mag_ok) {              /* the north dot's path along the dial, px */
+        static float last;
+        float a = -V.mag.heading_deg * 0.0174533f * 206.0f, c = 6.2831853f * 206.0f;
+        while (a - last > c * 0.5f) a -= c;
+        while (last - a > c * 0.5f) a += c;
+        last = a;
+        nos_motion_probe("mod.north", MC_TRACKED, a);
+    }
+    if (D.m == M_HR) {
+        int k = m_frame_k(D.hrs_t);
+        float ko, ki;
+        swap_inks(k, &ko, &ki);
+        if (k >= 0 && k < 2) nos_motion_probe("mod.hr.out.ink", MC_FADE, ko * 100.0f);
+        else if (k >= 2 && k <= SWAP_F) nos_motion_probe("mod.hr.in.ink", MC_FADE, ki * 100.0f);
+    }
+#endif
 }
 
 /* ---- detail drawing ---- */
+static void storage_page(gfx_fb *fb, float bp);
 static void absent_page(gfx_fb *fb)
 {
     const mod_info *mi = &MI[D.m];
@@ -821,7 +1050,7 @@ static void hero(gfx_fb *fb, float y)
     dot_style hs = { DOT_FONT_TALL, pitch, pitch * 0.8f, C_WHITE, 0, 1, 1 };
     float yy = y + (UI_HEROW_PITCH - pitch) * 9.0f * 0.5f - (pitch > UI_HEROW_PITCH ? 4 : 0);
     if (bp < 1) dot_text_anim(fb, &hs, UI_CX, yy, D.hero.to, 1, bp, DOT_REVEAL_RANDOM, 13);
-    else mmt_draw(fb, &D.hero, &hs, UI_CX, yy, MORPH_S);
+    else mmt_draw(fb, &D.hero, &hs, UI_CX, yy, MORPH_F);
 }
 static void unit_line(gfx_fb *fb, int y)
 {
@@ -856,16 +1085,39 @@ static void play_row(gfx_fb *fb, int i, float y, int pressed)
     } else dot_icon(fb, DOT_ICON_PLAY, rx - r + 1, cy, 2.2f, 1.8f, ui_dim(playing ? C_BG : C_PRI, k));
 }
 
+/* fling blur (ui.h) for the play list: one cache row per play row; each page (haptics,
+ * speaker) is its own list to the cache, so its id is the module's entry */
+static const void *pband_id(void) { return &MI[D.m]; }
+static void pband_draw(gfx_fb *fb, int i, int x0, int y, int x1, int h, void *ctx)
+{
+    (void)x0; (void)x1; (void)h; (void)ctx;
+    play_row(fb, i, (float)y, 0);
+}
+static void pband_range(float off, int *i0, int *i1)
+{
+    *i0 = (int)floorf((off - PLAY_TOP) / PLAY_ROW);
+    *i1 = (int)floorf((off - PLAY_TOP + GFX_H) / PLAY_ROW);
+    if (*i0 < 0) *i0 = 0;
+    if (*i1 > D.L.n - 1) *i1 = D.L.n - 1;
+}
+static void pband_tick(float dt)
+{
+    float off = floorf(ui_list_offset(&D.L) + 0.5f), fr = dt * M_FPS;
+    float st = (off - D.fb_prev) / (fr > 0.5f ? fr : 1.0f);
+    D.fb_prev = off;
+    int i0, i1, x0, x1;
+    pband_range(off, &i0, &i1);
+    ui_row_span(UI_CY + PLAY_ROW * 0.5f, 6.0f, &x0, &x1);
+    ui_fblur_tick(pband_id(), D.L.dragging, st, i0, i1, D.L.n, PLAY_ROW, x0, x1, 0, pband_draw, 0);
+    D.fb_lv = ui_fblur_active(pband_id());
+}
+
 static void draw_bubble(gfx_fb *fb, float cx, float cy)
 {
-    const float R = 54;
-    ui_circle_line(fb, cx, cy, R, 2, C_LINE2);
+    ui_circle_line(fb, cx, cy, BUB_R, 2, C_LINE2);
     dot_disc(fb, cx, cy, 4, C_DIS);
-    float bx = m_clamp(V.imu.ax, -1, 1) * R, by = m_clamp(V.imu.ay, -1, 1) * R;
-    float d = sqrtf(bx * bx + by * by);
-    if (d > R - 10) { bx *= (R - 10) / d; by *= (R - 10) / d; }
     /* half-pixel steps keep the bubble smooth without endless sub-pixel repaints */
-    bx = floorf(bx * 2 + 0.5f) * 0.5f; by = floorf(by * 2 + 0.5f) * 0.5f;
+    float bx = floorf(D.bub_x.x * 2 + 0.5f) * 0.5f, by = floorf(D.bub_y.x * 2 + 0.5f) * 0.5f;
     dot_disc(fb, cx + bx, cy + by, 18, C_WHITE);
 }
 
@@ -874,7 +1126,9 @@ static void detail_draw(gfx_fb *fb)
     const mod_info *mi = &MI[D.m];
     if (is_list_page()) {
         float off = floorf(ui_list_offset(&D.L) + 0.5f);
-        ui_title(fb, mi->title, off);
+        float content = (float)(PLAY_TOP + D.L.n * PLAY_ROW + D.L.bottom_pad);
+        int r0, r1;
+        pband_range(off, &r0, &r1);
         int n = D.L.n;
         int pr = D.flash_row >= 0 && nos_t - D.flash_rt < PRESS_FLASH ? D.flash_row :
                  (D.L.pressed >= 0 && nos_t - D.L.press_t > PRESS_HOLD && nos_touch_travel() <= PRESS_TRAVEL ? D.L.pressed : -1);
@@ -882,14 +1136,21 @@ static void detail_draw(gfx_fb *fb)
             float y = PLAY_TOP + i * PLAY_ROW - off;
             if (y + PLAY_ROW < 0) continue;
             if (y > GFX_H) break;
+            if(D.fb_lv && pr<0 && ui_fblur_draw(fb,pband_id(),i,(int)y,qfade(y+PLAY_ROW*0.5f))) continue;
             play_row(fb, i, y, i == pr);
         }
-        ui_scrollbar(fb, D.L.sc.x, (float)(PLAY_TOP + n * PLAY_ROW + D.L.bottom_pad), GFX_H, D.L.bar_alpha);
+        ui_title(fb,mi->title,off);
+        ui_scrollbar(fb, D.L.sc.x, content, GFX_H, D.L.bar_alpha);
         return;
     }
     ui_title(fb, detail_title(), 0);
     float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
     if (!mod_present(D.m)) { absent_page(fb); return; }
+    if (D.m == M_IMU && !V.imu_ok) {
+        ui_absent(fb, mi->icon, "No reply", "MOTION DATA UNAVAILABLE", mi->body, bp);
+        return;
+    }
+    if (D.m == M_SD && !V.sd.mounted && D.from_set) { storage_page(fb, bp); return; }
     if (D.m == M_SD && !V.sd.mounted) {
         ui_absent(fb, DOT_ICON_SD, "No card", mi->body, D.from_set ? NULL : "SDMMC 1-BIT", bp);
         if (V.sd.message[0] && !D.from_set) {
@@ -922,7 +1183,7 @@ static void detail_draw(gfx_fb *fb)
     case M_BATT: {
         hero(fb, 112);
         unit_line(fb, 212);
-        int pct = V.pw.battery_percent ? V.pw.battery_percent : hal_battery_percent();
+        int pct = V.pw.battery_percent > 0 ? V.pw.battery_percent : hal_battery_percent();
         ui_segments(fb, 113, 242, 240, 26, 10, pct / 10.0f * bp, C_WHITE, C_LINE);
         lines(fb, 312);
         break;
@@ -967,11 +1228,9 @@ static void detail_draw(gfx_fb *fb)
     case M_MAG: {
         /* dial: 60 dim dots on the bezel, the north dot travels around it */
         dot_ring(fb, UI_CX, UI_CY, 206, 60, 4, 0, 0, C_WHITE, C_LINE2);
-        if (V.mag_ok) {
-            float a = -V.mag.heading_deg * 0.0174533f;
-            float nx = UI_CX + sinf(a) * 206, ny = UI_CY - cosf(a) * 206;
-            nx = floorf(nx * 2 + 0.5f) * 0.5f; ny = floorf(ny * 2 + 0.5f) * 0.5f;
-            dot_disc(fb, nx, ny, 14, C_RED);
+        if (V.mag_ok) {               /* a wrist turn sweeps it fast: one ghost behind (R7) */
+            ui_smear_disc(fb, &D.north, 7.0f, C_RED, 16.0f, 1);
+            dot_disc(fb, D.north.x[0], D.north.y[0], 14, C_RED);
         }
         hero(fb, 96);
         unit_line(fb, 196);
@@ -981,11 +1240,10 @@ static void detail_draw(gfx_fb *fb)
     }
     case M_HR: {
         hero(fb, 104);
-        /* the state slot: the old word fades out, then the new one in (0.24 s, 8 levels);
-         * trace and hint follow the same two halves */
-        float p = m_clamp((nos_t - D.hrs_t) / 0.24f, 0, 1);
-        float kout = floorf(m_clamp(1.0f - 2.0f * p, 0, 1) * 8.0f + 0.5f) / 8.0f;
-        float kin = floorf(m_clamp(2.0f * p - 1.0f, 0, 1) * 8.0f + 0.5f) / 8.0f;
+        /* the state slot: the old word fades out, then the new one in (5 frames,
+         * perceptual ink); trace and hint follow the same two halves */
+        float kout, kin;
+        swap_inks(m_frame_k(D.hrs_t), &kout, &kin);
         for (int pass = 0; pass < 2; pass++) {
             int st = pass ? D.hrs : D.hrs_prev;
             float k = pass ? kin : kout;
@@ -1029,14 +1287,48 @@ static int detail_btn_hit(int x, int y)
 
 static void play_tap(int i)
 {
+    uint32_t request = module_action(DIAG_ACT_START, i);
     D.last_play = i; D.play_t = nos_t;
     if (D.m == M_HAPTIC) hal_haptic(i);
     else hal_sfx(i);
+    diag_action_result(request, DIAG_RESULT_PENDING, i); /* void HAL command, no physical ACK */
     if (D.m == M_HAPTIC) D.alarm_on = i == HAPTIC_ALARM;   /* its row shows stop until tapped */
+}
+
+/* Settings > Storage without a card: the watch's own flash (the system image in its
+ * slot, the settings / activity store), then the card's state and a retry. The bars
+ * sweep in with the page (prog.h segments). */
+static void storage_page(gfx_fb *fb, float bp)
+{
+    char b[48];
+    const hal_flash_info *f = &V.fl;
+    ui_label(fb, UI_CX, 112, "ON THE WATCH", C_DIS, UI_CENTER);
+    float app = f->app_slot_bytes ? (float)f->app_bytes / (float)f->app_slot_bytes : 0;
+    float nvs = f->nvs_total ? (float)f->nvs_used / (float)f->nvs_total : 0;
+    prog_bar(fb, PROG_SEGMENTS, 113, 132, 240, 14, 16, app * bp, C_PRI, C_LINE);
+    if (f->app_slot_bytes)
+        snprintf(b, sizeof b, "SYSTEM %.1f OF %.1f MB", f->app_bytes / 1048576.0, f->app_slot_bytes / 1048576.0);
+    else snprintf(b, sizeof b, "SYSTEM %s", UI_NONE);
+    ui_label(fb, UI_CX, 170, b, C_SEC, UI_CENTER);
+    prog_bar(fb, PROG_SEGMENTS, 113, 190, 240, 14, 16, nvs * bp, C_PRI, C_LINE);
+    if (f->nvs_total) snprintf(b, sizeof b, "SETTINGS STORE %d%% USED", (int)(nvs * 100.0f + 0.5f));
+    else snprintf(b, sizeof b, "SETTINGS STORE %s", UI_NONE);
+    ui_label(fb, UI_CX, 228, b, C_SEC, UI_CENTER);
+    if (f->flash_bytes) {
+        snprintf(b, sizeof b, "%u MB FLASH", (unsigned)(f->flash_bytes >> 20));
+        ui_label(fb, UI_CX, 256, b, C_DIS, UI_CENTER);
+    }
+    ui_label(fb, UI_CX, 306, "SD CARD", C_DIS, UI_CENTER);
+    snprintf(b, sizeof b, "%.40s", V.sd.message[0] ? V.sd.message : "No card found");
+    for (char *p = b; *p; p++) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+    ui_label(fb, UI_CX, 336, b, C_PRI, UI_CENTER);
+    ui_label(fb, UI_CX, 372, D.sd_retry_t > 0 && nos_t - D.sd_retry_t < 2.0f ? "LOOKING FOR A CARD" : "TAP TO TRY AGAIN",
+             C_SEC, UI_CENTER);
 }
 
 static int detail_input(const nos_input *in)
 {
+    if(in->type==IN_CANCEL) {D.pressed=0;if(is_list_page()) return ui_list_input(&D.L,in);return 1;}
     if (is_list_page()) {
         if (in->type == IN_DOWN) D.was_moving = D.L.sc.moving && fabsf(D.L.sc.v) > 60.0f;
         if (in->type == IN_TAP) {
@@ -1048,7 +1340,9 @@ static int detail_input(const nos_input *in)
                 if (i >= 0 && i < D.L.n) {
                     D.flash_row = i; D.flash_rt = nos_t;
                     if (D.m == M_HAPTIC && D.alarm_on) {   /* any tap stops the alarm train */
+                        uint32_t request = module_action(DIAG_ACT_STOP, HAPTIC_ALARM);
                         hal_haptic_stop();
+                        diag_action_result(request, DIAG_RESULT_PENDING, 0);
                         D.alarm_on = 0;
                         D.last_play = -1;
                     } else play_tap(i);
@@ -1058,6 +1352,15 @@ static int detail_input(const nos_input *in)
         }
         return ui_list_input(&D.L, in);
     }
+    if (in->type == IN_TAP && D.m == M_SD && D.from_set && !V.sd.mounted) {
+        uint32_t request = module_action(DIAG_ACT_START, V.sd.mounted);
+        hal_storage_retry();                  /* the board task tries the card again */
+        diag_action_result(request, DIAG_RESULT_PENDING, 0);
+        D.sd_retry_t = nos_t;
+        V.sd_t = nos_t - 0.5f;                /* look again in half a second */
+        nos_feedback(FB_TICK);
+        return 1;
+    }
     switch (in->type) {
     case IN_DOWN: D.pressed = detail_has_button() && detail_btn_hit(in->x, in->y); return 1;
     case IN_DRAG_START: D.pressed = 0; return 0;
@@ -1066,15 +1369,28 @@ static int detail_input(const nos_input *in)
             D.pressed = 0;
             D.flash_t = nos_t;
             nos_feedback(FB_TAP);
-            if (D.m == M_RTC) { hal_time_resync(); nos_toast("RESYNCING"); }
+            if (D.m == M_RTC) {
+                uint32_t request = module_action(DIAG_ACT_SET, 0);
+                hal_time_resync(); diag_action_result(request, DIAG_RESULT_PENDING, 0); nos_toast("RESYNCING");
+            }
             else if (D.m == M_LTE) {
                 int on = !(V.lte_ok && V.lte.powered);
+                if (D.lte_trace) diag_action_result(D.lte_trace, DIAG_RESULT_CANCELLED, D.lte_req);
+                D.lte_trace = module_action(DIAG_ACT_SET, V.lte.powered);
                 hal_lte_enable(on);
+                diag_action_result(D.lte_trace, DIAG_RESULT_PENDING, on);
                 D.lte_req = on ? 1 : -1; D.lte_req_t = nos_t;
                 detail_values(0);
             } else if (D.m == M_MAG) {
-                if (!D.calibrating) { hal_mag_calibrate(1); D.calibrating = 1; }
-                else { hal_mag_calibrate(0); D.calibrating = 0; nos_feedback(FB_SUCCESS); }
+                if (!D.calibrating) {
+                    D.cal_trace = module_action(DIAG_ACT_START, V.mag.calibrated);
+                    D.cal_seen_low = 0;
+                    hal_mag_calibrate(1); D.calibrating = 1;
+                    diag_action_result(D.cal_trace, DIAG_RESULT_PENDING, 0);
+                } else {
+                    hal_mag_calibrate(0); D.calibrating = 0;
+                    diag_action_result(D.cal_trace, DIAG_RESULT_CANCELLED, 0); D.cal_trace = 0;
+                }
                 detail_values(0);
             }
         }
@@ -1091,16 +1407,24 @@ static const nos_screen scr_mod_detail = { "MOD_DETAIL", detail_enter, detail_le
  * get wrong) turn white when touched; a dot follows the finger with its coordinates. */
 static const int16_t k_tgt[5][2] = { { 233, 233 }, { 233, 52 }, { 414, 233 }, { 233, 414 }, { 52, 233 } };
 
-static void touch_tick(float dt) { (void)dt; }
+/* the targets grow one a frame from the entry (R9), each over 4 frames on MF_STEADY4 */
+static float tgt_r(int i) { return 26.0f * mf_at(&MF_STEADY4, m_stagger_k(m_frame_k(D.t0), i, 1)); }
+static void touch_tick(float dt)
+{
+    (void)dt;
+#ifdef GFX_COST_MODEL
+    static const char *const nm[5] = { "touch.tgt0", "touch.tgt1", "touch.tgt2", "touch.tgt3", "touch.tgt4" };
+    static int seen[5];
+    for (int i = 0; i < 5; i++) probe_vis(nm[i], MC_MICRO, tgt_r(i) > 0, tgt_r(i), 0, &seen[i]);
+#endif
+}
 static void touch_draw(gfx_fb *fb)
 {
     /* the top ring owns the title band, so the title sits under it */
     ui_label(fb, UI_CX, 120, "TOUCH", C_SEC, UI_CENTER);
-    float bp = m_clamp((nos_t - D.t0) / UI_ENTRY_S, 0, 1);
     for (int i = 0; i < 5; i++) {
-        float p = m_clamp(bp * 5 - i, 0, 1);
-        if (p <= 0) continue;
-        float r = 26 * p;
+        float r = tgt_r(i);
+        if (r <= 0) continue;
         if (D.tgt_hit[i]) gfx_fill_circle(fb, k_tgt[i][0], k_tgt[i][1], r, C_WHITE);
         else ui_circle_line(fb, k_tgt[i][0], k_tgt[i][1], r, 2, C_LINE2);
     }
@@ -1132,6 +1456,7 @@ static void touch_at(int x, int y)
 }
 static int touch_input(const nos_input *in)
 {
+    if(in->type==IN_CANCEL) {D.fdown=0;return 1;}
     switch (in->type) {
     case IN_DOWN: case IN_DRAG_START: case IN_DRAG: touch_at(in->x, in->y); return 1;
     case IN_UP: D.fdown = 0; return 1;

@@ -52,13 +52,26 @@ typedef struct {
      * linear, so AA blends against an already-dimmed backdrop agree), which makes
      * a dimmed screen cost the same as a bright one. Writers call gfx_ink(). */
     int dim;
+    /* Panel output may use invisible corner pixels as scratch. Subviews retain
+     * this permission, but writers must still preserve every visible pixel
+     * outside their clip. Sprite/packed destinations leave this zero. */
+    int glass_only;
+#ifdef GFX_COST_MODEL
+    int cost_psram; /* destination pixels in external RAM; set by sprite_fb */
+#endif
 } gfx_fb;
 
 /* Pointer such that gfx_row(fb, r)[bx] is buffer row r, buffer column bx (screen
  * column + ox). With a column band this points before the band's first pixel
  * (bx < x_base is never written: every writer clips to cx0/cx1 inside the band). */
+#ifdef GFX_COST_MODEL
+void gfx_cost_target(int psram);
+#endif
 static inline uint16_t *gfx_row(const gfx_fb *fb, int r)
 {
+#ifdef GFX_COST_MODEL
+    gfx_cost_target(fb->cost_psram);
+#endif
     return fb->px + (r * (fb->stride ? fb->stride : GFX_W) - fb->x_base);
 }
 

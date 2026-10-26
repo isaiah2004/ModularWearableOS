@@ -1,0 +1,21 @@
+# Compatibility spelling is a no-op; negative travel and the dock NOW still work.
+face 8
+ringstyle 5
+wait 2500
+hold 300 300 1700
+wait 700
+tap 380 75
+wait 600
+shot final_before
+ringstyle 5
+frames 1
+shot final_after
+tap 42 122
+wait 1200
+shot negative
+tap 283 432
+wait 1200
+shot negative_returned
+mark idle
+expect idle
+expect nolate

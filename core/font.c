@@ -3,6 +3,15 @@
 
 static const font_glyph *find_glyph(const font_t *f, unsigned code)
 {
+    /* Direct contiguous-code hit; duplicate neighbours retain the original
+     * sorted-table binary-search selection, including differing metrics. */
+    if (f->nglyphs > 0 && code >= f->glyphs[0].code) {
+        unsigned index = code - f->glyphs[0].code;
+        if (index < (unsigned)f->nglyphs && f->glyphs[index].code == code &&
+            (!index || f->glyphs[index - 1].code != code) &&
+            (index + 1 >= (unsigned)f->nglyphs || f->glyphs[index + 1].code != code))
+            return &f->glyphs[index];
+    }
     int lo = 0, hi = f->nglyphs - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;

@@ -17,9 +17,13 @@
  *   phone sim notify        deliver the held notifications now
  *   phone sim call [NAME]   incoming call;  phone sim callend
  *   phone sim find          the phone rings the watch;  phone sim findstop
+ *   phone sim tx            make the watch send every kind of line it can send (music, call,
+ *                           findPhone, notify OPEN/DISMISS, act, gps_power) for the
+ *                           NOS_PHONE_TX=FILE capture checked by tools/gb_rx_check.py
  * Any other `phone ...` line is fed to the services as if the phone had sent it. */
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "hal.h"
 #include "svc.h"
@@ -151,6 +155,16 @@ void hal_phone_write_line(const char *line)
 {
     update();
     if (!s_up || !line) return;
+    /* NOS_PHONE_TX=FILE: append every line exactly as the device frames it on NUS TX, for
+     * tools/gb_rx_check.py (replays Gadgetbridge's line splitter + a JSON parse). */
+    static FILE *tx;
+    static int tx_tried;
+    if (!tx_tried) {
+        tx_tried = 1;
+        const char *p = getenv("NOS_PHONE_TX");
+        if (p && *p) tx = fopen(p, "wb");
+    }
+    if (tx) { fputs(line, tx); fputs(HAL_PHONE_EOL, tx); fflush(tx); }
     static gb_json j;
     if (gb_parse(&j, line, (int)strlen(line)) || j.tok[0].type != GBJ_OBJ) return;
     char t[16], v[24];
@@ -201,6 +215,25 @@ int nos_phone_sim_cmd(const char *s)
     } else if (!strcmp(a, "callend")) push("\x10GB({\"t\":\"call\",\"cmd\":\"end\",\"name\":\"\",\"number\":\"\"})");
     else if (!strcmp(a, "find")) push("\x10GB({\"t\":\"find\",\"n\":true})");
     else if (!strcmp(a, "findstop")) push("\x10GB({\"t\":\"find\",\"n\":false})");
-    else return 0;
+    else if (!strcmp(a, "tx")) {        /* drive every watch -> phone message once (NOS_PHONE_TX) */
+        svc_phone_inject("\x10GB({\"t\":\"musicinfo\",\"artist\":\"A \\\"q\\\" \\\\ b\",\"track\":\"\\ud83d\\ude00 x\",\"album\":\"\",\"dur\":10})");
+        svc_phone_inject("\x10GB({\"t\":\"act\",\"hrm\":true,\"stp\":true,\"int\":1})");
+        svc_phone_inject("\x10GB({\"t\":\"is_gps_active\"})");
+        for (int c = 0; c <= 4; c++) svc_music_cmd(c);
+        svc_music_cmd(0);
+        svc_find_phone(1);
+        svc_find_phone(0);
+        svc_phone_inject("\x10GB({\"t\":\"call\",\"cmd\":\"incoming\",\"name\":\"\\\"Al\\\\\",\"number\":\"+1\"})");
+        svc_call_accept();
+        svc_call_hangup();
+        svc_phone_inject("\x10GB({\"t\":\"call\",\"cmd\":\"incoming\",\"name\":\"B\",\"number\":\"+1\"})");
+        svc_call_reject();
+        svc_phone_inject("\x10GB({\"t\":\"notify\",\"id\":42,\"src\":\"Chat \\\"x\\\"\",\"title\":\"\\\\\",\"body\":\"line1\\nline2 \\u00e9\\ud83d\\ude0a\"})");
+        svc_phone_inject("\x10GB({\"t\":\"notify\",\"id\":43,\"src\":\"Mail\",\"title\":\"t\",\"body\":\"b\"})");
+        svc_phone_inject("\x10GB({\"t\":\"notify\",\"id\":44,\"src\":\"Mail\",\"title\":\"t\",\"body\":\"b\"})");
+        svc_notif_open_on_phone(0);
+        svc_notif_dismiss(0);
+        svc_notif_clear();
+    } else return 0;
     return 1;
 }

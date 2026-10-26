@@ -14,6 +14,7 @@
 #include "motion.h"
 #include "font.h"
 #include "hal_ext.h"
+#include "ui.h"
 
 /* ---- root --------------------------------------------------------------------- */
 static float s_ang;
@@ -23,14 +24,26 @@ static int   s_taps;
  * drawn in raster mode but never recorded, so damage tracking leaves stale copies. */
 int nos_selftest_bug;
 
-static void root_tick(float dt) { s_ang += dt * 1.2f; }
+/* `set selftest_spin RAD_PER_S` and `set selftest_smear 0..3` (none, 1 ghost, 2 ghosts,
+ * stretch): a fast small object to judge the R7 smear helpers (ui_smear_disc/stretch). */
+float nos_selftest_spin = 1.2f;
+int nos_selftest_smear;
+static ui_trail s_trail;
+static void root_tick(float dt)
+{
+    s_ang += dt * nos_selftest_spin;
+    ui_trail_push(&s_trail, GFX_CX + 200 * sinf(s_ang), GFX_CY - 200 * cosf(s_ang));
+    nos_motion_probe("selftest.dot.x", MC_DECORATIVE, s_trail.x[0]);
+}
 
 static void root_draw(gfx_fb *fb)
 {
     hal_datetime dt;
     hal_get_datetime(&dt);
     gfx_ring(fb, GFX_CX, GFX_CY, 200, 3, 0x2104);
-    gfx_fill_circle(fb, GFX_CX + 200 * sinf(s_ang), GFX_CY - 200 * cosf(s_ang), 9, 0xD0C4);
+    if (nos_selftest_smear == 3) ui_smear_stretch(fb, &s_trail, 9, 0xD0C4, 16);
+    else if (nos_selftest_smear) ui_smear_disc(fb, &s_trail, 9, 0xD0C4, 16, nos_selftest_smear);
+    gfx_fill_circle(fb, s_trail.x[0], s_trail.y[0], 9, 0xD0C4);
     char t[16];
     snprintf(t, sizeof t, "%02d:%02d", dt.hour, dt.minute);
     font_draw_centered(fb, &font_large, (int)GFX_CX, 220, t, 0xEF5D);

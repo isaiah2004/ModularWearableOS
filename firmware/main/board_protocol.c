@@ -52,25 +52,44 @@ int board_rtc_encode(int64_t epoch, uint8_t r[7])
 }
 int board_touch_decode(const uint8_t r[5], int *x, int *y)
 {
-    *x = ((r[1] & 15) << 8) | r[2];
-    *y = ((r[3] & 15) << 8) | r[4];
-    return (r[0] & 15) > 0 && (r[1] >> 6) != 1 && *x < 466 && *y < 466;
+    if (!r || !x || !y) return -1;
+    unsigned count = r[0] & 15, event = r[1] >> 6;
+    /* The controller exposes one point. An up packet may retain old coordinates. */
+    if (count > 1) return -1;
+    if (!count) return 0;
+    if (event == 3) return -1;
+    if (event == 1) return 0;
+    int px = ((r[1] & 15) << 8) | r[2];
+    int py = ((r[3] & 15) << 8) | r[4];
+    if (px >= 466 || py >= 466) return -1;
+    *x = px; *y = py;
+    return 1;
 }
 void board_pixels_ccw(const uint16_t *src, uint16_t *dst, int width, int height)
 {
     board_pixels_ccw_swap(src, width, dst, width, height, 0);
 }
+#include "board_rotation_pairs.h"
+#include "board_rotation_columns.h"
+static int s_rotation_pairs = 2;
+void board_pixels_rotation_mode_set(int enabled) { if(enabled>=0 && enabled<=2)s_rotation_pairs=enabled; }
+int board_pixels_rotation_mode_get(void) { return s_rotation_pairs; }
 void board_pixels_ccw_swap(const uint16_t *src, int stride, uint16_t *dst,
                            int width, int height, int swap)
 {
+    if (width <= 0 || height <= 0) return;
+    if (s_rotation_pairs==2 && board_rotation_columns(src,stride,dst,width,height,swap))return;
+    if (s_rotation_pairs && board_rotation_pairs(src, stride, dst, width, height, swap)) return;
     for (int x = width - 1; x >= 0; x--) {
         const uint16_t *col = src + x;
         if (swap)
-            for (int y = 0; y < height; y++, col += stride)
-                *dst++ = (uint16_t)((*col << 8) | (*col >> 8));
+            for (int y = 0; y < height; y++) {
+                uint16_t c = col[y * stride];
+                *dst++ = (uint16_t)((c << 8) | (c >> 8));
+            }
         else
-            for (int y = 0; y < height; y++, col += stride)
-                *dst++ = *col;
+            for (int y = 0; y < height; y++)
+                *dst++ = col[y * stride];
     }
 }
 void board_pixels_pack_swap(const uint16_t *src, int stride, uint16_t *dst,
@@ -234,7 +253,7 @@ void board_pointer_update(int *x, int *y, int raw_x, int raw_y, int down)
 {
     /* FT3168 release coordinates may be stale/zero. End the gesture at the
      * last valid UI point, never at unrotated or invalid register contents. */
-    if (!down) return;
+    if (down<=0) return;
     *x = raw_x; *y = raw_y;
     board_native_to_ui(x, y);
 }
@@ -244,4 +263,23 @@ void board_imu_decode(const uint8_t r[12], hal_imu *o)
     /* CTRL2 = +/-8g (4096 LSB/g), CTRL3 = +/-512 dps (64 LSB/dps). */
     o->ax = le16(r) / 4096.0f; o->ay = le16(r + 2) / 4096.0f; o->az = le16(r + 4) / 4096.0f;
     o->gx = le16(r + 6) / 64.0f; o->gy = le16(r + 8) / 64.0f; o->gz = le16(r + 10) / 64.0f;
+}
+unsigned board_fifo_samples(const uint8_t status[2], int *overflow)
+{
+    if (overflow) *overflow = status ? (status[1] & 0x20) != 0 : 0;
+    if (!status) return 0;
+    unsigned words = (unsigned)(status[1] & 0x03) << 8 | status[0];
+    unsigned samples = words / (BOARD_FIFO_SAMPLE_BYTES / 2u);
+    return samples > BOARD_FIFO_MAX_SAMPLES ? BOARD_FIFO_MAX_SAMPLES : samples;
+}
+void board_fifo_stamp(board_fifo_clock *c, int64_t now_us, unsigned n, int64_t period_us, int64_t *out_us)
+{
+    if (!c || !out_us || !n || period_us <= 0) return;
+    int64_t end = now_us;
+    if (c->last_us) {
+        int64_t expect = c->last_us + (int64_t)n * period_us, err = now_us - expect;
+        end = (err > 2 * period_us || err < -2 * period_us) ? now_us : expect + err / 4;
+    }
+    for (unsigned i = 0; i < n; i++) out_us[i] = end - (int64_t)(n - 1u - i) * period_us;
+    c->last_us = end;
 }

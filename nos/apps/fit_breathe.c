@@ -1,17 +1,17 @@
 /* fit_breathe.c — guided breathing (health team).
  *
  * Three states on one screen:
- *   START    a static halo of dot rings around a white START disc, duration pills
- *   SESSION  the dot field breathes: inhale 4 s, hold 2 s, exhale 6 s (5 breaths/min)
+ *   START    a white START disc inside the empty session dial, duration pills
+ *   SESSION  the disc breathes: inhale 4 s, hold 2 s, exhale 6 s (5 breaths/min)
  *   SUMMARY  minutes, breaths and (if the HR module locked) the average heart rate
  *
- * The field is NR concentric dot rings. Every ring follows the same breath curve with
- * its own lag (inner rings lead, a wave travels outward) and twists slightly as it
- * opens, so it reads as organic while staying perfectly periodic. Holds are truly
- * still (zero repaint). Positions are computed once per frame in tick() into a PSRAM
- * table; draw() only stamps them, rejecting by stripe, and records ONE damage command
- * (bbox + hash of every dot) for the whole field. Dot diameters are prewarmed (mask
- * bake) on the start screen so the first breath never stalls. */
+ * The breath is the START disc itself, a solid disc that opens from r 44 to r 74 and
+ * lightens from grey to white as it does (restrained: one shape, no texture). Around it
+ * the dial: twelve radial capsules (6 x 18, radius 105, 12 o'clock first) that light
+ * clockwise by elapsed fraction, the leading one growing outward in 8 steps. Holds are
+ * truly still (zero repaint). Everything is prepared in tick(); draw() only reads it:
+ * one AA circle and twelve capsules (gfx_line), each its own damage command, so a
+ * frame repaints the disc and, now and then, one capsule. */
 #include "nos.h"
 #include "ui.h"
 #include "dot.h"
@@ -29,39 +29,30 @@
 #define T_HOLD   2.0f
 #define T_OUT    6.0f
 #define T_CYCLE  (T_IN + T_HOLD + T_OUT)
-#define RING_LAG 0.07f          /* s between neighbouring rings */
 #define T_INTRO  1.00f          /* start screen -> first inhale */
-#define T_OUTRO  0.70f          /* last exhale -> summary */
+#define T_OUTRO  M_FRAMES(11)   /* last exhale -> summary: the disc closes (1-8), the dial fades (5-10) */
 #define PRESS_MIN 0.10f         /* a pressed control shows >= 3 frames, even on a quick tap */
-#define T_SUMOUT 0.18f          /* AGAIN: the summary builds out ... */
-#define T_OVL    0.10f          /* ... while the field already grows back for its last 0.1 s */
+#define T_SUMOUT M_FRAMES(6)    /* AGAIN: the summary builds out ... */
+#define T_OVL    M_FRAMES(3)    /* ... while the field already grows back for its last 3 frames */
+/* Fades and builds, in whole frames (MOTION30 R9; ink levels by m_ink, perceptual): */
+#define TXT_IN   M_FRAMES(8)    /* phase word fades in after its phase starts ... */
+#define TXT_OUT  M_FRAMES(6)    /* ... and out before it ends */
 
-/* ---- field geometry ---- */
-#define NR       8
-#define NDOT_MAX 240
+/* ---- geometry ---- */
 #define START_CY 204.0f
-#define START_B  0.50f
-#define DISC_R   44.0f
+#define DISC_R   44.0f          /* the START disc = the breath fully out */
+#define CORE_MAX 74.0f          /* the breath fully in: 22 px clear of the dial */
 #define PILL_Y   370
-#define PROG_N   60
-#define PROG_R   222.0f
+#define DIAL_N   12             /* session progress: twelve radial capsules ... */
+#define DIAL_R   105.0f         /* ... centred on radius 105 ... */
+#define DIAL_W   6.0f           /* ... 6 px wide ... */
+#define DIAL_L   12.0f          /* ... 18 long (12 between the cap centres) */
 
-typedef struct { float x, y, d; uint16_t c; } fdot;
-typedef struct {
-    float   ca[NDOT_MAX], sa[NDOT_MAX];   /* base unit vectors */
-    uint8_t ring[NDOT_MAX];
-    fdot    dot[NDOT_MAX];                /* this frame */
-    int     n;                            /* dots drawn this frame */
-    int     total;
-} field_mem;
-
-static field_mem *F;
-static int s_ring0[NR + 1];               /* first dot index of each ring */
-static const uint8_t k_ring_n[NR] = { 6, 12, 17, 23, 28, 34, 39, 45 };
-
-/* field bbox + content hash for the frame (prepared in tick) */
-static int      f_x0, f_y0, f_x1, f_y1;
-static unsigned f_hash;
+/* the capsules' directions, 12 o'clock first, clockwise, 30 degrees apart (no trig) */
+static const float k_dir[DIAL_N][2] = {
+    { 0.0f, -1.0f }, { 0.5f, -0.8660254f }, { 0.8660254f, -0.5f }, { 1.0f, 0.0f },
+    { 0.8660254f, 0.5f }, { 0.5f, 0.8660254f }, { 0.0f, 1.0f }, { -0.5f, 0.8660254f },
+    { -0.8660254f, 0.5f }, { -1.0f, 0.0f }, { -0.8660254f, -0.5f }, { -0.5f, -0.8660254f } };
 
 /* ---- state ---- */
 enum { ST_START = 0, ST_INTRO, ST_SESSION, ST_OUTRO, ST_SUMMARY, ST_SUMOUT };
@@ -72,25 +63,27 @@ static struct {
     float et;           /* since enter */
     float sel[3];       /* duration pills: selected-ness, crossfaded */
     int   pressed;      /* control under the finger, -1 none */
-    float press_t0, unpress_at;   /* pressed shows >= PRESS_MIN even on a quick tap */
+    nos_time_t press_t0; nos_time_t unpress_at;   /* pressed shows >= PRESS_MIN even on a quick tap */
     int   press_hold;   /* the tapped control stays pressed while the screen departs */
     int   cycles;       /* breaths in this session */
     int   phase;        /* 0 in, 1 hold, 2 out (last phase announced) */
     /* heart rate measured during the session */
     int   hr_on;
-    float hr_sum;
-    int   hr_n;
+    uint64_t hr_integral;
+    uint32_t hr_start_ms, hr_last_ms, hr_valid_ms, hr_epoch;
+    int hr_previous, hr_have;
     int   hr_avg;
-    /* prewarm progress (mask bake) */
-    int   warm_q;
     /* prepared for draw */
     float ui_k;         /* title fade (quantised) */
     float pill_k;       /* duration pills: 1 shown, < 1 building out by scale steps */
     int   from_summary; /* intro starts from an empty screen (AGAIN) */
-    float disc_r;
+    float cy;           /* the disc's and the dial's centre */
+    float disc_r;       /* the disc (START, then the breath); 0 = none */
+    uint16_t disc_c;    /* its fill outside START (the START disc is white / pressed) */
+    float core_b;       /* breath openness shown (audit) */
     float sum_p;        /* summary build-in */
-    float prog_lit;
-    float prog_k;       /* progress ring fade (quantised) */
+    float prog_lit;     /* capsules lit; the fraction (eighths) grows the leading one */
+    float dial_k[DIAL_N];   /* each capsule's own ink (builds in / out) */
     uint16_t txt_col;
     int   txt_id;       /* 0 in, 1 hold, 2 out */
 } B;
@@ -101,7 +94,13 @@ enum { CTL_NONE = -1, CTL_DISC = 0, CTL_PILL0, CTL_PILL1, CTL_PILL2, CTL_AGAIN, 
 
 /* ------------------------------------------------------------------ helpers */
 static float ease_sine(float x) { x = m_clamp(x, 0, 1); return 0.5f - 0.5f * gfx_fast_cos(3.14159265f * x); }
+/* The breath: a sine in-out with a fifth of linear in it. The pure sine spends its first
+ * and last ~7 frames (16 on the exhale) under a quarter-pixel step: a field that has
+ * visibly stopped but still repaints. With the linear share it arrives crisply (R5) and a
+ * hold reads as a hold, while staying as soft. Peak step 1.3 px a frame (outer ring). */
+static float ease_breath(float x) { x = m_clamp(x, 0, 1); return 0.8f * ease_sine(x) + 0.2f * x; }
 static float qz(float v, float steps) { return floorf(v * steps + 0.5f) / steps; }
+static int   fk(float t) { return (int)floorf(t * M_FPS + 0.5f); }    /* whole frames in t s */
 
 static void haptic(int pattern) { if (nos_prefs.haptics) hal_haptic(pattern); }
 
@@ -110,124 +109,85 @@ static float breath(float t)
 {
     if (t <= 0) return 0;
     float p = fmodf(t, T_CYCLE);
-    if (p < T_IN) return ease_sine(p / T_IN);
+    if (p < T_IN) return ease_breath(p / T_IN);
     if (p < T_IN + T_HOLD) return 1;
-    return 1.0f - ease_sine((p - T_IN - T_HOLD) / T_OUT);
+    return 1.0f - ease_breath((p - T_IN - T_HOLD) / T_OUT);
 }
 
-static int field_alloc(void)
+/* The breath disc for openness b: radius on the 1/4 px grid, C_SEC grey (out) to C_PRI
+ * (in) through the 11 neutral RGB565 greys between them (red 19..29, green 2r+1: a
+ * channel-wise mix tints green), so a hold is truly still and a slow exhale repaints
+ * only real changes. */
+static float core_r(float b) { return qz(m_lerp(DISC_R, CORE_MAX, m_clamp(b, 0, 1)), 4.0f); }
+static uint16_t core_c(float b)
 {
-    if (F) return 1;
-    F = (field_mem *)hal_big_alloc(sizeof(field_mem));
-    if (!F) return 0;
-    int k = 0;
-    for (int i = 0; i < NR; i++) {
-        s_ring0[i] = k;
-        for (int j = 0; j < k_ring_n[i] && k < NDOT_MAX; j++, k++) {
-            float a = 6.2831853f * (float)j / (float)k_ring_n[i];
-            F->ca[k] = gfx_fast_cos(a);
-            F->sa[k] = gfx_fast_sin(a);
-            F->ring[k] = (uint8_t)i;
-        }
+    unsigned r = 19u + (unsigned)floorf(m_clamp(b, 0, 1) * 10.0f + 0.5f);
+    return (uint16_t)(r << 11 | (2u * r + 1u) << 5 | r);
+}
+
+static void dial_ink(float k) { for (int i = 0; i < DIAL_N; i++) B.dial_k[i] = k; }
+/* the dial builds in clockwise from 12 o'clock, one capsule a frame, each over 4 frames
+ * in perceptual steps (15 frames in all); k = whole frames since the build started */
+static void dial_build(int k)
+{
+    for (int i = 0; i < DIAL_N; i++) B.dial_k[i] = m_ink((float)(k - i) / 4.0f);
+}
+
+/* The dial: lit capsules white, the rest a dark track; the leading one grows outward
+ * from its inner cap over its track. One gfx_line (a true capsule) per element. */
+static void capsule(gfx_fb *fb, int i, float len, uint16_t c)
+{
+    float ux = k_dir[i][0], uy = k_dir[i][1], r0 = DIAL_R - DIAL_L * 0.5f;
+    float ax = UI_CX + ux * r0, ay = B.cy + uy * r0;
+    gfx_line(fb, ax, ay, ax + ux * len, ay + uy * len, DIAL_W, c);
+}
+static void draw_dial(gfx_fb *fb)
+{
+    int whole = (int)floorf(B.prog_lit);
+    float part = B.prog_lit - (float)whole;
+    for (int i = 0; i < DIAL_N; i++) {
+        float k = B.dial_k[i];
+        if (k <= 0.01f) continue;
+        if (i < whole) { capsule(fb, i, DIAL_L, ui_dim(C_PRI, k)); continue; }
+        capsule(fb, i, DIAL_L, ui_dim(C_LINE2, k));
+        if (i == whole && part > 0.01f) capsule(fb, i, DIAL_L * part, ui_dim(C_PRI, k));
     }
-    s_ring0[NR] = k;
-    F->total = k;
-    F->n = 0;
-    return 1;
-}
-
-/* Lay the field out: per ring openness b[i] (0..1), size multiplier grow[i] (0..1),
- * brightness scale kc. Rings whose radius is below rcut are skipped (under the disc). */
-static void field_layout(float cx, float cy, const float *b, const float *grow, float kc, float rcut)
-{
-    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
-    unsigned h = 0xB4EA7u;
-    int n = 0;
-    for (int i = 0; i < NR; i++) {
-        float u = (float)i / (float)(NR - 1);
-        float bi = m_clamp(b[i], 0, 1);
-        float rc = 10.0f + 48.0f * u, re = 30.0f + 135.0f * u;
-        float r = m_lerp(rc, re, bi);
-        float de = 10.0f - 3.0f * u;
-        float d = m_lerp(4.0f, de, bi) * m_clamp(grow[i], 0, 1);
-        d = qz(d, 4.0f);                       /* the stamp's own quantum */
-        if (d < 0.5f || r < rcut) continue;
-        float k = (0.42f + 0.58f * bi) * (1.0f - 0.5f * u) * kc;
-        k = qz(m_clamp(k, 0, 1), 16.0f);
-        if (k <= 0) continue;
-        uint16_t col = ui_dim(C_PRI, k);
-        /* twist as the ring opens: alternate directions, fixed per-ring offset */
-        float tw = (float)i * 0.41f + 0.22f * bi * ((i & 1) ? 1.0f : -1.0f);
-        float ct = gfx_fast_cos(tw), st = gfx_fast_sin(tw);
-        for (int j = s_ring0[i]; j < s_ring0[i + 1]; j++) {
-            float ux = F->sa[j] * ct + F->ca[j] * st;      /* sin(a + tw) */
-            float uy = F->ca[j] * ct - F->sa[j] * st;      /* cos(a + tw) */
-            /* positions on the stamp's 1/4 px grid so equal hashes mean equal pixels */
-            float x = qz(cx + r * ux, 4.0f), y = qz(cy - r * uy, 4.0f);
-            fdot *o = &F->dot[n++];
-            o->x = x; o->y = y; o->d = d; o->c = col;
-            if (x < x0) x0 = x;
-            if (x > x1) x1 = x;
-            if (y < y0) y0 = y;
-            if (y > y1) y1 = y;
-            h = gfx_hash_u(h, (unsigned)(int)(x * 4) * 2654435761u ^ (unsigned)(int)(y * 4));
-            h = gfx_hash_u(h, (unsigned)(int)(d * 4) << 16 | col);
-        }
-    }
-    F->n = n;
-    if (!n) { f_x0 = f_y0 = f_x1 = f_y1 = 0; f_hash = 0; return; }
-    float e = 7.0f;                           /* max dot radius + AA */
-    f_x0 = (int)floorf(x0 - e); f_y0 = (int)floorf(y0 - e);
-    f_x1 = (int)ceilf(x1 + e);  f_y1 = (int)ceilf(y1 + e);
-    f_hash = h;
-}
-
-static void field_draw(gfx_fb *fb)
-{
-    if (!F || !F->n) return;
-    if (fb->rec) { gfx_rec_cmd(fb, f_x0, f_y0, f_x1, f_y1, f_hash); return; }
-    float ylo = (float)(fb->y_base - fb->oy), yhi = ylo + (float)fb->h;
-    if ((float)f_y1 <= ylo || (float)f_y0 >= yhi) return;
-    for (int i = 0; i < F->n; i++) {
-        const fdot *o = &F->dot[i];
-        float e = o->d * 0.5f + 1.0f;
-        if (o->y + e <= ylo || o->y - e >= yhi) continue;
-        dot_disc(fb, o->x, o->y, o->d, o->c);
-    }
-}
-
-/* Bake the dot masks this screen uses (0.25 px steps up to 10.5 px) a few per frame,
- * by stamping into a one-row scratch buffer, so the first breath never stalls. */
-static uint16_t *s_warm_row;
-static void prewarm_step(int per_frame)
-{
-    if (B.warm_q > 42) return;
-    if (!s_warm_row) s_warm_row = (uint16_t *)hal_big_alloc(GFX_W * 2);
-    if (!s_warm_row) { B.warm_q = 99; return; }
-    gfx_fb fb;
-    memset(&fb, 0, sizeof fb);
-    fb.px = s_warm_row; fb.h = 1; fb.cx0 = 0; fb.cx1 = GFX_W;
-    for (int i = 0; i < per_frame && B.warm_q <= 42; i++, B.warm_q++)
-        dot_disc(&fb, 20.0f, 0.0f, (float)B.warm_q * 0.25f, C_WHITE);
 }
 
 /* -------------------------------------------------------------- session HR */
 static void hr_start(void)
 {
-    B.hr_sum = 0; B.hr_n = 0; B.hr_avg = 0; B.hr_on = 0;
-    if (hal_ext_present() & EXT_HR) { hal_hr_enable(1); B.hr_on = 1; }
+    B.hr_integral=0;B.hr_valid_ms=0;B.hr_have=0;B.hr_epoch=0;
+    B.hr_start_ms=hal_millis();B.hr_avg=0;B.hr_on=0;
+    if (hal_ext_present() & EXT_HR) { hal_hr_request(HAL_HR_OWNER_BREATHE,1); B.hr_on = 1; }
 }
 static void hr_stop(void)
 {
-    if (B.hr_on) hal_hr_enable(0);
+    if (B.hr_on) hal_hr_request(HAL_HR_OWNER_BREATHE,0);
     B.hr_on = 0;
 }
 static void hr_sample(void)
 {
     if (!B.hr_on) return;
-    hal_hr r;
-    if (!hal_hr_get(&r)) return;
-    if (r.on_wrist && r.bpm > 30 && r.bpm < 220 && r.quality >= 0.5f) { B.hr_sum += (float)r.bpm; B.hr_n++; }
+    hal_hr r;uint32_t now=hal_millis();
+    if (!hal_hr_get(&r) || !r.sample_ms || now-r.sample_ms>3000u ||
+        now-r.sample_ms>now-B.hr_start_ms || !r.on_wrist ||
+        r.bpm<35 || r.bpm>230 || !isfinite(r.quality) || r.quality<0.65f || r.quality>1.0f) {
+        B.hr_have=0;return;
+    }
+    if(B.hr_have && (int32_t)(r.sample_ms-B.hr_last_ms)<=0)return;
+    uint32_t gap=r.sample_ms-B.hr_last_ms;
+    if(B.hr_have && gap<=3000u) {
+        B.hr_integral+=(uint64_t)(r.bpm+B.hr_previous)*gap/2u;
+        B.hr_valid_ms+=gap;
+    }
+    B.hr_have=1;B.hr_last_ms=r.sample_ms;B.hr_previous=r.bpm;
+    B.hr_epoch=svc_heart_sample_epoch(r.sample_ms);
+}
+static int hr_average(uint32_t session_ms)
+{
+    return B.hr_valid_ms>=10000u && B.hr_valid_ms>=session_ms/2u?
+        (int)((B.hr_integral+B.hr_valid_ms/2u)/B.hr_valid_ms):0;
 }
 
 /* ---------------------------------------------------------------- states */
@@ -246,20 +206,18 @@ static void session_begin(int from_summary)
 
 static void breathe_enter(void)
 {
-    field_alloc();
     B.pressed = CTL_NONE; B.press_hold = 0; B.unpress_at = 0;
     if (nos_revealed()) {
         /* back from a cover: keep the state; a running session keeps its HR stream (re-
          * enabled in case the HAL idle-stopped it under a long cover) and its average */
-        if ((B.st == ST_INTRO || B.st == ST_SESSION) && (hal_ext_present() & EXT_HR)) { hal_hr_enable(1); B.hr_on = 1; }
+        if ((B.st == ST_INTRO || B.st == ST_SESSION) && (hal_ext_present() & EXT_HR)) { hal_hr_request(HAL_HR_OWNER_BREATHE,1); B.hr_on = 1; }
         return;
     }
     B.st = ST_START; B.t = 0; B.build = 0;
     /* the entry build runs from nos_enter_t() (40% of the iris); a finger pull skips it */
     B.et = nos_entered_by_finger() ? 10.0f : nos_t - nos_enter_t();
     B.hr_on = 0;
-    B.warm_q = 1;
-    B.pill_k = 0;
+    B.pill_k = 0; B.disc_r = 0; B.prog_lit = 0; dial_ink(0);
     for (int i = 0; i < 3; i++) B.sel[i] = i == s_min_i;
 }
 
@@ -271,47 +229,53 @@ static void breathe_leave(void)
     hr_stop();
 }
 
-static void prepare_start(float build)
+/* entry: the START disc and the pills arrive at full size and colour on the first frame
+ * of the build (no scale-up), the empty dial builds in clockwise around the disc */
+static void prepare_start(int k)
 {
-    float b[NR], g[NR];
-    for (int i = 0; i < NR; i++) {
-        b[i] = START_B;
-        g[i] = bezier_ease(&EASE_STANDARD, m_stagger(build, i, NR, 0.55f));
-    }
-    field_layout(UI_CX, START_CY, b, g, 0.85f, DISC_R + 12.0f);
+    B.cy = START_CY;
+    dial_build(k);
+    B.prog_lit = 0;
     B.ui_k = 1.0f;
-    /* the disc and pills arrive at full size and colour with the dot build (no scale-up) */
-    B.disc_r = build > 0 ? DISC_R : 0;
-    B.pill_k = build > 0 ? 1.0f : 0.0f;
+    B.disc_r = k > 0 ? DISC_R : 0;
+    B.disc_c = C_SEC;
+    B.pill_k = k > 0 ? 1.0f : 0.0f;
 }
 
+/* t = session time (0 = first inhale): the disc follows the breath, the dial lights by
+ * elapsed fraction (the leading capsule in whole eighths: one small repaint at a time) */
 static void prepare_session(float t)
 {
-    /* t = session time (0 = first inhale) */
     float end = session_len();
-    float b[NR], g[NR];
-    for (int i = 0; i < NR; i++) {
-        float ti = t - RING_LAG * (float)i;
-        if (ti > end) ti = end;
-        b[i] = breath(ti);
-        g[i] = 1;
-    }
-    field_layout(UI_CX, UI_CY, b, g, 1.0f, 0);
+    float b = breath(t > end ? end : t);
+    B.cy = UI_CY;
+    B.core_b = b;
+    B.disc_r = core_r(b);
+    B.disc_c = core_c(b);
+    dial_ink(1.0f);
+    B.prog_lit = floorf((float)DIAL_N * 8.0f * m_clamp(t / end, 0, 1)) / 8.0f;
 }
 
-/* AGAIN: the contracted field grows back in from its core, t s after it starts (it
- * starts T_OVL before the summary has gone, so no frame is empty); the core ring starts
- * at 30 % so the first frame already shows it */
+/* AGAIN: the disc grows back in at the centre, t s after it starts (it starts T_OVL
+ * before the summary has gone, so no frame is empty), EASE_STEADY over 10 frames from
+ * 30 % on its first frame; the empty dial builds in clockwise with it */
 static void regrow_field(float t)
 {
-    float p = m_clamp(t / (T_INTRO - 0.2f), 0, 1);
-    float b[NR], g[NR];
-    for (int i = 0; i < NR; i++) {
-        b[i] = 0;
-        g[i] = bezier_ease(&EASE_STANDARD, m_stagger(p, i, NR, 0.5f));
-        if (i == 0 && t > 0 && g[i] < 0.3f) g[i] = 0.3f;
-    }
-    field_layout(UI_CX, UI_CY, b, g, 1.0f, 0);
+    int k = fk(t);
+    float g = k <= 0 ? 0.0f : k >= 10 ? 1.0f : bezier_ease(&EASE_STEADY, (float)k / 10.0f);
+    if (t > 0 && g < 0.3f) g = 0.3f;
+    B.cy = UI_CY;
+    B.core_b = 0;
+    B.disc_r = qz(DISC_R * g, 4.0f);
+    B.disc_c = C_SEC;
+    B.prog_lit = 0;
+    dial_build(k);
+}
+
+/* summary labels: in from 40 % of the build over 5 frames; out with the build-out */
+static float sum_label_k(void)
+{
+    return B.st == ST_SUMOUT ? m_ink(B.sum_p) : m_ink((B.sum_p - 0.4f) / 0.5f);
 }
 
 static void breathe_tick(float dt)
@@ -320,46 +284,42 @@ static void breathe_tick(float dt)
     B.et += dt;
     B.build = m_clamp(B.et / UI_ENTRY_S, 0, 1);
     if (B.unpress_at > 0 && nos_t >= B.unpress_at && !B.press_hold) { B.pressed = CTL_NONE; B.unpress_at = 0; }
-    for (int i = 0; i < 3; i++) {             /* pill selection crossfades over 0.15 s */
-        float tg = i == s_min_i ? 1.0f : 0.0f, st = dt / 0.15f;
+    for (int i = 0; i < 3; i++) {             /* pill selection crossfades over 4 frames */
+        float tg = i == s_min_i ? 1.0f : 0.0f, st = dt / M_FRAMES(4);
         B.sel[i] = B.sel[i] < tg ? m_clamp(B.sel[i] + st, 0, tg) : m_clamp(B.sel[i] - st, tg, 1);
     }
-    if (!F) return;
     switch (B.st) {
     case ST_START:
-        prewarm_step(3);
-        prepare_start(B.build);
-        B.txt_col = 0; B.prog_lit = 0; B.prog_k = 0;
+        prepare_start(fk(B.et));
+        B.txt_col = 0;
         break;
     case ST_INTRO: {
+        /* whole frames from the tap (k = 1 on the tap's own frame): START sinks into the
+         * (pressed, grey) disc over frames 1-3, the pills scale out (1-5) and go, the
+         * title fades (1-6); the disc, now the breath fully out, glides with its dial into
+         * the centre on the breath curve over 24 frames */
         nos_keep_awake();
-        hr_sample();
+        int k = fk(B.t);
         float p = m_clamp(B.t / (T_INTRO - 0.2f), 0, 1);
-        float e = ease_sine(p);
-        float b[NR], g[NR];
-        float disc = m_clamp(B.t / 0.35f, 0, 1);
+        float e = ease_breath(p);
         if (B.from_summary) {
             regrow_field(B.t);
             B.ui_k = 0;
             B.pill_k = 0;
-            B.disc_r = 0;
         } else {
-            for (int i = 0; i < NR; i++) {
-                b[i] = START_B * (1.0f - e);
-                /* rings hidden under the disc grow in as it shrinks */
-                g[i] = i < 3 ? bezier_ease(&EASE_STANDARD, m_clamp((disc - 0.3f * (2 - i) / 2.0f) * 1.6f, 0, 1)) : 1.0f;
-            }
-            field_layout(UI_CX, m_lerp(START_CY, UI_CY, e), b, g, m_lerp(0.85f, 1.0f, e), 0);
-            B.ui_k = qz(1.0f - m_clamp(B.t / 0.3f, 0, 1), 6.0f);
-            B.pill_k = 1.0f - m_clamp(B.t / 0.2f, 0, 1);     /* the pills build out by scale steps */
-            B.disc_r = qz(DISC_R * (1.0f - bezier_ease(&EASE_ACCEL, disc)), 4.0f);
+            B.cy = qz(m_lerp(START_CY, UI_CY, e), 4.0f);
+            B.core_b = 0;
+            B.disc_r = DISC_R;
+            B.disc_c = C_SEC;
+            B.prog_lit = 0;
+            dial_ink(1.0f);
+            B.ui_k = m_ink(1.0f - (float)k / 6.0f);
+            B.pill_k = m_clamp(1.0f - (float)k / 6.0f, 0, 1);   /* the pills build out by scale steps */
         }
-        B.prog_k = qz(m_clamp((B.t - 0.4f) / 0.5f, 0, 1), 6.0f);
-        B.prog_lit = 0;
         /* "Breathe in" leads the first inhale by 0.2 s (no dead frames before it) */
         B.txt_id = 0;
-        B.txt_col = ui_dim(C_PRI, qz(m_clamp((B.t - (T_INTRO - 0.2f)) / 0.33f, 0, 1), 6.0f));
-        if (B.t >= T_INTRO) { go(ST_SESSION); }
+        B.txt_col = ui_dim(C_PRI, m_ink((B.t - (T_INTRO - 0.2f)) / TXT_IN));
+        if (B.t >= T_INTRO) { B.hr_start_ms=hal_millis();B.hr_have=0;go(ST_SESSION); }
         break;
     }
     case ST_SESSION: {
@@ -375,63 +335,72 @@ static void breathe_tick(float dt)
             else if (ph == 2) haptic(HAPTIC_DOUBLE);
             B.phase = ph;
         }
-        /* text: fade in over 0.33 s after a phase starts, out over 0.2 s before it ends */
+        /* text: fades in over TXT_IN after a phase starts, out over TXT_OUT before it ends */
         float tin = ph == 0 ? p : ph == 1 ? p - T_IN : p - T_IN - T_HOLD;
         float plen = ph == 0 ? T_IN : ph == 1 ? T_HOLD : T_OUT;
         float tout = plen - tin;
-        if (t >= end - 0.2f) tout = end - t;               /* last exhale fades for the outro */
-        float k = m_clamp((tin + (t < T_IN ? 0.2f : 0.0f)) / 0.33f, 0, 1);   /* first inhale: continues the intro's fade */
-        float k2 = m_clamp(tout / 0.2f, 0, 1);
+        if (t >= end - TXT_OUT) tout = end - t;            /* last exhale fades for the outro */
+        float k = m_clamp((tin + (t < T_IN ? 0.2f : 0.0f)) / TXT_IN, 0, 1);   /* first inhale: continues the intro's fade */
+        float k2 = m_clamp(tout / TXT_OUT, 0, 1);
         if (k2 < k) k = k2;
-        B.txt_col = ui_dim(C_PRI, qz(k, 6.0f));
+        B.txt_col = ui_dim(C_PRI, m_ink(k));
         B.txt_id = ph;
-        B.prog_k = 1;
-        B.prog_lit = floorf((float)PROG_N * m_clamp(t / end, 0, 1));
         if (t >= end) {
             hr_stop();
-            B.hr_avg = B.hr_n > 0 ? (int)(B.hr_sum / (float)B.hr_n + 0.5f) : 0;
-            if (B.hr_avg) svc_heart_record(B.hr_avg, 0);
+            /* Trapezoidal acquisition-time mean; require half of the declared
+             * session, at least 10 seconds, rather than one cached reading. */
+            B.hr_avg = hr_average((uint32_t)(end*1000.0f));
+            if (B.hr_avg) svc_heart_record_at(B.hr_avg, 0, B.hr_epoch);
             haptic(HAPTIC_DOUBLE);
             go(ST_OUTRO);
         }
         break;
     }
     case ST_OUTRO: {
-        float end = session_len();
-        float p = m_clamp(B.t / T_OUTRO, 0, 1);
-        float b[NR], g[NR];
-        for (int i = 0; i < NR; i++) {
-            float ti = end + B.t - RING_LAG * (float)i;
-            if (ti > end) ti = end;
-            b[i] = breath(ti);
-            /* outer rings vanish first, the core last: the field closes to a point */
-            g[i] = 1.0f - bezier_ease(&EASE_ACCEL, m_stagger(p, NR - 1 - i, NR, 0.5f));
-        }
-        field_layout(UI_CX, UI_CY, b, g, 1.0f, 0);
+        /* the disc (breath out) closes to a point at a constant speed over frames 1-8 (an
+         * exit); the full dial fades out over frames 5-10 */
+        int k = fk(B.t);
+        B.cy = UI_CY;
+        B.core_b = 0;
+        B.disc_r = qz(DISC_R * (1.0f - m_clamp((float)k / 8.0f, 0, 1)), 4.0f);
+        B.disc_c = C_SEC;
+        B.prog_lit = (float)DIAL_N;
+        dial_ink(m_ink(1.0f - (float)(k - 4) / 6.0f));
         B.txt_col = 0;
-        B.prog_lit = (float)PROG_N;
-        B.prog_k = 1;
-        {
-            float k = 1.0f - m_clamp((B.t - 0.2f) / 0.5f, 0, 1);
-            B.prog_k = qz(k, 6.0f);
-        }
         B.sum_p = 0;
         if (B.t >= T_OUTRO) go(ST_SUMMARY);
         break;
     }
     case ST_SUMMARY:
-        if (F) F->n = 0;
+        B.disc_r = 0; dial_ink(0);
         B.sum_p = m_clamp(B.t / UI_ENTRY_S, 0, 1);
         break;
     case ST_SUMOUT:
-        /* AGAIN: the summary builds out; the field starts growing back T_OVL before it
+        /* AGAIN: the summary builds out; the disc starts growing back T_OVL before it
          * has gone (the intro then continues from the same clock) */
         B.sum_p = 1.0f - m_clamp(B.t / T_SUMOUT, 0, 1);
         if (B.t > T_SUMOUT - T_OVL) regrow_field(B.t - (T_SUMOUT - T_OVL));
-        else if (F) F->n = 0;
+        else { B.disc_r = 0; dial_ink(0); }
         if (B.t >= T_SUMOUT) { float t = B.t - (T_SUMOUT - T_OVL); session_begin(1); B.t = t; regrow_field(B.t); }
         break;
     }
+    /* motion audit (sim only): the centre, the disc (as a component outside the session,
+     * as the breath inside it), the dial and every fade */
+    if (B.disc_r > 0 || B.dial_k[0] > 0) {
+        /* the centre glides 29 px into the session on the breath curve itself (<= 1.8 px
+         * a frame over 24 frames): slow decorative motion, not a component move */
+        nos_motion_probe("breathe.cy", MC_DECORATIVE, B.cy);
+    }
+    if (B.st == ST_SESSION) nos_motion_probe("breathe.core.r", MC_DECORATIVE, B.disc_r);
+    else nos_motion_probe("breathe.disc.r", MC_COMPONENT, B.disc_r);
+    nos_motion_probe("breathe.title.ink", MC_FADE, B.ui_k * 100.0f);
+    nos_motion_probe("breathe.dial.ink0", MC_FADE, B.dial_k[0] * 100.0f);
+    nos_motion_probe("breathe.dial.ink11", MC_FADE, B.dial_k[DIAL_N - 1] * 100.0f);
+    nos_motion_probe("breathe.dial.lit", MC_DISCRETE, B.prog_lit);
+    nos_motion_probe("breathe.txt.ink", MC_FADE, B.txt_col ? (float)(B.txt_col & 0x1F) / 31.0f * 100.0f : 0.0f);
+    nos_motion_probe("breathe.pill.w", MC_MICRO, B.pill_k > 0.05f ? floorf(96.0f * (B.pill_k < 1 ? 0.4f + 0.6f * B.pill_k : 1.0f) + 0.5f) : 0.0f);
+    nos_motion_probe("breathe.sel.ink", MC_FADE, qz(m_clamp(B.sel[s_min_i], 0, 1), 8.0f) * 100.0f);
+    nos_motion_probe("breathe.sum.ink", MC_FADE, B.st >= ST_SUMMARY ? sum_label_k() * 100.0f : 0.0f);
 }
 
 /* ------------------------------------------------------------------ draw */
@@ -459,20 +428,24 @@ static void pill(gfx_fb *fb, float cx, float cy, float w, float h, const char *l
         ui_label(fb, (int)cx, (int)(cy + UI_F_LABEL->ascent * 0.5f - 2), label, ink, UI_CENTER);
 }
 
+/* the disc: on START white (pressed: grey), from the tap on the breath's own grey..white */
+static void draw_disc(gfx_fb *fb)
+{
+    if (B.disc_r <= 0.5f) return;
+    int start = B.st == ST_START || (B.st == ST_INTRO && !B.from_summary);
+    uint16_t fill = !start ? B.disc_c : B.pressed == CTL_DISC || B.st == ST_INTRO ? C_SEC : C_WHITE;
+    gfx_fill_circle(fb, UI_CX, B.cy, B.disc_r, fill);
+    if (!start) return;
+    /* START: at the tap its ink fades into the disc (0.1 s) as it starts to glide */
+    float lk = B.st == ST_START ? 0.0f : qz(m_clamp(B.t / 0.1f, 0, 1), 8.0f);
+    if (lk < 1)
+        ui_label(fb, UI_CX, (int)(B.cy + UI_F_LABEL->ascent * 0.5f - 2), "START", ui_mix(C_BG, fill, lk), UI_CENTER);
+}
+
 static void draw_start(gfx_fb *fb)
 {
     float k = B.ui_k;
     if (k > 0.01f) ui_label(fb, UI_CX, 70, "BREATHE", ui_dim(C_SEC, k), UI_CENTER);
-    field_draw(fb);
-    if (B.disc_r > 0.5f) {
-        /* pressed: C_SEC; tapped, it stays pressed while it shrinks away */
-        uint16_t fill = B.pressed == CTL_DISC || B.st == ST_INTRO ? C_SEC : C_WHITE;
-        gfx_fill_circle(fb, UI_CX, START_CY, B.disc_r, fill);
-        /* START: at the tap its ink fades into the disc (0.1 s) before the disc shrinks */
-        float lk = B.st == ST_START ? 0.0f : qz(m_clamp(B.t / 0.1f, 0, 1), 8.0f);
-        if (lk < 1 && B.disc_r > DISC_R * 0.7f)
-            ui_label(fb, UI_CX, (int)(START_CY + UI_F_LABEL->ascent * 0.5f - 2), "START", ui_mix(C_BG, fill, lk), UI_CENTER);
-    }
     /* duration pills: with the build at full colour; scale out with the intro */
     for (int i = 0; i < 3; i++) {
         if (B.pill_k <= 0.05f) break;
@@ -485,8 +458,6 @@ static void draw_start(gfx_fb *fb)
 
 static void draw_session(gfx_fb *fb)
 {
-    if (B.prog_k > 0.01f) dot_ring(fb, UI_CX, UI_CY, PROG_R, PROG_N, 3.5f, 0, B.prog_lit, ui_dim(C_SEC, B.prog_k), ui_dim(C_LINE2, B.prog_k));
-    field_draw(fb);
     if (B.txt_col) {
         static const char *k_txt[3] = { "Breathe in", "Hold", "Breathe out" };
         ui_text(fb, UI_F_TITLE, UI_CX, 432, k_txt[B.txt_id], B.txt_col, UI_CENTER, 0);
@@ -498,14 +469,14 @@ static void draw_summary(gfx_fb *fb)
     /* p: build progress (SUMMARY) or 1 -> 0 while it builds out (SUMOUT) */
     float p = B.sum_p;
     int out = B.st == ST_SUMOUT;
-    float kt = qz(out ? p : m_clamp(p / 0.6f, 0, 1), 8.0f);
+    float kt = m_ink(out ? p : p / 0.6f);
     ui_label(fb, UI_CX, UI_TITLE_Y, "COMPLETE", ui_dim(C_SEC, kt), UI_CENTER);
     char b[16];
     snprintf(b, sizeof b, "%d", k_minutes[s_min_i]);
     dot_style st = { DOT_FONT_TALL, UI_HERO_PITCH, UI_HERO_PITCH * 0.8f, C_WHITE, 0, 1, 1 };
     /* the block sits 30 px above the button pair (it read as falling onto them) */
     dot_text_anim(fb, &st, UI_CX, 116, b, 1, p, DOT_REVEAL_RANDOM, 7);
-    float pl = qz(out ? p : m_clamp((p - 0.4f) / 0.5f, 0, 1), 8.0f);
+    float pl = sum_label_k();
     ui_label(fb, UI_CX, 230, "MIN", ui_dim(C_SEC, pl), UI_CENTER);
     char line[40];
     snprintf(line, sizeof line, "%d BREATHS", B.cycles);
@@ -513,7 +484,9 @@ static void draw_summary(gfx_fb *fb)
     if (B.hr_avg) {
         snprintf(line, sizeof line, "AVG %d BPM", B.hr_avg);
         ui_label(fb, UI_CX, 298, line, ui_dim(C_DIS, pl), UI_CENTER);
-    }
+    } else ui_label(fb,UI_CX,298,"HEART RATE UNAVAILABLE",ui_dim(C_DIS,pl),UI_CENTER);
+    snprintf(line,sizeof line,"HR COVERAGE %.0f%%",session_len()>0?B.hr_valid_ms/(session_len()*10.0f):0);
+    ui_label(fb,UI_CX,324,line,ui_dim(C_DIS,pl),UI_CENTER);
     /* the action pair arrives with the hero at full colour; on AGAIN both build out by
      * scale steps at their own fills, the tapped AGAIN held pressed */
     float pb = out ? p : (p > 0 ? 1.0f : 0.0f);
@@ -527,14 +500,18 @@ static void breathe_draw(gfx_fb *fb)
 {
     switch (B.st) {
     case ST_START: case ST_INTRO:
+        draw_dial(fb);
+        draw_disc(fb);
         if (B.st == ST_INTRO) draw_session(fb);
         draw_start(fb);
         break;
     case ST_SESSION: case ST_OUTRO:
+        draw_dial(fb);
+        draw_disc(fb);
         draw_session(fb);
         break;
     case ST_SUMMARY: case ST_SUMOUT:
-        if (B.st == ST_SUMOUT) field_draw(fb);
+        if (B.st == ST_SUMOUT) { draw_dial(fb); draw_disc(fb); }
         draw_summary(fb);
         break;
     }
@@ -560,6 +537,7 @@ static int hit(int x, int y)
 
 static int breathe_input(const nos_input *in)
 {
+    if(in->type==IN_CANCEL) {B.pressed=CTL_NONE;B.press_hold=0;B.unpress_at=0;return 1;}
     switch (in->type) {
     case IN_DOWN:
         if (B.press_hold) return 1;              /* departing: the tapped control holds */
@@ -571,7 +549,7 @@ static int breathe_input(const nos_input *in)
         return 0;
     case IN_UP:
         /* a quick tap still shows the pressed state for >= 3 frames */
-        if (B.pressed != CTL_NONE && !B.press_hold) B.unpress_at = fmaxf(nos_t, B.press_t0 + PRESS_MIN);
+        if (B.pressed != CTL_NONE && !B.press_hold) B.unpress_at = fmax(nos_t, B.press_t0 + PRESS_MIN);
         return 0;
     case IN_TAP: {
         if (B.press_hold) return 1;

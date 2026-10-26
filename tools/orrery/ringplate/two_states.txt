@@ -1,0 +1,24 @@
+# The read-out plate's two states: date only at now; expanded with a big NOW once travelled.
+face 8
+date 2026-10-11
+time 10:08:15
+wait 2500
+hold 300 300 1700
+wait 700
+mark open
+tap 380 75
+wait 600
+shot plate_now
+mark travel
+drag 403 135 260 39 500
+film! plate_expand 10
+wait 700
+shot plate_travelled
+mark now_tap
+tap 290 392
+film! plate_collapse 10
+wait 900
+shot plate_back_now
+mark rest
+wait 1000
+expect idle

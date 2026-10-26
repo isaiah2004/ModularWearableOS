@@ -19,7 +19,11 @@ int main(void)
         int ox=(int)(random_u()%201)-100,oy=(int)(random_u()%201)-100;
         int ybase=(int)(random_u()%GFX_H),rows=1+(int)(random_u()%64);
         if(rows>GFX_H-ybase)rows=GFX_H-ybase;
-        if(test<100){x=158.37f;y=248.63f;w=51.43f;h=65.1f;ox=oy=ybase=0;rows=GFX_H;}
+        if(test<100) {
+            x=158.37f;y=248.63f;w=51.43f;h=65.1f;ox=oy=ybase=0;rows=GFX_H;
+            if(test%3==1){ox=-31;oy=23;}
+            if(test%3==2){ox=75;oy=-59;}
+        }
         int cx0=(int)(random_u()%500)-16,cx1=cx0+1+(int)(random_u()%GFX_W);
         if(test<100){cx0=0;cx1=GFX_W;}
         int count=rows*GFX_W+2*GUARD;
@@ -40,6 +44,16 @@ int main(void)
         gfx_rec ra={0},rb={0};a.rec=&ra;b.rec=&rb;a.px=b.px=NULL;
         pip_eye_lid_reference(&a,x,y,w,h,anger,side);pip_eye_lid(&b,x,y,w,h,anger,side);
         assert(!memcmp(&ra,&rb,sizeof ra));
+        assert(rb.n==1);
+        for(int py=0;py<rows;py++)for(int px=0;px<GFX_W;px++) {
+            unsigned i=(unsigned)(GUARD+py*GFX_W+px);
+            if(new_pixels[i]!=(uint16_t)(i*37u^(i>>3)^0xa52du) &&
+               !(px>=rb.c[0].x0 && px<rb.c[0].x1 && py+ybase>=rb.c[0].y0 && py+ybase<rb.c[0].y1)) {
+                fprintf(stderr,"Lid damage escapes case %d: pixel %d %d, bounds %d %d %d %d; shape %.9g %.9g %.9g %.9g; anger %.9g side %d; translate %d %d; stripe %d %d; clip %d %d\n",
+                    test,px,py+ybase,rb.c[0].x0,rb.c[0].y0,rb.c[0].x1,rb.c[0].y1,x,y,w,h,anger,side,ox,oy,ybase,rows,cx0,cx1);
+                return 1;
+            }
+        }
     }
     puts("PASS Pip lids: 4500 exact RGB565/reference comparisons, both slopes, fractional coverage, clips, translations, stripes, guards and damage records");
     return 0;

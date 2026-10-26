@@ -1,0 +1,906 @@
+{
+  "date": "2026-10-22",
+  "fps_caps": [
+    24,
+    30,
+    40,
+    48,
+    60,
+    "Unlimited"
+  ],
+  "setting": "Developer Tools > Frame rate",
+  "default_fps_cap": 60,
+  "persistence": "Existing checksummed alternating verified SD checkpoint; same 52-byte V4 payload, revision 4 uses reserved byte49; legacy overlay wrist bit preserved.",
+  "profiled_firmware": {
+    "budget": {
+      "app_bytes": 7746944,
+      "app_headroom_bytes": 117376,
+      "app_limit_bytes": 7864320,
+      "app_offset": 131072,
+      "app_partition": "ota_0",
+      "flash_bytes": 16777216,
+      "nvs_preserved": true
+    },
+    "built_utc": "2026-10-22T07:48:25.192136+00:00",
+    "bundle_id": "86d2c82fb251a39682180671053caf995d314f456404f001d27dd3d8892a8f21",
+    "features": {
+      "Developer tools": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/set_developer.c",
+        "symbol": "scr_developer"
+      },
+      "Energy": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_energy.c",
+        "symbol": "scr_energy"
+      },
+      "Integrated home pager": {
+        "linked": true,
+        "registry": "nos/apps/sys_home.c",
+        "source": "nos/apps/sys_home.c",
+        "symbol": "scr_home"
+      },
+      "Sensor logs": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_energy.c",
+        "symbol": "scr_sports_logs"
+      },
+      "Solar/Orrery": {
+        "linked": true,
+        "registry": "nos/faces/faces.c",
+        "source": "nos/faces/face_orrery.c",
+        "symbol": "face_orrery"
+      },
+      "Sports": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_workout.c",
+        "symbol": "scr_workout"
+      }
+    },
+    "files": [
+      {
+        "bytes": 22368,
+        "file": "bootloader/bootloader.bin",
+        "sha256": "e976f0b0bb3bb27669fa0181ada1cafd8a53b3baef6fb6fa23dc501bbee5944a"
+      },
+      {
+        "bytes": 8107669,
+        "file": "compile_commands.json",
+        "sha256": "1a75ab7faff895678fbf882ea7c4b9859476bdeccdaccf1c64442236b62486bf"
+      },
+      {
+        "bytes": 60802,
+        "file": "config/sdkconfig.h",
+        "sha256": "584fddb1f59552889540eb49397a4cef733227a90855042cbb548bafd730f1e0"
+      },
+      {
+        "bytes": 70173,
+        "file": "config/sdkconfig.json",
+        "sha256": "c93ed9defa112970106eae9669e14ae248c3f76bd9d5bcfef9c720ccf7ad959b"
+      },
+      {
+        "bytes": 179,
+        "file": "flash_args",
+        "sha256": "40207e2ed22fc5dd99ad38f26fa5856cb2707a615bed956c31a473718dffc526"
+      },
+      {
+        "bytes": 1075,
+        "file": "flasher_args.json",
+        "sha256": "a07369a03907f114a9168c81cc499af4ae3617919b95b6797ba665e767d52252"
+      },
+      {
+        "bytes": 161,
+        "file": "generated/nos_build_identity.h",
+        "sha256": "663c09005955cf095b7472877254165c2b2d42ce95009be5e2ad132bfb21a49f"
+      },
+      {
+        "bytes": 8192,
+        "file": "ota_data_initial.bin",
+        "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+      },
+      {
+        "bytes": 3072,
+        "file": "partition_table/partition-table.bin",
+        "sha256": "17e2cc7897009746981a16a1b4f390739ee4dd2f7724392a0bee1dbe98d0ba74"
+      },
+      {
+        "bytes": 220480,
+        "file": "project_description.json",
+        "sha256": "9244a01e4bb129d7190c084d12b355fa3b0d4ae193cbda920a802d0a33bfaa5a"
+      },
+      {
+        "bytes": 997,
+        "file": "provenance/dependencies.lock",
+        "sha256": "b9b59f925238c2f64261ea0dc3a6639f3c24692e5eaee56d3afd21bf8fcb4197"
+      },
+      {
+        "bytes": 139442,
+        "file": "provenance/e235380c4d014ec1948f5cb4ec6cd2ee/source-manifest.json",
+        "sha256": "47d644432d9c400c8097d4007d9e7579e24a97413e1db95f7f2dddb8693e8f7f"
+      },
+      {
+        "bytes": 13984007,
+        "file": "provenance/e235380c4d014ec1948f5cb4ec6cd2ee/source.zip",
+        "sha256": "9e5e2b87bc0632bd709a47a719d65d2b23ebd4b82db6314f8f63e1c7d5faab8d"
+      },
+      {
+        "bytes": 92258,
+        "file": "provenance/sdkconfig",
+        "sha256": "22ed2d7da18265f5f407290f2f8977f71b499961d16eccf0fc3e2f60345db7d3"
+      },
+      {
+        "bytes": 4168,
+        "file": "source-inputs.json",
+        "sha256": "d01629ca802dc645c63388a7a373229ec1ef62867bc295bc875715d9e7c95049"
+      },
+      {
+        "bytes": 7746944,
+        "file": "watchfw.bin",
+        "sha256": "6d7949a374498519f1a829968e37b31b105b6b71640e25171563a2b4268c3902"
+      },
+      {
+        "bytes": 28154300,
+        "file": "watchfw.elf",
+        "sha256": "50d4798b0fa2e14b3dfad70882363e217f13d0ce3a9bccaa02374442cf5a0cbd"
+      },
+      {
+        "bytes": 13340152,
+        "file": "watchfw.map",
+        "sha256": "0642b20e8538784ec73fad164ac956b6e78cf156b1440352bc2306d78b919293"
+      }
+    ],
+    "firmware_elf_sha256": "50d4798b0fa2e14b3dfad70882363e217f13d0ce3a9bccaa02374442cf5a0cbd",
+    "schema": 1,
+    "sd_assets": {
+      "complete": true,
+      "files": [
+        {
+          "bytes": 1048576,
+          "destination": "sky/earth.565",
+          "sha256": "18b6bbca52d79eee42a63fa3147dc7222c466fe98f99555a2e76a471cf1a5b87",
+          "source": "build/sd/sky/earth.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/earth_night.565",
+          "sha256": "bec6fe82143475be94e0b984a1d09d8671bd022811775d5d48b1ec0fef2d6354",
+          "source": "build/sd/sky/earth_night.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/jupiter.565",
+          "sha256": "b183e56727524d8890df4adb529df4ec37fe3221e60157030fb368b5eac66ba7",
+          "source": "build/sd/sky/jupiter.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/mars.565",
+          "sha256": "70d5f06f64c010d1926e353a5b641f99d89e6381ee396f9acc9de214425fd6c6",
+          "source": "build/sd/sky/mars.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/mercury.565",
+          "sha256": "aaa136f7d41d40ceb08bf52fd9e1d9c6cefd76b6bf15fc943865d23b8b266196",
+          "source": "build/sd/sky/mercury.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/moon.565",
+          "sha256": "a409886863256a77b5f1ff9a145cc9d4163b8ef3e95541459d1ace0a64ca646c",
+          "source": "build/sd/sky/moon.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/neptune.565",
+          "sha256": "a12ff74f31866e2f80ac833c2900892bf5f928a6c0fc2fbf5f194230354cd014",
+          "source": "build/sd/sky/neptune.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/saturn.565",
+          "sha256": "ff66c7e88f667a0e16f7c13b0ae372e76fcda82d9cb78bde055a1de0875252c7",
+          "source": "build/sd/sky/saturn.565"
+        },
+        {
+          "bytes": 2048,
+          "destination": "sky/saturn_ring.rgba",
+          "sha256": "b534304bc89ee2b618512b44a455d4245e797de1ab41388b8f86b759081d6d23",
+          "source": "build/sd/sky/saturn_ring.rgba"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/sun.565",
+          "sha256": "faac7727a0a45b91bfeaea43343982fae7d2a19fac4bffbf647d02bad76743bd",
+          "source": "build/sd/sky/sun.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/uranus.565",
+          "sha256": "8feb6fdc873520e8d37cb7be1039e0653dc51bf0596f92a7e890c0d6bbd933d2",
+          "source": "build/sd/sky/uranus.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/venus.565",
+          "sha256": "448a20275d64256753f6d91478e3bd618f6288fa8956f6bfe85c62a8c1c92515",
+          "source": "build/sd/sky/venus.565"
+        }
+      ],
+      "missing": []
+    },
+    "segments": [
+      {
+        "bytes": 22368,
+        "file": "bootloader/bootloader.bin",
+        "offset": 0,
+        "sha256": "e976f0b0bb3bb27669fa0181ada1cafd8a53b3baef6fb6fa23dc501bbee5944a"
+      },
+      {
+        "bytes": 7746944,
+        "file": "watchfw.bin",
+        "offset": 131072,
+        "sha256": "6d7949a374498519f1a829968e37b31b105b6b71640e25171563a2b4268c3902"
+      },
+      {
+        "bytes": 3072,
+        "file": "partition_table/partition-table.bin",
+        "offset": 32768,
+        "sha256": "17e2cc7897009746981a16a1b4f390739ee4dd2f7724392a0bee1dbe98d0ba74"
+      },
+      {
+        "bytes": 8192,
+        "file": "ota_data_initial.bin",
+        "offset": 65536,
+        "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+      }
+    ],
+    "source_archive": "provenance/e235380c4d014ec1948f5cb4ec6cd2ee/source.zip",
+    "source_manifest": "provenance/e235380c4d014ec1948f5cb4ec6cd2ee/source-manifest.json",
+    "source_tree_sha256": "527c8984da060bb340e891b7d3f19b102ffde3f59a6c4602dbc31e20325fb214",
+    "toolchain": {
+      "compiler": "C:\\Users\\isaia\\.espressif\\tools\\xtensa-esp-elf\\esp-14.2.0_20260121\\xtensa-esp-elf\\bin\\xtensa-esp32s3-elf-gcc.exe",
+      "firmware_elf_sha256": "50d4798b0fa2e14b3dfad70882363e217f13d0ce3a9bccaa02374442cf5a0cbd",
+      "idf_git_revision": "897cf407",
+      "idf_path": "A:/makerspace/esp-idf",
+      "idf_version": "897cf407",
+      "sha256": "ac8d55c45dbcaefe082299357245d7f12786c61a4e3c06a8e21f31d6890fb29e",
+      "version": "xtensa-esp-elf-gcc.exe (crosstool-NG esp-14.2.0_20260121) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+    },
+    "workspace": "A:\\makerspace\\smartwatch2.0"
+  },
+  "installed_touch_firmware": {
+    "budget": {
+      "app_bytes": 7749200,
+      "app_headroom_bytes": 115120,
+      "app_limit_bytes": 7864320,
+      "app_offset": 131072,
+      "app_partition": "ota_0",
+      "flash_bytes": 16777216,
+      "nvs_preserved": true
+    },
+    "built_utc": "2026-10-22T08:22:30.254644+00:00",
+    "bundle_id": "e32b126223343c0e8d988fda2a30c94607598ca2e0d7f93b56a16780f28c0f0b",
+    "features": {
+      "Developer tools": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/set_developer.c",
+        "symbol": "scr_developer"
+      },
+      "Energy": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_energy.c",
+        "symbol": "scr_energy"
+      },
+      "Integrated home pager": {
+        "linked": true,
+        "registry": "nos/apps/sys_home.c",
+        "source": "nos/apps/sys_home.c",
+        "symbol": "scr_home"
+      },
+      "Sensor logs": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_energy.c",
+        "symbol": "scr_sports_logs"
+      },
+      "Solar/Orrery": {
+        "linked": true,
+        "registry": "nos/faces/faces.c",
+        "source": "nos/faces/face_orrery.c",
+        "symbol": "face_orrery"
+      },
+      "Sports": {
+        "linked": true,
+        "registry": "nos/apps/registry.c",
+        "source": "nos/apps/fit_workout.c",
+        "symbol": "scr_workout"
+      }
+    },
+    "files": [
+      {
+        "bytes": 22368,
+        "file": "bootloader/bootloader.bin",
+        "sha256": "e976f0b0bb3bb27669fa0181ada1cafd8a53b3baef6fb6fa23dc501bbee5944a"
+      },
+      {
+        "bytes": 8107669,
+        "file": "compile_commands.json",
+        "sha256": "1a75ab7faff895678fbf882ea7c4b9859476bdeccdaccf1c64442236b62486bf"
+      },
+      {
+        "bytes": 60802,
+        "file": "config/sdkconfig.h",
+        "sha256": "584fddb1f59552889540eb49397a4cef733227a90855042cbb548bafd730f1e0"
+      },
+      {
+        "bytes": 70173,
+        "file": "config/sdkconfig.json",
+        "sha256": "c93ed9defa112970106eae9669e14ae248c3f76bd9d5bcfef9c720ccf7ad959b"
+      },
+      {
+        "bytes": 179,
+        "file": "flash_args",
+        "sha256": "40207e2ed22fc5dd99ad38f26fa5856cb2707a615bed956c31a473718dffc526"
+      },
+      {
+        "bytes": 1075,
+        "file": "flasher_args.json",
+        "sha256": "a07369a03907f114a9168c81cc499af4ae3617919b95b6797ba665e767d52252"
+      },
+      {
+        "bytes": 161,
+        "file": "generated/nos_build_identity.h",
+        "sha256": "66c1d950a12d901398d3e0217ffcae4a995aa2037823ad7b2a3fefe9b71a1ceb"
+      },
+      {
+        "bytes": 8192,
+        "file": "ota_data_initial.bin",
+        "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+      },
+      {
+        "bytes": 3072,
+        "file": "partition_table/partition-table.bin",
+        "sha256": "17e2cc7897009746981a16a1b4f390739ee4dd2f7724392a0bee1dbe98d0ba74"
+      },
+      {
+        "bytes": 220480,
+        "file": "project_description.json",
+        "sha256": "9244a01e4bb129d7190c084d12b355fa3b0d4ae193cbda920a802d0a33bfaa5a"
+      },
+      {
+        "bytes": 139781,
+        "file": "provenance/46122f6b5ab24af1afac2a858af70e2f/source-manifest.json",
+        "sha256": "1dc633f036bf9d9d2a538c0d4057ebc19678197b758fb5ad4321b461271edac9"
+      },
+      {
+        "bytes": 13988272,
+        "file": "provenance/46122f6b5ab24af1afac2a858af70e2f/source.zip",
+        "sha256": "5fd71b1f0c33ea6b1231759048cdbcd965735ce29d33534ed037654d33fc837e"
+      },
+      {
+        "bytes": 997,
+        "file": "provenance/dependencies.lock",
+        "sha256": "b9b59f925238c2f64261ea0dc3a6639f3c24692e5eaee56d3afd21bf8fcb4197"
+      },
+      {
+        "bytes": 92258,
+        "file": "provenance/sdkconfig",
+        "sha256": "22ed2d7da18265f5f407290f2f8977f71b499961d16eccf0fc3e2f60345db7d3"
+      },
+      {
+        "bytes": 4168,
+        "file": "source-inputs.json",
+        "sha256": "316219cd35d25e93391d6c24fdfb624e05ee7aab33fda32d05331cbdf2710881"
+      },
+      {
+        "bytes": 7749200,
+        "file": "watchfw.bin",
+        "sha256": "f192387712fd9597271fdad2f045b06998c3ec275c6684199a30362a6fb3ca35"
+      },
+      {
+        "bytes": 28157664,
+        "file": "watchfw.elf",
+        "sha256": "1418d636dcb7d4895bb15906d28996e7a5f2ecb992fd67adce3ad17744de3cf8"
+      },
+      {
+        "bytes": 13341727,
+        "file": "watchfw.map",
+        "sha256": "988cf0a58ff286aa580cf17ee5b9337e1e128375663e6cb23d0c207d3ca3373c"
+      }
+    ],
+    "firmware_elf_sha256": "1418d636dcb7d4895bb15906d28996e7a5f2ecb992fd67adce3ad17744de3cf8",
+    "schema": 1,
+    "sd_assets": {
+      "complete": true,
+      "files": [
+        {
+          "bytes": 1048576,
+          "destination": "sky/earth.565",
+          "sha256": "18b6bbca52d79eee42a63fa3147dc7222c466fe98f99555a2e76a471cf1a5b87",
+          "source": "build/sd/sky/earth.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/earth_night.565",
+          "sha256": "bec6fe82143475be94e0b984a1d09d8671bd022811775d5d48b1ec0fef2d6354",
+          "source": "build/sd/sky/earth_night.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/jupiter.565",
+          "sha256": "b183e56727524d8890df4adb529df4ec37fe3221e60157030fb368b5eac66ba7",
+          "source": "build/sd/sky/jupiter.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/mars.565",
+          "sha256": "70d5f06f64c010d1926e353a5b641f99d89e6381ee396f9acc9de214425fd6c6",
+          "source": "build/sd/sky/mars.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/mercury.565",
+          "sha256": "aaa136f7d41d40ceb08bf52fd9e1d9c6cefd76b6bf15fc943865d23b8b266196",
+          "source": "build/sd/sky/mercury.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/moon.565",
+          "sha256": "a409886863256a77b5f1ff9a145cc9d4163b8ef3e95541459d1ace0a64ca646c",
+          "source": "build/sd/sky/moon.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/neptune.565",
+          "sha256": "a12ff74f31866e2f80ac833c2900892bf5f928a6c0fc2fbf5f194230354cd014",
+          "source": "build/sd/sky/neptune.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/saturn.565",
+          "sha256": "ff66c7e88f667a0e16f7c13b0ae372e76fcda82d9cb78bde055a1de0875252c7",
+          "source": "build/sd/sky/saturn.565"
+        },
+        {
+          "bytes": 2048,
+          "destination": "sky/saturn_ring.rgba",
+          "sha256": "b534304bc89ee2b618512b44a455d4245e797de1ab41388b8f86b759081d6d23",
+          "source": "build/sd/sky/saturn_ring.rgba"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/sun.565",
+          "sha256": "faac7727a0a45b91bfeaea43343982fae7d2a19fac4bffbf647d02bad76743bd",
+          "source": "build/sd/sky/sun.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/uranus.565",
+          "sha256": "8feb6fdc873520e8d37cb7be1039e0653dc51bf0596f92a7e890c0d6bbd933d2",
+          "source": "build/sd/sky/uranus.565"
+        },
+        {
+          "bytes": 1048576,
+          "destination": "sky/venus.565",
+          "sha256": "448a20275d64256753f6d91478e3bd618f6288fa8956f6bfe85c62a8c1c92515",
+          "source": "build/sd/sky/venus.565"
+        }
+      ],
+      "missing": []
+    },
+    "segments": [
+      {
+        "bytes": 22368,
+        "file": "bootloader/bootloader.bin",
+        "offset": 0,
+        "sha256": "e976f0b0bb3bb27669fa0181ada1cafd8a53b3baef6fb6fa23dc501bbee5944a"
+      },
+      {
+        "bytes": 7749200,
+        "file": "watchfw.bin",
+        "offset": 131072,
+        "sha256": "f192387712fd9597271fdad2f045b06998c3ec275c6684199a30362a6fb3ca35"
+      },
+      {
+        "bytes": 3072,
+        "file": "partition_table/partition-table.bin",
+        "offset": 32768,
+        "sha256": "17e2cc7897009746981a16a1b4f390739ee4dd2f7724392a0bee1dbe98d0ba74"
+      },
+      {
+        "bytes": 8192,
+        "file": "ota_data_initial.bin",
+        "offset": 65536,
+        "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+      }
+    ],
+    "source_archive": "provenance/46122f6b5ab24af1afac2a858af70e2f/source.zip",
+    "source_manifest": "provenance/46122f6b5ab24af1afac2a858af70e2f/source-manifest.json",
+    "source_tree_sha256": "2a70a4b36d82ca29d45e4ce07d93b154e3a70ea252aebbbe2237641a1ae6dac7",
+    "toolchain": {
+      "compiler": "C:\\Users\\isaia\\.espressif\\tools\\xtensa-esp-elf\\esp-14.2.0_20260121\\xtensa-esp-elf\\bin\\xtensa-esp32s3-elf-gcc.exe",
+      "firmware_elf_sha256": "1418d636dcb7d4895bb15906d28996e7a5f2ecb992fd67adce3ad17744de3cf8",
+      "idf_git_revision": "897cf407",
+      "idf_path": "A:/makerspace/esp-idf",
+      "idf_version": "897cf407",
+      "sha256": "ac8d55c45dbcaefe082299357245d7f12786c61a4e3c06a8e21f31d6890fb29e",
+      "version": "xtensa-esp-elf-gcc.exe (crosstool-NG esp-14.2.0_20260121) 14.2.0\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n"
+    },
+    "workspace": "A:\\makerspace\\smartwatch2.0"
+  },
+  "evidence_sha256": {
+    "baseline/results.json": "f529167c66a1257e420d90538f3303dcca282ccf6a598899519adb84aa5e0ac7",
+    "caps/results.json": "88327f53c699db34809537d0b4599260b61ab91bafb42eb85192b53863f5992d",
+    "caps-continued/results.json": "8e03330c50efc6bbaca0847767f86b44790bf2fd42c96cc48794d77f288f5bb7",
+    "analysis.json": "25d4802fdc5bcae6e70f50c816d930fee2e38d22b41be403f56736480abb723b",
+    "touch-final-tests.log": "32c04ce635eb9ab2406cd60b8ccd23d0c6ac44e1fd44570e19bec1362bb138f1",
+    "touch-negative-control.log": "fd4a9f7d9936c7751ccb2490218dc77418dd12ed2d5e2f6e87ae30288cfc0ede",
+    "settings-tail.log": "8da6edf5ce2af449a099ea84e054dab3ae38815d9d0d76d92c533cd3e54ca183",
+    "touch-verify.json": "65bee1c83f1551e71bcd1a2cca4229f4e7336554494d5e83c49da48b3bc63ffb",
+    "touch-verify-wire.jsonl": "5996eb7b031a70329e089125d11e375ec1aecd7a87f049560418dc37d191c91e"
+  },
+  "measurement_scope": {
+    "baseline_windows": 32,
+    "quiet_cap_windows": 12,
+    "detailed_cap_windows": 12,
+    "traced_frames": 1605,
+    "traced_frame_start_cap_violations": 0,
+    "traced_caps": [
+      40,
+      60
+    ],
+    "resume": "Eight valid windows retained after a positioning-only harness failure; verified cleanup, same installed ELF/boot/preferences, remaining sixteen measured once in a separate result.",
+    "timing": "Consecutive painted DMA/GRAM completions; quiet percentiles use ceil1ms bins. Detailed traces include probe overhead. Optical scanout and tear severity not measured.",
+    "preferences_preserved": true,
+    "diagnostics_restored": true
+  },
+  "quiet_caps": [
+    {
+      "app": "apps",
+      "cap": 60,
+      "loop_hz_including_idle": 53.25019604612271,
+      "p50_ms": 19,
+      "p95_ms": 21,
+      "max_ms": 20.633
+    },
+    {
+      "app": "settings",
+      "cap": 60,
+      "loop_hz_including_idle": 59.15580121223888,
+      "p50_ms": 17,
+      "p95_ms": 19,
+      "max_ms": 19.761
+    },
+    {
+      "app": "apps",
+      "cap": 48,
+      "loop_hz_including_idle": 47.670804492496615,
+      "p50_ms": 21,
+      "p95_ms": 22,
+      "max_ms": 22.799
+    },
+    {
+      "app": "settings",
+      "cap": 48,
+      "loop_hz_including_idle": 47.62917203313223,
+      "p50_ms": 21,
+      "p95_ms": 23,
+      "max_ms": 24.287
+    },
+    {
+      "app": "apps",
+      "cap": 40,
+      "loop_hz_including_idle": 39.43863053299337,
+      "p50_ms": 26,
+      "p95_ms": 26,
+      "max_ms": 27.344
+    },
+    {
+      "app": "settings",
+      "cap": 40,
+      "loop_hz_including_idle": 39.77370201159092,
+      "p50_ms": 25,
+      "p95_ms": 27,
+      "max_ms": 26.679
+    },
+    {
+      "app": "apps",
+      "cap": 30,
+      "loop_hz_including_idle": 29.878812500331318,
+      "p50_ms": 34,
+      "p95_ms": 35,
+      "max_ms": 35.694
+    },
+    {
+      "app": "settings",
+      "cap": 30,
+      "loop_hz_including_idle": 29.870161154337197,
+      "p50_ms": 34,
+      "p95_ms": 35,
+      "max_ms": 35.166
+    },
+    {
+      "app": "apps",
+      "cap": 24,
+      "loop_hz_including_idle": 23.921847324789912,
+      "p50_ms": 42,
+      "p95_ms": 44,
+      "max_ms": 43.807
+    },
+    {
+      "app": "settings",
+      "cap": 24,
+      "loop_hz_including_idle": 23.917782622236064,
+      "p50_ms": 42,
+      "p95_ms": 47,
+      "max_ms": 46.918
+    },
+    {
+      "app": "apps",
+      "cap": 0,
+      "loop_hz_including_idle": 77.10311173235769,
+      "p50_ms": 19,
+      "p95_ms": 20,
+      "max_ms": 20.477
+    },
+    {
+      "app": "settings",
+      "cap": 0,
+      "loop_hz_including_idle": 133.73453694416582,
+      "p50_ms": 14,
+      "p95_ms": 16,
+      "max_ms": 20.741
+    }
+  ],
+  "findings": [
+    {
+      "kind": "measured",
+      "finding": "Original nominal60 adaptive schedule gave Settings median completed intervals16ms and Apps20ms in matched typical gestures; the nominal rate was not a hard start cap."
+    },
+    {
+      "kind": "measured",
+      "finding": "With strict60 cap, Settings typical completed moving-frame intervals ranged12.446--19.494ms across the two detailed directions, while Apps ranged17.673--22.095ms."
+    },
+    {
+      "kind": "measured",
+      "finding": "Settings slow-release traces in both directions contain about15 consecutive one-pixel steps followed by a stop; generic scroll rounds each low-speed displacement, while Apps has its own row-target ending."
+    },
+    {
+      "kind": "source",
+      "finding": "The stripe pipeline writes panel GRAM without a vblank/TE fence. Caps alone do not synchronize panel scanout."
+    },
+    {
+      "kind": "interpretation",
+      "finding": "Completion-time variability, integer motion steps and unsynchronized scanout can explain worse perceived motion despite higher throughput. These timings do not identify the physical tear line."
+    }
+  ],
+  "touch": {
+    "symptom": "User confirms side button and USB routines work while physical touch stops.",
+    "observed": "Same installed cap firmware after a subsequent boot5163f001: physical touch reads held at6903, errors3, last error259 across multiple queries and one acknowledged board retry; UI/USB continued.",
+    "confirmed_fixes": [
+      "Unavailable base-board FT3168 retries stay at one second instead of the shared sensor policy extending to30seconds.",
+      "A cancelled waking contact clears the swallow latch and reaches the engine as CANCEL. Its later confirmed release is intentionally consumed by the contact filter and can no longer leave the next gesture swallowed."
+    ],
+    "negative_control": "Regression executes actual touch_drain. Archived original source fails the cancellation/next-gesture assertion; patched source passes.",
+    "diagnostic": "touch_state: cached polling heartbeat/last-valid age, controller availability/retries, FreeRTOS task state, suppressed/swallowed contact and errors. board command now exposes existing board diagnostics in NOS.",
+    "not_established": "The precise trigger of the intermittent I2C failure and complete coverage of every hardware/controller lockup.",
+    "primary_reference": "https://files.waveshare.com/wiki/common/FT3168.pdf#page=7",
+    "device_verification": {
+      "samples": [
+        {
+          "v": 1,
+          "polls": 6177,
+          "poll_age_ms": 4,
+          "valid_age_ms": 54374,
+          "raw": -1,
+          "suppressed": 0,
+          "swallowed": 0,
+          "down": 0,
+          "cancels": 0,
+          "task_state": 2,
+          "reads": 1274,
+          "errors": 3,
+          "available": 0,
+          "attempts": 50,
+          "failures": 52,
+          "consecutive": 52,
+          "retry_ms": 295,
+          "last_error": 261
+        },
+        {
+          "v": 1,
+          "polls": 6552,
+          "poll_age_ms": 36,
+          "valid_age_ms": 69406,
+          "raw": -1,
+          "suppressed": 0,
+          "swallowed": 0,
+          "down": 0,
+          "cancels": 0,
+          "task_state": 2,
+          "reads": 1274,
+          "errors": 3,
+          "available": 0,
+          "attempts": 65,
+          "failures": 67,
+          "consecutive": 67,
+          "retry_ms": 665,
+          "last_error": 261
+        },
+        {
+          "v": 1,
+          "polls": 7073,
+          "poll_age_ms": 1,
+          "valid_age_ms": 1,
+          "raw": 0,
+          "suppressed": 0,
+          "swallowed": 0,
+          "down": 0,
+          "cancels": 0,
+          "task_state": 2,
+          "reads": 1475,
+          "errors": 3,
+          "available": 1,
+          "attempts": 78,
+          "failures": 79,
+          "consecutive": 0,
+          "retry_ms": 0,
+          "last_error": 261
+        },
+        {
+          "v": 1,
+          "polls": 8574,
+          "poll_age_ms": 8,
+          "valid_age_ms": 2788,
+          "raw": -1,
+          "suppressed": 0,
+          "swallowed": 0,
+          "down": 0,
+          "cancels": 0,
+          "task_state": 2,
+          "reads": 2701,
+          "errors": 6,
+          "available": 0,
+          "attempts": 80,
+          "failures": 84,
+          "consecutive": 5,
+          "retry_ms": 252,
+          "last_error": 261
+        },
+        {
+          "v": 1,
+          "polls": 10075,
+          "poll_age_ms": 6,
+          "valid_age_ms": 17796,
+          "raw": -1,
+          "suppressed": 0,
+          "swallowed": 0,
+          "down": 0,
+          "cancels": 0,
+          "task_state": 2,
+          "reads": 2701,
+          "errors": 6,
+          "available": 0,
+          "attempts": 95,
+          "failures": 99,
+          "consecutive": 20,
+          "retry_ms": 907,
+          "last_error": 261
+        },
+        {
+          "v": 1,
+          "polls": 11576,
+          "poll_age_ms": 7,
+          "valid_age_ms": 32807,
+          "raw": -1,
+          "suppressed": 0,
+          "swallowed": 0,
+          "down": 0,
+          "cancels": 0,
+          "task_state": 2,
+          "reads": 2701,
+          "errors": 6,
+          "available": 0,
+          "attempts": 109,
+          "failures": 113,
+          "consecutive": 34,
+          "retry_ms": 230,
+          "last_error": 261
+        },
+        {
+          "v": 1,
+          "polls": 13033,
+          "poll_age_ms": 2,
+          "valid_age_ms": 47822,
+          "raw": -1,
+          "suppressed": 0,
+          "swallowed": 0,
+          "down": 0,
+          "cancels": 0,
+          "task_state": 2,
+          "reads": 2701,
+          "errors": 6,
+          "available": 0,
+          "attempts": 124,
+          "failures": 128,
+          "consecutive": 49,
+          "retry_ms": 638,
+          "last_error": 261
+        }
+      ],
+      "identity": {
+        "source_sha256": "2a70a4b36d82ca29d45e4ce07d93b154e3a70ea252aebbbe2237641a1ae6dac7",
+        "source_build_id": "2a70a4b36d82ca29",
+        "metrics": "nos-device-v1",
+        "cpu_mhz": "80",
+        "psram_largest": "4128768",
+        "elf_sha256": "1418d636dcb7d4895bb15906d28996e7a5f2ecb992fd67adce3ad17744de3cf8",
+        "idf": "897cf407",
+        "dcache_bytes": "32768",
+        "dcache_line": "64",
+        "stripe_rows": "16",
+        "dma_rows": "8",
+        "stripe_dma_bytes": "44736",
+        "pipeline_probe_supported": "1",
+        "pipeline_probe_bytes": "1008",
+        "qspi_requested_hz": "80000000",
+        "present_target_hz": "60",
+        "animation_hz": "40"
+      },
+      "before_log": [
+        "NOSLOG v=1 record_bytes=44 boot=9f2e45c6 reset=11 ready=1 available=1 queued=1 written=77 dropped=0 errors=0 previous=35 crash_boots=0 files=8 file_limit=1048576",
+        "NOSEVIDENCE v=1 routine_drop=0 priority_drop=0 emergency_drop=0 coalesced=2 faults=3 loss_sticky=0 crash_state=2 crash_pc=4038a439 crash_build=3f1c8dfe result_request=4 result=-1 detail=3",
+        "NOSFAULT v=1 slot=0 boot=5163f001 last_boot=9f2e45c6 code=768 first_seq=15 last_seq=18 first_ms=1192 last_ms=1226 count=2 a=-1 b=-1 c=0",
+        "NOSFAULT v=1 slot=1 boot=5163f001 last_boot=9f2e45c6 code=529 first_seq=26 last_seq=28 first_ms=1826 last_ms=2522 count=2 a=4 b=-1 c=3",
+        "NOSFAULT v=1 slot=2 boot=5163f001 last_boot=5163f001 code=529 first_seq=285 last_seq=285 first_ms=211754 last_ms=211754 count=1 a=16 b=-1 c=2"
+      ],
+      "before_prefs": [
+        "I (69723) prefs: Loaded checked SD settings size=52",
+        "NOSPREFS ok=1 stored=1 match=1 hash=4e7f2e46 stored_hash=4e7f2e46 face=8 brightness=62 dnd=0 wifi=1 ble=0 aod=0 sensor_idle=1 fps_cap=60"
+      ],
+      "before_board": [
+        "BOARD v=2 ESP32-S3-Touch-AMOLED-1.43-B flash=16MB psram=8388608 touch=0 imu=1 rtc=1 rtc_valid=1 base_audio_supported=0 strap_speaker_enabled=1 strap_mic_enabled=0 audio_playing=0 mic_recording=0 display_applied=1 sd=1 total=31251120128 free=29816373248 sys_mv=4026 heap_internal=39335 heap_largest=21504 heap_min=30528",
+        "BOARD_DEVICE id=0 available=0 attempts=50 failures=52 consecutive=52 first_error=259 last_error=261 retry_ms=341",
+        "BOARD_DEVICE id=1 available=1 attempts=1 failures=0 consecutive=0 first_error=0 last_error=0 retry_ms=0",
+        "BOARD_DEVICE id=2 available=1 attempts=1 failures=0 consecutive=0 first_error=0 last_error=0 retry_ms=0",
+        "BOARD_WORKERS sensor=1 fs=1 sensor_max_gap_us=85742 fs_max_io_us=2585289 fs_current_us=0 pedometer_pending=0 calendar_timezone_ready=1 calendar_sample_ready=1 rtc_pending=0 rtc_generation=0 rtc_requested_epoch=0 system_trusted=1 rtc_errors=0 rtc_operation=0 rtc_error=0"
+      ],
+      "after_board": [
+        "BOARD v=2 ESP32-S3-Touch-AMOLED-1.43-B flash=16MB psram=8388608 touch=0 imu=1 rtc=1 rtc_valid=1 base_audio_supported=0 strap_speaker_enabled=1 strap_mic_enabled=0 audio_playing=0 mic_recording=0 display_applied=1 sd=1 total=31251120128 free=29815767040 sys_mv=4025 heap_internal=39335 heap_largest=21504 heap_min=30528",
+        "BOARD_DEVICE id=0 available=0 attempts=124 failures=128 consecutive=49 first_error=259 last_error=261 retry_ms=593",
+        "BOARD_DEVICE id=1 available=1 attempts=1 failures=0 consecutive=0 first_error=0 last_error=0 retry_ms=0",
+        "BOARD_DEVICE id=2 available=1 attempts=1 failures=0 consecutive=0 first_error=0 last_error=0 retry_ms=0",
+        "BOARD_WORKERS sensor=1 fs=1 sensor_max_gap_us=85742 fs_max_io_us=2585289 fs_current_us=0 pedometer_pending=0 calendar_timezone_ready=1 calendar_sample_ready=1 rtc_pending=0 rtc_generation=0 rtc_requested_epoch=0 system_trusted=1 rtc_errors=0 rtc_operation=0 rtc_error=0"
+      ],
+      "after_log": [
+        "NOSLOG v=1 record_bytes=44 boot=9f2e45c6 reset=11 ready=1 available=1 queued=3 written=106 dropped=0 errors=0 previous=35 crash_boots=0 files=8 file_limit=1048576",
+        "NOSEVIDENCE v=1 routine_drop=0 priority_drop=0 emergency_drop=0 coalesced=2 faults=3 loss_sticky=0 crash_state=2 crash_pc=4038a439 crash_build=3f1c8dfe result_request=4 result=-1 detail=3",
+        "NOSFAULT v=1 slot=0 boot=5163f001 last_boot=9f2e45c6 code=768 first_seq=15 last_seq=18 first_ms=1192 last_ms=1226 count=2 a=-1 b=-1 c=0",
+        "NOSFAULT v=1 slot=1 boot=5163f001 last_boot=9f2e45c6 code=529 first_seq=26 last_seq=28 first_ms=1826 last_ms=2522 count=2 a=4 b=-1 c=3",
+        "NOSFAULT v=1 slot=2 boot=5163f001 last_boot=5163f001 code=529 first_seq=285 last_seq=285 first_ms=211754 last_ms=211754 count=1 a=16 b=-1 c=2"
+      ],
+      "after_prefs": [
+        "I (160068) prefs: Loaded checked SD settings size=52",
+        "NOSPREFS ok=1 stored=1 match=1 hash=4e7f2e46 stored_hash=4e7f2e46 face=8 brightness=62 dnd=0 wifi=1 ble=0 aod=0 sensor_idle=1 fps_cap=60"
+      ],
+      "runtime": [
+        "NOSRUNTIME v=1 ota_busy=0 shutdown_pending=0 prefs_loading=0 prefs_dirty=0 imu_state=0 imu_pending=0 imu_hz=0 imu_queued=0 imu_file_busy=0 workout_ready=1 workout_state=0 workout_save=0 workout_dirty=0 workout_busy=0 workout_uncertain=0 workout_corrupt=0 workout_foreign=0 track_active=0 track_pending=0 track_saving=0 audio_status=0 audio_active=0 touch_down=0 touch_pending=0 button_down=0 injected=0 capture_state=0 asset_busy=0 radio_pending=0"
+      ],
+      "status": "observed"
+    },
+    "user_confirmation": "Touch works now",
+    "verification_interpretation": "Physical reads resumed during the user test on the same boot, with settings unchanged. Polling remained alive throughout. The controller subsequently became unavailable again while idle; recovery is observed, but the underlying intermittent controller/I2C condition is not proven eliminated."
+  },
+  "tests": {
+    "touch_focused": "20 tests passed; actual host/board functions with contact, retry, persistence and display fault cases.",
+    "target": "ESP-IDF build and required feature/flash-range identity verification passed.",
+    "simulator": "Strict simulator build and six-choice picker screenshots inspected."
+  }
+}

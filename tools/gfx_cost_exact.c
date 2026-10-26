@@ -1,16 +1,17 @@
-/* gfx_cost_exact.c — proves the GFX_COST instrumentation never changes pixels.
+/* gfx_cost_exact.c â€” proves the GFX_COST instrumentation never changes pixels.
  *
  * Renders thousands of random primitives (every instrumented gfx/font/sprite call,
  * with random clips, translations and 16-row stripes) and writes the raw frames to
- * a file. Build it twice — against the instrumented sources with -DGFX_COST_MODEL
- * and against pristine copies (or without the define) — and compare the outputs:
+ * a file. Build it twice â€” against the instrumented sources with -DGFX_COST_MODEL
+ * and against the same current sources without the define â€” and compare the outputs:
  *
  *   gcc -O2 -Icore tools/gfx_cost_exact.c core/gfx.c core/font.c core/sprite.c core/fonts/ALL.c -DGFX_COST_MODEL -o a.exe
  *   gcc -O2 -Icore tools/gfx_cost_exact.c ORIG/gfx.c ORIG/font.c ORIG/sprite.c core/fonts/ALL.c -o b.exe
  *   a.exe out_a.bin && b.exe out_b.bin && cmp out_a.bin out_b.bin
  *
  * (ALL.c = every file in core/fonts.) nos_build.ps1 -Verify does this against
- * `git show HEAD:core/...`. With -DGFX_COST_MODEL, `a.exe --accuracy` also prints
+ * one current-source snapshot with hooks enabled/disabled. With -DGFX_COST_MODEL,
+ * `a.exe --accuracy` also prints
  * counted pixels vs pixels that actually changed for the gfx_bench primitives. */
 #include "gfx.h"
 #include "font.h"
@@ -21,6 +22,8 @@
 
 #ifdef GFX_COST_MODEL
 static unsigned long long s_px, s_calls;
+void gfx_cost_psram_edge(unsigned px) { (void)px; }
+void gfx_cost_target(int psram) { (void)psram; }
 void gfx_cost_add(int cls, unsigned px, int calls) { (void)cls; s_px += px; s_calls += (unsigned)calls; }
 #endif
 void *hal_big_alloc(uint32_t bytes) { return malloc(bytes); }

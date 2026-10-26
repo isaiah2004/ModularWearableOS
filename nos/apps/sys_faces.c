@@ -2,11 +2,13 @@
  *
  * The faces are shown live and full size (there is no scaling), paged horizontally with
  * the same feel as the home pager: 1:1 tracking, rubber band at both ends, the release
- * velocity picks the page, a critically damped spring that never overshoots, a tick per
- * page. An "edit mode" frame sits on top: a thin rim at the edge of the glass, the face's
- * name in a pill and page dots. A tap picks the face: the frame fades, the picker cuts
- * back to home (the face stays live, no rebuild). The button cancels: the pager springs
- * back to the face it opened on, then the frame fades the same way, nothing saved.
+ * velocity picks the page, a critically damped pixel spring that never overshoots and
+ * ends with a 1 px snap, a tick per page. An "edit mode" frame sits on top: a thin rim at
+ * the edge of the glass, the face's name in a pill and page dots. A tap picks the face:
+ * the frame fades, the picker cuts back to home (the face stays live, no rebuild). The
+ * button cancels: the pager clicks back to the face it opened on with a mechanical cut
+ * (m_cut: nudge, lead-in, one jump frame, 4-2-1-0 px settle; however many pages away),
+ * while the frame fades the same way, nothing saved.
  * From home it opens in place: its first frame is home's (the face, the 3/8 rim, the REC
  * chip), then the face recedes and the frame builds in over it, one screen's draw a
  * frame. Opened from Settings, the face stays dimmed while it confirms and the picker
@@ -23,6 +25,7 @@
 #include "faces/face.h"
 #include "faces/face_ext.h"
 #include "gfx_cost.h"
+#include "diag_log.h"
 #include <math.h>
 #include <string.h>
 
@@ -34,10 +37,11 @@ void sys_home_rec_tick(float dt);                         /* sys_home.c: its clo
 #define PILL_Y 396.0f    /* the name pill's top: clear of DOT's minute digits (to y 392) */
 #define PILL_H 34.0f
 #define DOTS_Y 440
-#define OPEN_S   0.25f              /* in place from home: face recedes, frame builds in */
-#define CLOSE_S  0.18f              /* on choose: frame out (and the face back up), then pop */
-#define SET_CLOSE_S 0.12f           /* from Settings: the frame out, then slide back at once */
-#define CANCEL_S 0.30f              /* the button: back to the face it opened on, frame out with it */
+#define OPEN_S   M_FRAMES(8)        /* in place from home: face recedes, frame builds in */
+#define CLOSE_S  M_FRAMES(6)        /* on choose: frame out (and the face back up), then pop */
+#define SET_OPEN_S M_FRAMES(9)      /* from Settings: the frame fades in */
+#define SET_CLOSE_S M_FRAMES(4)     /* from Settings: the frame out, then slide back at once */
+#define CANCEL_S M_FRAMES(M_CUT_FRAMES)   /* the button: the cut back, the frame out with it */
 
 static struct {
     float x;
@@ -45,13 +49,14 @@ static struct {
     int settling, dragging, grabbed, was_moving;
     float grab_x, grab_dx;
     int grab_page, page;
-    float t_enter;
+    nos_time_t t_enter;
     int chosen;
-    float t_chosen;
+    uint32_t choice_request;
+    nos_time_t t_chosen;
     int on_home;             /* pushed over home (long press): it is the face underneath */
     int orig;                /* the face it opened on (home's) */
     int cancel;              /* the button: back to orig, nothing saved */
-    mtween cancel_tw;        /* the pager's way back (a tween: no spring creep) */
+    float cut_from; nos_time_t cut_t0;  /* the pager's way back: a mechanical cut from cut_from */
     face_ctx c;
 } F;
 
@@ -60,7 +65,7 @@ static float maxx(void) { return (nfaces() - 1) * PAGE_W; }
 
 static void settle_to(float target, float v)
 {
-    msp_init(&F.sp, F.x, SPRING_PAGE);
+    msp_init_px(&F.sp, F.x, SPRING_PAGE);      /* pixels: ends with a 1 px snap, no creep */
     float dist = target - F.x, w0 = 6.2831853f / F.sp.response;
     if (v * dist > 0 && fabsf(v) > w0 * fabsf(dist)) v = (dist > 0 ? 1.0f : -1.0f) * w0 * fabsf(dist);
     if (fabsf(dist) < 0.01f && fabsf(v) < 1.0f) { F.x = target; F.settling = 0; return; }
@@ -92,6 +97,11 @@ static void f_enter(void)
     F.on_home = nos_depth() == 2;
     F.orig = cur;
 }
+static void f_leave(void)
+{
+    if(F.choice_request)diag_action_result(F.choice_request,DIAG_RESULT_CANCELLED,nos_prefs.face);
+    F.choice_request=0;
+}
 
 static void finish(void);
 static float close_s(void) { return F.cancel ? CANCEL_S : F.on_home ? CLOSE_S : SET_CLOSE_S; }
@@ -107,16 +117,15 @@ static float dim_lin(void)
     }
     return floorf(lin * 8.0f + 0.5f) / 8.0f;
 }
+static void f_probe(void);
 static void f_tick(float dt)
 {
     if (F.on_home) sys_home_rec_tick(dt);
-    if (F.cancel) F.x = mtw_value(&F.cancel_tw);           /* back over CANCEL_S, fading as it goes */
+    if (F.cancel) F.x = m_cut(F.cut_from, F.orig * PAGE_W, m_frame_k(F.cut_t0));   /* fading as it goes */
     /* pop on the frame the fade (8 steps) reaches 0: no idle frame before it */
     if (F.chosen == 1 && nos_t - F.t_chosen >= close_s() * (15.0f / 16.0f) - 0.001f) { F.chosen = 2; finish(); }
     if (F.settling) {
-        int m = msp_step(&F.sp, dt);
-        /* the last sub-pixel of a settle would cost a whole-page repaint for nothing */
-        if (m && fabsf(F.sp.x - F.sp.target) < 0.6f && fabsf(F.sp.v) < 40.0f) m = 0;
+        int m = msp_step(&F.sp, dt);              /* the pixel spring snaps its last pixel */
         F.x = F.sp.x;
         if (!m) { F.settling = 0; F.x = F.sp.target; }
     }
@@ -134,13 +143,18 @@ static void f_tick(float dt)
     float pos = F.x / PAGE_W;
     int sliding = fabsf(pos - floorf(pos + 0.5f)) * PAGE_W > 0.5f;
     if (F.cancel)                         /* back with the fade: the ghosts return in steps */
-        F.c.lite = floorf(fmaxf(dim_lin(), 1.0f - mtw_progress(&F.cancel_tw)) * 8.0f + 0.5f) / 8.0f;
-    else F.c.lite = sliding ? 1.0f : dim_lin();
+        F.c.lite = floorf(fmaxf(dim_lin(), 1.0f - m_clamp((float)m_frame_k(F.cut_t0) / M_CUT_FRAMES, 0, 1)) *
+                          8.0f + 0.5f) / 8.0f;
+    /* the ghost layer goes at twice the dim's pace: gone by the open's 3rd frame, so the
+     * frames that also step the whole face's dim (full repaints) don't pay for it too (on
+     * the board MATRIX/SEGMENT opens otherwise run 1-2 ms over the 33.3 ms budget) */
+    else F.c.lite = sliding ? 1.0f : fminf(1.0f, 2.0f * dim_lin());
     int s0 = (int)floorf(F.x / PAGE_W);
     for (int s = s0; s <= s0 + 1; s++) {
         if (s < 0 || s >= nos_face_count) continue;
         if (nos_faces[s]->tick) nos_faces[s]->tick(&F.c, dt);
     }
+    f_probe();
 }
 
 #define EDIT_DIM (18.0f / 32.0f)    /* the live face recedes while it is being edited */
@@ -213,28 +227,41 @@ static void moat(gfx_fb *fb, float cx, float cy, float hw, float hh, float rad, 
     GFX_COST(GFX_COST_BLEND, n);
 }
 
-static void f_draw(gfx_fb *fb)
+/* The edit frame's build, 0 = home exactly as it was, 1 = edit mode. `lin` is linear in
+ * whole frames: in over OPEN_S from the frame home last showed, out over CLOSE_S on
+ * choose, so the pop lands on an identical home (from Settings, pushed with a slide, the
+ * face is dimmed from the start and stays so; the frame fades in over SET_OPEN_S). The
+ * frame's ink follows it at perceptual levels (m_ink). `rise` moves the name pill: up 12 px
+ * on the 4-frame table (5 4 2 1 px), so it is in place while still faint, and back down
+ * at a constant 2 px a frame as the frame goes out. */
+static void frame_build(float *lin_out, float *rise_out)
 {
-    /* b: the edit frame's build, 0 = home exactly as it was, 1 = edit mode.
-     * From home: in over OPEN_S (EASE_DECEL) from the frame home last showed, out over
-     * CLOSE_S on choose, so the pop lands on an identical home. From Settings (pushed
-     * with a slide) the face is dimmed from the start and stays so; the frame fades. */
-    /* lin: the same build linear in time; the face's dim follows it, so no one frame
-     * carries a large share of the light change (a white face is most of the glass) */
-    float b, lin = 1.0f;
+    float lin, rise = mf_at(&MF_MICRO4, m_frame_k(F.t_enter));
     if (F.on_home) {
         lin = m_clamp((nos_t - F.t_enter) / OPEN_S, 0, 1);
-        b = bezier_ease(&EASE_DECEL, lin);
         if (F.chosen) {
             float c = 1.0f - m_clamp((nos_t - F.t_chosen) / close_s(), 0, 1);
             if (c < lin) lin = c;
-            if (c < b) b = c;
+            if (c < rise) rise = c;
         }
     } else {
-        b = m_clamp((nos_t - F.t_enter) / 0.30f, 0, 1);
-        if (F.chosen) b = m_clamp(b - (nos_t - F.t_chosen) / close_s(), 0, 1);
+        lin = m_clamp((nos_t - F.t_enter) / SET_OPEN_S, 0, 1);
+        if (F.chosen) {
+            lin = m_clamp(lin - (nos_t - F.t_chosen) / close_s(), 0, 1);
+            if (lin < rise) rise = lin;
+        }
     }
-    float fa = floorf(b * 8.0f + 0.5f) / 8.0f;
+    *lin_out = lin;
+    *rise_out = rise;
+}
+
+static void f_draw(gfx_fb *fb)
+{
+    /* the face's dim follows the build linearly (dim_lin), so no one frame carries a large
+     * share of the light change (a white face is most of the glass) */
+    float lin, rise;
+    frame_build(&lin, &rise);
+    float fa = m_ink(lin);
     /* the face recedes with the build (ink dim: no pixel pass). nos_dim records nothing,
      * so the level is recorded as a full-screen command: a change repaints everything. */
     float dk = 1.0f - (1.0f - EDIT_DIM) * dim_lin();
@@ -243,7 +270,7 @@ static void f_draw(gfx_fb *fb)
     int w = ui_text_width(UI_F_LABEL, name, 2) + 44;
     if (w < 120) w = 120;
     /* the pill rises 12 px into place as it fades up */
-    const float py = PILL_Y + floorf((1.0f - b) * 12.0f + 0.5f), pcy = py + PILL_H * 0.5f;
+    const float py = PILL_Y + floorf((1.0f - rise) * 12.0f + 0.5f), pcy = py + PILL_H * 0.5f;
     uint16_t disc = 0;                    /* a white face's ground, as dimmed (0: a dark face) */
 
     int xi = (int)lroundf(F.x);
@@ -298,9 +325,12 @@ static void f_draw(gfx_fb *fb)
         float nr = 1.0f - m_clamp(fabsf(pos - i), 0, 1);
         nr = floorf(nr * 8.0f + 0.5f) / 8.0f;
         float dx = x0 + i * pitch;
-        /* the dots step in outward from the current face's, 4 levels each */
-        float di = fabsf((float)i - pos) / (float)(n > 1 ? n - 1 : 1);
-        float fd = floorf(m_clamp((b - 0.35f * di) / 0.65f, 0, 1) * 4.0f + 0.5f) / 4.0f;
+        /* the dots step in outward from the current face's, one whole frame apart, each
+         * over 4 frames in 4 levels; out with the frame */
+        int di = (int)floorf(fabsf((float)i - pos) + 0.5f);
+        float fd = m_clamp((float)m_stagger_k(m_frame_k(F.t_enter), di, 1) / 4.0f, 0, 1);
+        if (fd > lin) fd = lin;
+        fd = floorf(fd * 4.0f + 0.5f) / 4.0f;
         if (fd <= 0.0f) continue;
         int under = (int)floorf((dx + (float)xi) / PAGE_W);   /* the face this dot sits over */
         uint16_t col;
@@ -311,11 +341,25 @@ static void f_draw(gfx_fb *fb)
     }
 }
 
+/* motion audit (sim only): the pager, the pill's rise and ink, the face's dim, as drawn */
+static void f_probe(void)
+{
+    nos_motion_probe("faces.pager", F.dragging ? MC_FINGER : F.cancel ? MC_TRANSITION : MC_MOMENTUM,
+                     (float)lroundf(F.x));
+    float lin, rise;
+    frame_build(&lin, &rise);
+    nos_motion_probe("faces.pill.y", MC_MICRO, floorf((1.0f - rise) * 12.0f + 0.5f));
+    nos_motion_probe("faces.pill.ink", MC_FADE, m_ink(lin) * 100.0f);
+    nos_motion_probe("faces.dim", MC_FADE, (1.0f - (1.0f - EDIT_DIM) * dim_lin()) * 100.0f);
+}
+
 static void choose(void)
 {
     if (F.chosen) return;
+    F.choice_request=diag_action_request(DIAG_DOMAIN_FACE,DIAG_ACT_SET,F.page);
+    diag_action_context(F.choice_request,(int32_t)diag_log_name_id("FACES"),F.orig);
     F.chosen = 1;
-    F.t_chosen = nos_t;
+    F.t_chosen = nos_t - 1.0f / NOS_FPS;       /* the tap's frame already shows the first step */
     nos_feedback(FB_SUCCESS);
 }
 
@@ -330,12 +374,21 @@ static void finish(void)
         nos_prefs.face = (uint8_t)p;
         prefs_save();
     }
+    if(F.choice_request) {
+        diag_action_result(F.choice_request,F.cancel?DIAG_RESULT_CANCELLED:
+                           nos_prefs.face==p?DIAG_RESULT_SUCCESS:DIAG_RESULT_FAILED,nos_prefs.face);
+        F.choice_request=0;
+    }
     if (F.on_home) nos_pop_with(TX_NONE);
     else nos_pop();
 }
 
 static int f_input(const nos_input *in)
 {
+    if(in->type==IN_CANCEL) {
+        if(F.dragging || F.grabbed)settle_to((float)F.grab_page*PAGE_W,0);
+        F.dragging=F.grabbed=0;return 1;
+    }
     if (F.chosen || F.cancel) return 1;       /* closing, or cancelling back */
     switch (in->type) {
     case IN_DOWN:
@@ -377,17 +430,18 @@ static int f_input(const nos_input *in)
         if (F.grabbed) F.grabbed = 0;
         F.dragging = 0;
         F.settling = 0;
-        mtw_start(&F.cancel_tw, F.x, F.orig * PAGE_W, CANCEL_S, &EASE_STANDARD);
+        F.cut_from = F.x;                           /* the cut, one frame in: this frame moves */
+        F.cut_t0 = nos_t - 1.0f / NOS_FPS;
         F.chosen = 1;                               /* the frame fades with the way back */
-        F.t_chosen = nos_t;
+        F.t_chosen = F.cut_t0;
         return 1;
     default:
         return 0;
     }
 }
 
-const nos_screen scr_faces = { "FACES", f_enter, 0, f_tick, f_draw, f_input, SCR_HDRAG };
+const nos_screen scr_faces = { "FACES", f_enter, f_leave, f_tick, f_draw, f_input, SCR_HDRAG };
 /* The same picker opened in place over home (TX_NONE): no swipe-back, which would slide
  * the face off an identical face (the engine kept that off for the old dissolve too).
  * The button or a tap chooses. (sys_home.c; asked for in nos_apps.h) */
-const nos_screen scr_faces_home = { "FACES", f_enter, 0, f_tick, f_draw, f_input, SCR_HDRAG | SCR_NOBACK };
+const nos_screen scr_faces_home = { "FACES", f_enter, f_leave, f_tick, f_draw, f_input, SCR_HDRAG | SCR_NOBACK };

@@ -7,11 +7,16 @@
  *           rate: each module's *_service() returns how long it can sleep and
  *           the task sleeps for the minimum (capped at 50 ms).
  *   "exta"  (ext_audio.c) the I2S pump; only it touches I2S, it blocks on DMA.
+ *   "extf"  (ext_audio.c) bounded audio requests/rings; all audio SD I/O.
  *   Haptics run from an esp_timer one-shot chain (ext_haptic.c), no task.
  */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <math.h>
 #include "ext_priv.h"
+#include "../sleep_grid.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -22,10 +27,91 @@ uint32_t ext_present_bits;
 static TaskHandle_t s_ext_task;
 static uint32_t s_loops;
 static int s_display_mode = 2;
+static int s_shutdown_requested, s_shutdown_status, s_shutdown_cancel;
+static uint32_t s_shutdown_started, s_shutdown_done, s_shutdown_errors, s_shutdown_next;
+static uint32_t s_loop_last, s_loop_gap_max, s_loop_work_max;
 
-void *ext_psram_calloc(size_t n)
+int ext_shutdown_requested(void) { return __atomic_load_n(&s_shutdown_requested,__ATOMIC_ACQUIRE); }
+void hal_ext_shutdown_begin(void)
 {
-    return heap_caps_calloc(1, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    portENTER_CRITICAL(&ext_lock);
+    __atomic_store_n(&s_shutdown_cancel,0,__ATOMIC_RELEASE);
+    if(!s_shutdown_requested) {
+        s_shutdown_started=ext_ms();s_shutdown_done=s_shutdown_errors=0;s_shutdown_status=0;s_shutdown_next=s_shutdown_started;
+        __atomic_store_n(&s_shutdown_requested,1,__ATOMIC_RELEASE);
+    }
+#if !EXT_BOARD_OK
+    s_shutdown_status=1;
+#else
+    if(!s_ext_task)s_shutdown_status=ext_present_bits?-1:1;
+#endif
+    portEXIT_CRITICAL(&ext_lock);
+    if(s_ext_task)xTaskNotifyGive(s_ext_task);
+}
+void hal_ext_shutdown_cancel(void)
+{
+    portENTER_CRITICAL(&ext_lock);
+    if(s_shutdown_requested) {
+        s_shutdown_status=0;
+        if(s_ext_task)__atomic_store_n(&s_shutdown_cancel,1,__ATOMIC_RELEASE);
+        else __atomic_store_n(&s_shutdown_requested,0,__ATOMIC_RELEASE);
+    }
+    portEXIT_CRITICAL(&ext_lock);
+    if(s_ext_task)xTaskNotifyGive(s_ext_task);
+}
+static void shutdown_cancel_service(void)
+{
+    /* Only ext runs hooks, so no hook can publish an old ACK after this release.
+     * Module owners keep pending closes/drains and observed hardware state. */
+    portENTER_CRITICAL(&ext_lock);
+    if(s_shutdown_cancel) {
+        s_shutdown_status=0;s_shutdown_done=s_shutdown_errors=0;
+        __atomic_store_n(&s_shutdown_requested,0,__ATOMIC_RELEASE);
+        __atomic_store_n(&s_shutdown_cancel,0,__ATOMIC_RELEASE);
+    }
+    portEXIT_CRITICAL(&ext_lock);
+}
+int hal_ext_shutdown_poll(void)
+{
+    int status;
+    portENTER_CRITICAL(&ext_lock);status=s_shutdown_status;portEXIT_CRITICAL(&ext_lock);
+    return ext_shutdown_requested()?status:0;
+}
+static void shutdown_service(uint32_t now)
+{
+    if(__atomic_load_n(&s_shutdown_cancel,__ATOMIC_ACQUIRE))return;
+    if(!ext_due(now,s_shutdown_next))return;
+    s_shutdown_next=now+100;
+    uint32_t errors=0;
+#define PARK(bits,fn) do { if((s_shutdown_done&(bits))!=(bits)) { int result=(fn)(ext_ms()); \
+    if(__atomic_load_n(&s_shutdown_cancel,__ATOMIC_ACQUIRE))return; \
+    if(result>0)s_shutdown_done|=(bits);else if(result<0)errors|=(bits); } }while(0)
+    PARK(EXT_HAPTIC,haptic_shutdown_poll);
+    PARK(EXT_MIC|EXT_SPEAKER,audio_shutdown_poll);
+    PARK(EXT_GPS,gps_shutdown_poll);
+    PARK(EXT_LTE,lte_shutdown_poll);
+    PARK(EXT_ENV,env_shutdown_poll);
+    PARK(EXT_LIGHT,light_shutdown_poll);
+    PARK(EXT_MAG,mag_shutdown_poll);
+    PARK(EXT_HR,hr_shutdown_poll);
+#undef PARK
+    int status=(s_shutdown_done&0x1ffu)==0x1ffu?1:
+               errors||ext_elapsed(ext_ms(),s_shutdown_started)>30000?-1:0;
+    portENTER_CRITICAL(&ext_lock);
+    if(s_shutdown_cancel){portEXIT_CRITICAL(&ext_lock);return;}
+    int changed=status!=s_shutdown_status||errors!=s_shutdown_errors;
+    s_shutdown_status=status;s_shutdown_errors=errors;
+    portEXIT_CRITICAL(&ext_lock);
+    if(changed)ESP_LOGI("ext","shutdown status=%d done=0x%03x pending=0x%03x errors=0x%03x elapsed_ms=%u",
+                       status,(unsigned)s_shutdown_done,(unsigned)(0x1ffu&~s_shutdown_done),
+                       (unsigned)errors,(unsigned)ext_elapsed(ext_ms(),s_shutdown_started));
+}
+
+void *ext_psram_calloc_owned(size_t n, const char *owner)
+{
+    void *p = nos_mem_alloc((uint32_t)n, owner);
+    if (p) memset(p, 0, n);
+    return p;
 }
 
 /* ---------------------------------------------------------------- I2C */
@@ -56,22 +142,38 @@ int ext_wr_buf(i2c_master_dev_handle_t d, uint8_t reg, const uint8_t *v, size_t 
 }
 
 /* ---------------------------------------------------------------- task */
+/* Display not ON: nothing here is interactive, so idle modules may sleep up to a second
+ * (every service still returns its own earlier deadline) and the wake lands on the shared
+ * light-sleep grid. hal_ext_kick() ends the wait when the display turns ON. */
+void hal_ext_kick(void)
+{
+    if(s_ext_task)xTaskNotifyGive(s_ext_task);
+}
 static void ext_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        uint32_t now = ext_ms(), wait = 50, w;
-        w = audio_service(now); if (w < wait) wait = w;
-        w = gps_service(now);   if (w < wait) wait = w;
-        w = lte_service(now);   if (w < wait) wait = w;
-        w = env_service(now);   if (w < wait) wait = w;
-        w = light_service(now); if (w < wait) wait = w;
-        w = mag_service(now);   if (w < wait) wait = w;
-        w = hr_service(now);    if (w < wait) wait = w;
+        int interactive = hal_display_mode() == 2;
+        uint32_t now = ext_ms(), wait = interactive ? 50 : 1000, w;
+        uint32_t gap=s_loop_last?ext_elapsed(now,s_loop_last):0;s_loop_last=now;
+        if(gap>s_loop_gap_max)s_loop_gap_max=gap;
+        if(__atomic_load_n(&s_shutdown_cancel,__ATOMIC_ACQUIRE))shutdown_cancel_service();
+        else if(ext_shutdown_requested())shutdown_service(now);
+        else {
+            w = gps_service(ext_ms());   if (w < wait) wait = w;
+            w = lte_service(ext_ms());   if (w < wait) wait = w;
+            w = env_service(ext_ms());   if (w < wait) wait = w;
+            w = light_service(ext_ms()); if (w < wait) wait = w;
+            w = mag_service(ext_ms());   if (w < wait) wait = w;
+            w = hr_service(ext_ms());    if (w < wait) wait = w;
+        }
         s_loops++;
-        uint32_t spent = ext_ms() - now;
+        uint32_t spent = ext_elapsed(ext_ms(),now);
+        if(spent>s_loop_work_max)s_loop_work_max=spent;
         wait = wait > spent ? wait - spent : 1;
-        vTaskDelay(pdMS_TO_TICKS(wait ? wait : 1));
+        if (!wait) wait = 1;
+        if (!interactive) wait = sleep_grid_delay_ms(sleep_grid_now_ms(), wait);
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait));
     }
 }
 
@@ -97,6 +199,7 @@ void hal_ext_init(void)
         ESP_LOGW("ext", "ext task not created; strap modules inactive");
         s_ext_task = NULL;
     }
+    nos_mem_external("ext_task_stack", 4096, s_ext_task != NULL);
     ESP_LOGI("ext", "strap modules: present=0x%03x (gps/lte probe in background)",
              (unsigned)ext_present_bits);
 #endif
@@ -123,44 +226,26 @@ __attribute__((weak)) void hal_display_power(int mode)
 {
     s_display_mode = mode;
 }
+__attribute__((weak)) int hal_display_mode(void) { return s_display_mode; }
 
 /* ---------------------------------------------------------------- serial */
-void hal_ext_debug(const char *cmd)
+#define EXT_DEBUG_STOPPING() ext_shutdown_requested()
+#define EXT_DEBUG_LTE(args) lte_debug_request(args)
+#define EXT_DEBUG_MAG(args) mag_debug_request(args)
+#include "ext_debug_commands.inc"
+int hal_ext_debug_command(const char *cmd)
 {
-    if (!cmd) cmd = "";
-    while (*cmd == ' ') cmd++;
-    if (!strncmp(cmd, "ext", 3)) cmd += 3;
-    while (*cmd == ' ') cmd++;
-    if (!strncmp(cmd, "haptic ", 7)) { hal_haptic(cmd[7] - '0'); return; }
-    if (!strncmp(cmd, "sfx ", 4))    { int id = 0; sscanf(cmd + 4, "%d", &id); hal_sfx(id); return; }
-    if (!strncmp(cmd, "vol ", 4))    { int v = 0; sscanf(cmd + 4, "%d", &v); hal_audio_volume(v); return; }
-    if (!strncmp(cmd, "play ", 5))   { printf("EXT play %d\n", hal_audio_play_file(cmd + 5)); return; }
-    if (!strncmp(cmd, "rec ", 4))    { printf("EXT rec %d\n", hal_rec_start(cmd + 4)); return; }
-    if (!strcmp(cmd, "recstop"))     { hal_rec_stop(); return; }
-    if (!strcmp(cmd, "gps on"))      { hal_gps_enable(1); return; }
-    if (!strcmp(cmd, "gps off"))     { hal_gps_enable(0); return; }
-    if (!strcmp(cmd, "lte on"))      { hal_lte_enable(1); return; }
-    if (!strcmp(cmd, "lte off"))     { hal_lte_enable(0); return; }
-    if (!strncmp(cmd, "lte ", 4))    { lte_debug_cmd(cmd + 4); return; }
-    if (!strcmp(cmd, "hr on"))       { hal_hr_enable(1); return; }
-    if (!strcmp(cmd, "hr off"))      { hal_hr_enable(0); return; }
-    if (!strcmp(cmd, "gest on"))     { hal_light_gesture_enable(1); return; }
-    if (!strcmp(cmd, "gest off"))    { hal_light_gesture_enable(0); return; }
-    if (!strncmp(cmd, "mag ", 4))    { mag_debug_cmd(cmd + 4); return; }
-    if (!strncmp(cmd, "sea ", 4))    { float p = 1013.25f; sscanf(cmd + 4, "%f", &p); hal_env_set_sea_level(p); return; }
-    if (*cmd && strcmp(cmd, "status")) {
-        printf("EXT cmds: ext | haptic <0-6> | sfx <0-13> | vol <pct> | play <path> | rec <path> | recstop |"
-               " gps on/off | lte on/off | lte at <cmd> | lte sms <num> <text> | hr on/off | gest on/off |"
-               " mag cal/done/map <+x+y+z> <fwd> | sea <hpa>\n");
-        return;
-    }
+    int accepted=ext_debug_dispatch(cmd);if(accepted>=0)return accepted;
     /* Touch the stream getters so `ext ... on` followed by repeated `ext` keeps the
      * stream alive past NOS_EXT_IDLE_MS (exactly as a UI screen would). */
     hal_gps_get(NULL); hal_lte_get(NULL); hal_hr_get(NULL); hal_mag_get(NULL);
     uint32_t ps, in; hal_mem_info(&ps, &in);
     printf("EXT board_ok=%d present=0x%03x loops=%u psram_free=%u internal_free=%u display_mode=%d\n",
            EXT_BOARD_OK, (unsigned)ext_present_bits, (unsigned)s_loops, (unsigned)ps, (unsigned)in,
-           s_display_mode);
+           hal_display_mode());
+    printf("EXT scheduling loop_gap_max_ms=%u loop_work_max_ms=%u shutdown=%d done=0x%03x errors=0x%03x\n",
+           (unsigned)s_loop_gap_max,(unsigned)s_loop_work_max,hal_ext_shutdown_poll(),
+           (unsigned)s_shutdown_done,(unsigned)s_shutdown_errors);
     printf("EXT stack_free ext=%u exta=%u (bytes)\n",
            s_ext_task ? (unsigned)uxTaskGetStackHighWaterMark(s_ext_task) : 0u,
            (unsigned)audio_stack_free());
@@ -175,4 +260,6 @@ void hal_ext_debug(const char *cmd)
     mag_debug();
     hr_debug();
 #endif
+    return 1;
 }
+void hal_ext_debug(const char *cmd) { (void)hal_ext_debug_command(cmd); }

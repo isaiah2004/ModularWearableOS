@@ -1,0 +1,37 @@
+# Home and Control Center bring the user back to the same background session.
+wait 100
+face 0
+home_now
+present 0
+set step_rate 0
+workout start 5
+wait 2000
+shot sport_home_recording
+tap 233 422
+wait 900
+expect top SPORTS
+expect workout state 1
+tap 312 372
+wait 400
+expect workout state 2
+home
+wait 900
+shot sport_home_paused
+tap 233 422
+wait 900
+expect top SPORTS
+expect workout state 2
+home
+wait 900
+drag 233 90 233 410 500
+wait 900
+expect top CONTROL
+shot sport_control_paused
+tap 233 55
+wait 900
+expect top SPORTS
+expect workout state 2
+workout finish
+wait 300
+expect workout save 2
+workout info chip_returned

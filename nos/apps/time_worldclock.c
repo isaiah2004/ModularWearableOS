@@ -21,6 +21,12 @@ void time_ring(gfx_fb *fb, float cx, float cy, float r, int n, float d, float li
 static float qz(float v, float n) { return floorf(v * n + 0.5f) / n; }
 #define PRESS_HOLD 0.1f          /* a pressed control shows >= 0.1 s (3 frames) even on a quick tap */
 static float ink_k(float k) { return qz(m_clamp((k - 0.3f) / 0.4f, 0, 1), 3); }   /* from the 2nd scale step */
+/* Builds count whole frames (docs/MOTION30.html R3/R9): b runs 0..1 over BUILD_F frames
+ * and bk() gives the frame back; list rows start one frame apart (at most 8 starts) and
+ * build over 6 frames, their fill fading in over the first 3 in perceptual steps. */
+#define BUILD_F 12
+static int   bk(float b) { return (int)floorf(b * BUILD_F + 0.5f); }
+static float row_p(float b, int r) { return m_clamp((float)m_stagger_k(bk(b), r, 1) / 6.0f, 0, 1); }
 
 /* Standard offsets plus the city's daylight-saving rule. */
 enum { DST_NONE = 0, DST_EU, DST_US, DST_AU, DST_NZ, DST_EG };
@@ -128,13 +134,11 @@ static int local_offset_min(const hal_datetime *dt)
 {
     uint64_t ep = hal_epoch_seconds();
     if (!ep) return nos_prefs.tz_min;
-    int local = dt->hour * 3600 + dt->minute * 60 + dt->second;
-    int utc = (int)(ep % 86400u);
-    int d = (local - utc) / 60;
-    d = (int)floorf(d / 15.0f + 0.5f) * 15;
-    while (d > 840) d -= 1440;
-    while (d < -720) d += 1440;
-    return d;
+    int64_t local = days_civil(dt->year, dt->month, dt->day) * 86400 +
+                    dt->hour * 3600 + dt->minute * 60 + dt->second;
+    int64_t seconds = local - (int64_t)ep;
+    int64_t d = (seconds >= 0 ? seconds + 30 : seconds - 30) / 60;
+    return d >= -720 && d <= 840 ? (int)d : nos_prefs.tz_min;
 }
 static void city_time(int c, ctime_t *o)
 {
@@ -170,9 +174,9 @@ static void upper(char *d, int n, const char *s)
 /* ================================================================ list */
 static ui_list s_list;
 static struct {
-    float t0, build; ctime_t t[NFAV];
-    int empty_pressed; float empty_t0, empty_unpress;
-    int tap_i; float tap_t;      /* the tapped row stays pressed PRESS_HOLD past the tap */
+    nos_time_t t0; float build; ctime_t t[NFAV];
+    int empty_pressed; nos_time_t empty_t0, empty_unpress;
+    int tap_i; nos_time_t tap_t;      /* the tapped row stays pressed PRESS_HOLD past the tap */
 } WL;
 extern const nos_screen scr_wc_pick, scr_wc_detail;
 static int s_detail_city;
@@ -182,9 +186,9 @@ static int s_detail_city;
 
 static void wl_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
 {
-    float p = m_stagger(WL.build, i < 6 ? i : 6, 7, 0.5f);
+    float p = row_p(WL.build, i);
     if (p <= 0) return;
-    float f = fade * qz(m_clamp(p * 2, 0, 1), 8);
+    float f = fade * m_ink(p * 2);
     float cy = y + h * 0.5f;
     pressed = pressed || (i == WL.tap_i && nos_t - WL.tap_t < PRESS_HOLD);
     if (i >= F.n) {                                       /* edit row: a pill, pressed C_SEC + black ink */
@@ -236,8 +240,10 @@ static void wl_tick(float dt)
     if (s_list.n != F.n + 1) ui_list_set_n(&s_list, F.n + 1);
     for (int i = 0; i < F.n; i++) city_time(F.idx[i], &WL.t[i]);
     ui_list_tick(&s_list, dt);
-    WL.build = m_clamp((nos_t - WL.t0) / 0.4f, 0, 1);
+    WL.build = m_clamp((nos_t - WL.t0) / M_FRAMES(BUILD_F), 0, 1);
     if (WL.empty_unpress > 0 && nos_t >= WL.empty_unpress) { WL.empty_pressed = 0; WL.empty_unpress = 0; }
+    nos_motion_probe("wc.row0.ink", MC_FADE, m_ink(row_p(WL.build, 0) * 2) * 100.0f);
+    nos_motion_probe("wc.row4.ink", MC_FADE, m_ink(row_p(WL.build, 4) * 2) * 100.0f);
 }
 #define WL_EMPTY_BTN ((float)UI_BTN_Y)
 static void wl_draw(gfx_fb *fb)
@@ -245,10 +251,10 @@ static void wl_draw(gfx_fb *fb)
     if (F.n == 0) {
         ui_title(fb, "WORLD CLOCK", 0);
         ui_absent(fb, DOT_ICON_GLOBE, "No cities", NULL, NULL, WL.build);
-        float k = m_clamp(WL.build * 2 - 0.6f, 0, 1);
+        float k = mf_at(&MF_MICRO6, bk(WL.build) - 3);   /* frames 4-9 */
         if (k <= 0) return;
         /* primary button builds by scale steps at full colour (no grey fade-up) */
-        float sc = 0.72f + 0.28f * qz(k, 8), w = UI_BTN_W * sc, h = UI_BTN_H * sc, ik = ink_k(qz(k, 8));
+        float sc = 0.72f + 0.28f * k, w = UI_BTN_W * sc, h = UI_BTN_H * sc, ik = ink_k(k);
         uint16_t fill = WL.empty_pressed ? C_SEC : C_WHITE;
         ui_rrect(fb, UI_CX - w / 2, WL_EMPTY_BTN - h / 2, w, h, h / 2, fill);
         if (ik > 0) ui_label(fb, UI_CX, (int)WL_EMPTY_BTN + 6, "ADD CITIES", ui_mix(fill, C_BG, ik), UI_CENTER);
@@ -259,11 +265,13 @@ static void wl_draw(gfx_fb *fb)
 }
 static int wl_input(const nos_input *in)
 {
+    if (in->type == IN_CANCEL) { WL.empty_pressed = 0; WL.empty_unpress = 0; WL.tap_i = -1; ui_list_input(&s_list, in); return 1; }
+
     if (F.n == 0) {
         int hit = fabsf((float)(in->x - UI_CX)) < UI_BTN_W / 2 + 4 && fabsf(in->y - WL_EMPTY_BTN) < 48;
         if (in->type == IN_DOWN) { WL.empty_pressed = hit; WL.empty_t0 = nos_t; WL.empty_unpress = 0; return hit; }
         if (in->type == IN_DRAG_START) { WL.empty_pressed = 0; WL.empty_unpress = 0; return 0; }
-        if (in->type == IN_UP) { if (WL.empty_pressed) WL.empty_unpress = fmaxf(nos_t, WL.empty_t0 + PRESS_HOLD); return 0; }
+        if (in->type == IN_UP) { if (WL.empty_pressed) WL.empty_unpress = fmax(nos_t, WL.empty_t0 + PRESS_HOLD); return 0; }
         if (in->type == IN_TAP && hit) { nos_feedback(FB_TAP); nos_push(&scr_wc_pick, TX_PUSH); return 1; }
         return 0;
     }
@@ -273,17 +281,17 @@ const nos_screen scr_worldclock = { "WORLD CLOCK", wl_enter, 0, wl_tick, wl_draw
 
 /* ============================================================== chooser */
 static ui_list s_pick;
-static float s_pick_t0, s_pick_build;
+static nos_time_t s_pick_t0; static float s_pick_build;
 static int   s_pk_tap_i = -1;
-static float s_pk_tap_t;
+static nos_time_t s_pk_tap_t;
 #define PK_ROW 90                /* the list-row pitch (§8) */
 #define PK_TOP 100
 
 static void pk_row(gfx_fb *fb, int i, int x0, int y, int x1, int h, float fade, int pressed)
 {
-    float p = m_stagger(s_pick_build, i < 6 ? i : 6, 7, 0.5f);
+    float p = row_p(s_pick_build, i);
     if (p <= 0) return;
-    float f = fade * qz(m_clamp(p * 2, 0, 1), 8);
+    float f = fade * m_ink(p * 2);
     float cy = y + h * 0.5f;
     int sel = fav_find(i) >= 0;
     int cx0, cx1;                                         /* see wl_row: fixed anchors */
@@ -336,7 +344,8 @@ static void pk_enter(void)
 static void pk_tick(float dt)
 {
     ui_list_tick(&s_pick, dt);
-    s_pick_build = m_clamp((nos_t - s_pick_t0) / 0.4f, 0, 1);
+    s_pick_build = m_clamp((nos_t - s_pick_t0) / M_FRAMES(BUILD_F), 0, 1);
+    nos_motion_probe("wcp.row0.ink", MC_FADE, m_ink(row_p(s_pick_build, 0) * 2) * 100.0f);
 }
 static void pk_draw(gfx_fb *fb)
 {
@@ -345,12 +354,19 @@ static void pk_draw(gfx_fb *fb)
     ui_title(fb, t, ui_list_offset(&s_pick));
     ui_list_draw(fb, &s_pick);
 }
-static int pk_input(const nos_input *in) { return ui_list_input(&s_pick, in); }
+static int pk_input(const nos_input *in)
+{
+    if (in->type == IN_CANCEL) s_pk_tap_i = -1;
+    return ui_list_input(&s_pick, in);
+}
 const nos_screen scr_wc_pick = { "CITIES", pk_enter, 0, pk_tick, pk_draw, pk_input, 0 };
 
 /* ============================================================== analog view */
 #define AR 196.0f
-static struct { float t0, build; ctime_t t; char name[24], rel[32], tm[12]; } D;
+/* Detail build, whole frames: the 60-dot dial and its 12 hour marks fill as an even
+ * sweep (EASE_STEADY, 9 frames), the city and offset fade in (frames 3-8), the hands
+ * grow out dot by dot at a constant rate (frames 3-10), the seconds dot last (10-13). */
+static struct { nos_time_t t0; float build; ctime_t t; char name[24], rel[32], tm[12]; float lit, lab_k, hand_p, sec_k; } D;
 
 static void dt_enter(void)
 {
@@ -364,7 +380,19 @@ static void dt_tick(float dt)
     city_time(s_detail_city, &D.t);
     fmt_rel(D.rel, sizeof D.rel, &D.t);
     ui_fmt_time(D.tm, sizeof D.tm, D.t.h, D.t.m);
-    D.build = m_clamp((nos_t - D.t0) / 0.45f, 0, 1);
+    D.build = m_clamp((nos_t - D.t0) / M_FRAMES(14), 0, 1);
+    {
+        int k = m_frame_k(D.t0);
+        D.lit = 60.0f * (k <= 0 ? 0.0f : k >= 9 ? 1.0f : bezier_ease(&EASE_STEADY, (float)k / 9.0f));
+        D.lab_k = m_ink((float)(k - 2) / 6.0f);
+        D.hand_p = m_clamp((float)(k - 2) / 8.0f, 0, 1);
+        D.sec_k = qz(m_clamp((float)(k - 9) / 4.0f, 0, 1), 4);
+    }
+    /* motion audit (sim only) */
+    nos_motion_probe("wcd.ring.arc", MC_TRANSITION, floorf(D.lit * 32.0f + 0.5f) / 32.0f * 6.2831853f * AR / 60.0f);
+    nos_motion_probe("wcd.label.ink", MC_FADE, D.lab_k * 100.0f);
+    nos_motion_probe("wcd.minute.len", MC_COMPONENT, m_clamp(D.hand_p * 11.0f, 0, 9.0f) * 14.0f);
+    nos_motion_probe("wcd.sec.d", MC_MICRO, 10 * D.sec_k);
 }
 static void hand(gfx_fb *fb, float a, float r0, float r1, float step, float d, uint16_t c, float p)
 {
@@ -379,12 +407,11 @@ static void hand(gfx_fb *fb, float a, float r0, float r1, float step, float d, u
 }
 static void dt_draw(gfx_fb *fb)
 {
-    float b = D.build;
-    float lit = 60.0f * m_clamp(b * 1.4f, 0, 1);
+    float lit = D.lit;
     time_ring(fb, UI_CX, UI_CY, AR, 60, 4, lit, C_LINE2, 0);
     time_ring(fb, UI_CX, UI_CY, AR, 12, 8, lit / 5.0f, C_SEC, 0);
     int day = is_day(&D.t);
-    float k = qz(m_clamp(b * 2 - 0.3f, 0, 1), 8);
+    float k = D.lab_k;
     if (k > 0) {
         /* title: the city with the list's day/night dot (filled = day, hollow = night) */
         int tw = ui_text_width(UI_F_LABEL, D.name, 2);
@@ -395,13 +422,13 @@ static void dt_draw(gfx_fb *fb)
         /* bottom: only the offset from here (the hands tell the time) */
         ui_label(fb, UI_CX, 392, D.rel, ui_dim(C_SEC, k), UI_CENTER);
     }
-    float ph = m_clamp(b * 1.6f - 0.3f, 0, 1);
+    float ph = D.hand_p;
     float ha = 6.2831853f * ((D.t.h % 12) + D.t.m / 60.0f) / 12.0f;
     float ma = 6.2831853f * D.t.m / 60.0f;
     hand(fb, ma, 26, 140, 14, 8, C_PRI, ph);
     hand(fb, ha, 26, 98, 18, 11, C_WHITE, ph);
     if (ph > 0) dot_disc(fb, UI_CX, UI_CY, 14, C_WHITE);
-    float sk = qz(m_clamp((b - 0.7f) / 0.3f, 0, 1), 4);    /* the seconds dot grows in last */
+    float sk = D.sec_k;                                     /* the seconds dot grows in last */
     if (sk > 0) {
         float sa = 6.2831853f * D.t.s / 60.0f;
         dot_disc(fb, UI_CX + AR * gfx_fast_sin(sa), UI_CY - AR * gfx_fast_cos(sa), 10 * sk, C_RED);

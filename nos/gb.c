@@ -1,6 +1,7 @@
 /* gb.c — see gb.h. Gadgetbridge Bangle.js line framing, JSON, text clean-up. */
 #include "gb.h"
 #include <string.h>
+#include <math.h>
 
 /* ------------------------------------------------------------------ numbers */
 static int is_digit(int c) { return c >= '0' && c <= '9'; }
@@ -44,6 +45,54 @@ static const char *find(const char *s, const char *e, const char *pat)
     return 0;
 }
 
+static int frame_ident(int c)
+{return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||is_digit(c)||c=='_'||c=='$';}
+
+/* Gadgetbridge sends top-level calls separated by semicolons, optionally
+ * qualified (E.setTimeZone). Never search JSON strings, nested calls or comments
+ * for commands: notification text is data, even when it contains documentation. */
+static const char *find_call(const char *s,const char *e,const char *name)
+{
+    size_t n=strlen(name);int depth=0;char quote=0;
+    const char *statement=s;
+    for(const char *p=s;p<e;p++) {
+        char c=*p;
+        if(quote) {if(c=='\\' && p+1<e)p++;else if(c==quote)quote=0;continue;}
+        if(c=='"'||c=='\''||c=='`') {quote=c;continue;}
+        if(c=='/' && p+1<e && p[1]=='/') break;
+        if(c=='/' && p+1<e && p[1]=='*') {
+            const char *prefix=statement;
+            while(prefix<p && is_space(*prefix))prefix++;
+            int leading=!depth && prefix==p;
+            p+=2;while(p+1<e && !(p[0]=='*'&&p[1]=='/'))p++;
+            if(p+1>=e)break;
+            p++;if(leading)statement=p+1;continue;
+        }
+        if(!depth && (size_t)(e-p)>=n && !memcmp(p,name,n)) {
+            const char *start=p;
+            while(start>s && (frame_ident((unsigned char)start[-1]) || start[-1]=='.')) start--;
+            /* Only identifier/property qualifiers may precede this call. */
+            int qualifier=start==p || p[-1]=='.';
+            const char *boundary=start;
+            while(boundary>s && is_space((unsigned char)boundary[-1]))boundary--;
+            if(qualifier && (boundary==s || boundary==statement || boundary[-1]==';' || boundary[-1]==0x10 || boundary[-1]==0x03)) return p;
+        }
+        if(c=='{'||c=='['||c=='(')depth++;
+        else if(c=='}'||c==']'||c==')') {if(depth>0)depth--;}
+        else if(!depth && (c==';'||c==0x10||c==0x03))statement=p+1;
+    }
+    return NULL;
+}
+
+static int call_number(const char *p,const char *e,double *v)
+{
+    while(p<e && is_space(*p))p++;
+    int used=parse_num(p,e,v);
+    if(!used || !isfinite(*v))return 0;
+    p+=used;while(p<e && is_space(*p))p++;
+    return p<e && *p==')';
+}
+
 int gb_frame_line(const char *line, int len, gb_frame *out)
 {
     memset(out, 0, sizeof *out);
@@ -51,7 +100,7 @@ int gb_frame_line(const char *line, int len, gb_frame *out)
     const char *e = line + len;
     int any = 0;
 
-    const char *g = find(line, e, "GB(");
+    const char *g = find_call(line, e, "GB(");
     if (g) {
         const char *p = g + 3;
         while (p < e && is_space(*p)) p++;
@@ -86,15 +135,15 @@ int gb_frame_line(const char *line, int len, gb_frame *out)
         }
     }
 
-    const char *t = find(line, e, "setTime(");
+    const char *t = find_call(line, e, "setTime(");
     if (t) {
         double v;
-        if (parse_num(t + 8, e, &v) && v > 0) { out->has_time = 1; out->epoch = (int64_t)v; any = 1; }
+        if (call_number(t+8,e,&v) && v>0 && v<9223372036854775808.0) { out->has_time = 1; out->epoch = (int64_t)v; any = 1; }
     }
-    const char *z = find(line, e, "setTimeZone(");
+    const char *z = find_call(line, e, "setTimeZone(");
     if (z) {
         double v;
-        if (parse_num(z + 12, e, &v) && v >= -14 && v <= 14) { out->has_tz = 1; out->tz_hours = (float)v; any = 1; }
+        if (call_number(z+12,e,&v) && v>=-14 && v<=14) { out->has_tz = 1; out->tz_hours = (float)v; any = 1; }
     }
     return any;
 }

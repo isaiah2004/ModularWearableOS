@@ -1,0 +1,96 @@
+face 8
+wait 2500
+card 0
+open! orrery_card
+wait 2500
+mark rim_three_detents
+touch 453 233 1
+frames 1
+touch 423 343 1
+frames 4
+touch 343 423 1
+frames 4
+touch 233 453 1
+frames 4
+touch 123 423 1
+frames 4
+touch 123 423 0
+wait 4000
+shot rim_three_earth
+expect idle
+expect nolate
+mark body_flick
+flick 340 330 260 330 100
+wait 2500
+shot flick_moon
+expect idle
+expect nolate
+mark interrupt_page
+flick 100 300 100 230 120
+tap 233 390
+wait 1500
+shot interrupted_page
+expect idle
+expect nolate
+mark free_poles
+card 7
+wait 2500
+tap 275 430
+drag 233 214 233 440 600
+wait 1500
+shot saturn_north
+expect idle
+tap 233 214
+wait 500
+shot saturn_north_heat
+expect idle
+tap 233 214
+wait 500
+shot saturn_north_dot
+expect idle
+tap 233 214
+wait 500
+drag 233 214 233 20 600
+wait 1500
+drag 233 214 233 20 600
+wait 1500
+shot saturn_south
+expect idle
+tap 233 214
+wait 500
+shot saturn_south_heat
+expect idle
+tap 233 214
+wait 500
+shot saturn_south_dot
+expect idle
+tap 233 214
+wait 500
+drag 233 214 233 284 600
+wait 1500
+shot saturn_oblique
+expect idle
+tap 233 214
+wait 500
+shot saturn_oblique_heat
+expect idle
+tap 233 214
+wait 500
+shot saturn_oblique_dot
+expect idle
+expect nolate
+mark quick_load_switch
+card 3
+frames 2
+card 7
+frames 2
+card 2
+frames 2
+card 4
+frames 2
+card 3
+wait 3000
+shot reload_earth
+expect idle
+expect nolate
+

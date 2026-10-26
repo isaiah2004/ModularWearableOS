@@ -44,8 +44,9 @@ static volatile int s_strength = 80;
 static volatile uint32_t s_busy_until;
 static int s_ok;
 static uint32_t s_count;
+static int s_callback_active;
 
-static void motor_duty(int pct)
+static int motor_duty(int pct)
 {
     int st = s_strength;
     uint32_t d = 0;
@@ -53,13 +54,14 @@ static void motor_duty(int pct)
         int eff = 40 + 60 * (st > 100 ? 100 : st) / 100;
         d = (uint32_t)((1u << HAP_RES) - 1) * (uint32_t)(eff * pct) / 10000u;
     }
-    ledc_set_duty(HAP_MODE, HAP_CHAN, d);
-    ledc_update_duty(HAP_MODE, HAP_CHAN);
+    return ledc_set_duty(HAP_MODE, HAP_CHAN, d)==ESP_OK &&
+           ledc_update_duty(HAP_MODE, HAP_CHAN)==ESP_OK;
 }
 
-static void hap_cb(void *arg)
+static void hap_cb_impl(void *arg)
 {
     (void)arg;
+    if(ext_shutdown_requested()){s_pat=-1;motor_duty(0);return;}
     portENTER_CRITICAL(&ext_lock);
     int req = s_req; s_req = -1;
     portEXIT_CRITICAL(&ext_lock);
@@ -76,10 +78,16 @@ static void hap_cb(void *arg)
     if (sg->duty) s_busy_until = ext_ms() + sg->ms + 40;   /* + spin-down */
     esp_timer_start_once(s_timer, (uint64_t)sg->ms * 1000);
 }
+static void hap_cb(void *arg)
+{
+    __atomic_store_n(&s_callback_active,1,__ATOMIC_RELEASE);
+    hap_cb_impl(arg);
+    __atomic_store_n(&s_callback_active,0,__ATOMIC_RELEASE);
+}
 
 static void kick(int req)
 {
-    if (!s_ok) return;
+    if (!s_ok || ext_shutdown_requested()) return;
     portENTER_CRITICAL(&ext_lock);
     s_req = req;
     portEXIT_CRITICAL(&ext_lock);
@@ -117,6 +125,14 @@ void hal_haptic(int pattern)
 void hal_haptic_stop(void) { kick(-2); }
 void hal_haptic_set_strength(int pct) { s_strength = pct < 0 ? 0 : pct > 100 ? 100 : pct; }
 int  haptic_active(void) { return s_ok && !ext_due(ext_ms(), s_busy_until); }
+int haptic_shutdown_poll(uint32_t now)
+{
+    if(!s_ok)return 1;
+    esp_timer_stop(s_timer);
+    if(__atomic_load_n(&s_callback_active,__ATOMIC_ACQUIRE))return 0;
+    s_req=-2;s_pat=-1;s_busy_until=now;
+    return motor_duty(0)?1:-1;
+}
 
 void haptic_debug(void)
 {

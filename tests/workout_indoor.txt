@@ -1,0 +1,26 @@
+# A no-module workout is still an honest timer with laps.
+wait 100
+present 0
+set step_rate 0
+workout start 5
+wait 5000
+workout pause
+workout lap 0
+wait 3000
+workout resume
+wait 4000
+workout lap
+workout finish
+wait 200
+expect workout elapsed 8900 9100
+expect workout distance 0
+expect workout distance_valid 0
+expect workout speed_valid 0
+expect workout pace_valid 0
+expect workout steps 0
+expect workout hr_valid 0
+expect workout gps_status 0
+expect workout save 2
+expect workout history 1
+workout info indoor
+

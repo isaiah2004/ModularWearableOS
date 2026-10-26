@@ -1,0 +1,26 @@
+time 12:30:00
+home
+wait 700
+drag 360 233 25 233 500
+wait 900
+shot apps_right
+drag 45 233 420 233 500
+wait 900
+shot drawer_back_home
+drag 45 233 420 233 500
+wait 900
+shot tiles_left
+drag 45 233 420 233 500
+wait 900
+shot second_tile_left
+drag 420 233 45 233 500
+wait 900
+shot first_tile_return
+drag 420 233 45 233 500
+wait 900
+shot tiles_back_home
+drag 233 90 233 410 500
+wait 700
+drag 380 220 90 220 500
+wait 700
+shot quick_tools_control
